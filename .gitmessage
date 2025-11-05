@@ -1,0 +1,97 @@
+# ============================================================
+#  Git Commit Message Template
+#  Project: G1 Intellect - Humanoid Robot Intelligence Platform
+#  Usage: Automatically loaded by Git during `git commit`
+# ============================================================
+#
+# Format:
+#   <type>(<scope>): <subject>
+#
+# Example:
+#   feat(lidar): add real-time dynamic filtering module
+#
+#   Implement robust point cloud filtering based on motion cues.
+#
+#   Closes #42
+#
+# ------------------------------------------------------------
+# Commit Types:
+#   feat      - Add new feature or functionality
+#   fix       - Fix a bug or correct behavior
+#   docs      - Documentation or comments
+#   style     - Code style or formatting changes (no logic impact)
+#   refactor  - Restructure code without behavior change
+#   perf      - Improve performance or efficiency
+#   test      - Add or modify test scripts
+#   build     - Build system or dependency updates
+#   ci        - Continuous integration / deployment changes
+#   chore     - Maintenance tasks, cleanup, minor updates
+#   revert    - Revert previous commit
+#   merge     - Merge branch integration
+#   deps      - Dependency version updates
+#   config    - Configuration or parameter changes
+#   env       - Environment setup or install scripts
+#   ui        - Visualization or interface changes
+#   security  - Security or safety improvements
+#
+# ------------------------------------------------------------
+# Suggested Scopes:
+#
+#   Core Components:
+#     perception     - Visual/sensor data processing and detection
+#     control        - Motion control and actuation systems
+#     navigation     - Path planning and obstacle avoidance
+#     localization   - Robot positioning and state estimation
+#     mapping        - Environment mapping and SLAM
+#     planning       - Task and trajectory planning
+#     safety         - Safety monitoring and emergency handling
+#
+#   System Infrastructure:
+#     communication  - Inter-process/network communication
+#     middleware     - System middleware and message passing
+#     sensor         - Sensor drivers and hardware interfaces
+#     actuator       - Motor control and hardware actuation
+#     framework      - Core framework and architecture
+#
+#   AI & Algorithms:
+#     ml             - Machine learning models and training
+#     vision         - Computer vision algorithms
+#     fusion         - Multi-sensor data fusion
+#     dataset        - Dataset management and annotation
+#
+#   Simulation & Visualization:
+#     simulation     - Simulation environments and testing
+#     visualization  - UI, rendering, and data visualization
+#     calibration    - Sensor and system calibration
+#
+#   Development Tools:
+#     api            - Public API and interfaces
+#     cli            - Command-line interface
+#     sdk            - SDK integration and bindings
+#     config         - Configuration management
+#     test           - Testing infrastructure
+#     benchmark      - Performance benchmarking
+#
+#   Build & Deployment:
+#     deps           - Dependency management
+#     build          - Build system and toolchain
+#     ci             - Continuous integration/deployment
+#     docker         - Container and deployment
+#
+#   Documentation:
+#     docs           - Documentation and tutorials
+#     examples       - Example code and demos
+#     installation   - Setup and installation scripts
+#
+# ------------------------------------------------------------
+# Template:
+<type>(<scope>): <subject>
+
+# Description: explain what and why changes were made.
+<body>
+
+# Optional issue link for auto-closing.
+Closes #<issue_number>
+
+# End of commit message
+# ============================================================
