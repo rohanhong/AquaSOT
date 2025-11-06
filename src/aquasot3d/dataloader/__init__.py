@@ -5,11 +5,24 @@ This module provides dataset loaders, data transforms, and utilities for
 loading paired RGB-Sonar tracking sequences.
 """
 
-# Lazy imports - will be imported when needed
-# from .datasets import RGBSonarDataset
-# from .transforms import RGBTransforms, SonarTransforms, LogPolarTransform
-# from .loader import build_dataloader
+from . import datasets
+from . import transforms
+from .loader import (
+    collate_fn_tracking,
+    collate_fn_template_search,
+    create_dataloader,
+    InfiniteDataLoader,
+    PrefetchLoader,
+    create_training_loaders,
+)
 
 __all__ = [
-    # Will be populated as modules are implemented
+    'datasets',
+    'transforms',
+    'collate_fn_tracking',
+    'collate_fn_template_search',
+    'create_dataloader',
+    'InfiniteDataLoader',
+    'PrefetchLoader',
+    'create_training_loaders',
 ]

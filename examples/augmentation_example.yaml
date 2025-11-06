@@ -1,0 +1,65 @@
+# Data Augmentation Configuration Example
+
+# Training Augmentation (Tracking Mode)
+tracking_augmentation:
+  type: TrackingAugmentation
+
+  rgb_config:
+    enable_color_jitter: true
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.1
+    color_jitter_prob: 0.5
+
+    enable_blur: true
+    blur_prob: 0.3
+
+  sonar_config:
+    enable_speckle: true
+    speckle_level: 0.1
+    speckle_prob: 0.5
+
+    enable_radial_jitter: true
+    radial_scale_range: [0.9, 1.1]
+    radial_jitter_prob: 0.3
+
+# Template-Search Augmentation (OSTrack Mode)
+template_search_augmentation:
+  type: TemplateSearchAugmentation
+  enable_flip: true
+
+  # Template: Less aggressive augmentation
+  template_config:
+    rgb:
+      enable_color_jitter: false  # Keep template clean
+      enable_blur: false
+    sonar:
+      enable_speckle: false
+      enable_radial_jitter: false
+
+  # Search: More aggressive augmentation
+  search_config:
+    rgb:
+      enable_color_jitter: true
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.3
+      hue: 0.15
+      color_jitter_prob: 0.6
+
+      enable_blur: true
+      blur_prob: 0.4
+
+    sonar:
+      enable_speckle: true
+      speckle_level: 0.15
+      speckle_prob: 0.6
+
+      enable_radial_jitter: true
+      radial_scale_range: [0.85, 1.15]
+      radial_jitter_prob: 0.4
+
+# Evaluation Augmentation (No Augmentation)
+eval_augmentation:
+  type: NoAugmentation
