@@ -539,25 +539,30 @@ def compute_radial_weights(sonar_img):
 
 ---
 
-### Phase 3.5: Quality Estimation & Geometry Utils (Week 6.5, Optional but Recommended)
+### Phase 3.5: Quality Estimation & Geometry Utils (Week 6.5, Optional but Recommended) ✅ COMPLETED
 
 > **Critical Addition**: Uncertainty-aware gating and coordinate system utilities for weak 3D estimation. Quality estimation is optional (can be disabled via ablation config) but highly recommended for robustness under challenging underwater conditions.
+>
+> **Implementation Status**: All Phase 3.5 modules successfully implemented and tested (2025-11-06)
 
 #### 3.5.1 Quality Estimators
-- [ ] Implement `models/quality/rgb_quality_estimator.py`
+- [x] Implement `models/quality/rgb_quality_estimator.py`
   - **Sharpness Estimation**: Laplacian variance or gradient magnitude
   - **Blur Detection**: Frequency domain analysis
   - **Per-frame Quality Score**: Normalized to [0, 1]
+  - **Implementation**: Supports both traditional (Laplacian, gradient, frequency) and learnable CNN-based methods
 
-- [ ] Implement `models/quality/sonar_quality_estimator.py`
+- [x] Implement `models/quality/sonar_quality_estimator.py`
   - **SNR Estimation**: Signal-to-noise ratio from speckle patterns
   - **Speckle Noise Level**: Local variance analysis
   - **Echo Intensity**: Mean activation within bbox
+  - **Implementation**: Combined metric with geometry-aware weighting
 
-- [ ] Implement `models/quality/adaptive_weighting.py`
+- [x] Implement `models/quality/adaptive_weighting.py`
   - **Dynamic Fusion Weights**: w_rgb, w_sonar based on quality
   - **Temporal Smoothing**: EMA of quality scores
   - **Threshold-based Gating**: Disable low-quality modality
+  - **Implementation**: Supports softmax, sigmoid, and learned fusion methods
 
 **Pseudocode:**
 ```python
@@ -599,14 +604,16 @@ def adaptive_fusion(rgb_feat, sonar_feat, q_rgb, q_sonar):
 ```
 
 **Test Files:**
-- `tests/test_quality_estimation.py`
+- `tests/test_quality_and_geometry.py` ✅
 
 #### 3.5.2 Coordinate System Utilities
-- [ ] Implement `utils/geometry.py`
+- [x] Implement `utils/geometry.py`
   - **Fusion Frame Definition**: Right-handed coordinate system (X→right, Y→down, Z→forward)
   - **RGB→Fusion Transform**: Identity (RGB frame IS the Fusion frame)
   - **Sonar→Fusion Transform**: Learnable affine transformation (no calibration)
   - **3D→2D Projection**: Weak perspective projection for both modalities
+  - **Implementation**: CoordinateTransform module with learnable 3x4 affine matrix
+  - **Cyclic Consistency Loss**: 3D→2D→3D projection consistency without calibration
 
 **Mathematical Formulation:**
 ```python
@@ -687,7 +694,15 @@ def cyclic_consistency_loss(pred_3d, gt_rgb_bbox, gt_sonar_bbox, transform):
 ```
 
 **Test Files:**
-- `tests/test_geometry_utils.py`
+- `tests/test_quality_and_geometry.py` ✅
+
+**Key Implementations:**
+- `CoordinateTransform`: Learnable 3x4 affine transformation for Sonar→Fusion mapping
+- `project_3d_to_2d_rgb`: Weak perspective (orthographic) projection for RGB
+- `project_3d_to_2d_sonar`: Learned projection using affine transform
+- `CyclicConsistencyLoss`: L1/L2/Smooth-L1 loss for 3D-2D consistency
+- `compute_reprojection_error`: Evaluation metric for projection accuracy
+- Bbox utility functions: `bbox_to_center`, `center_to_bbox`
 
 ---
 

@@ -152,6 +152,19 @@ class Registry:
 
         return _register
 
+    def register(self, name: Optional[str] = None, force: bool = False) -> Callable:
+        """
+        Alias for register_module() for backward compatibility.
+
+        Args:
+            name: Module name. If not specified, use class name
+            force: Whether to override existing module
+
+        Returns:
+            Decorator function
+        """
+        return self.register_module(name=name, force=force)
+
     def build(self, cfg: Dict[str, Any], **kwargs) -> Any:
         """
         Build a module from configuration.
@@ -234,6 +247,7 @@ QUALITY_ESTIMATORS = Registry('quality_estimator')
 DATASETS = Registry('dataset')
 TRANSFORMS = Registry('transform')
 SAMPLERS = Registry('sampler')
+AUGMENTATIONS = Registry('augmentation')
 
 # Training component registries
 OPTIMIZERS = Registry('optimizer')
@@ -243,6 +257,22 @@ LOSSES = Registry('loss')
 # Evaluation component registries
 METRICS = Registry('metric')
 EVALUATORS = Registry('evaluator')
+
+# Aliases for backward compatibility (using _REGISTRY naming convention)
+BACKBONE_REGISTRY = BACKBONES
+FUSION_REGISTRY = FUSION_MODULES
+TEMPORAL_HEAD_REGISTRY = TEMPORAL_HEADS
+PREDICTION_HEAD_REGISTRY = PREDICTION_HEADS
+QUALITY_ESTIMATOR_REGISTRY = QUALITY_ESTIMATORS
+DATASET_REGISTRY = DATASETS
+TRANSFORM_REGISTRY = TRANSFORMS
+SAMPLER_REGISTRY = SAMPLERS
+AUGMENTATION_REGISTRY = AUGMENTATIONS
+OPTIMIZER_REGISTRY = OPTIMIZERS
+SCHEDULER_REGISTRY = SCHEDULERS
+LOSS_REGISTRY = LOSSES
+METRIC_REGISTRY = METRICS
+EVALUATOR_REGISTRY = EVALUATORS
 
 
 def build_from_cfg(

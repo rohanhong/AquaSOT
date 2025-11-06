@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple
 import torch
 import torch.nn as nn
+import logging
 
 
 class BaseModule(nn.Module, ABC):
@@ -27,6 +28,18 @@ class BaseModule(nn.Module, ABC):
         super().__init__()
         self.config = config or {}
         self._is_initialized = False
+
+        # Setup logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.INFO)
 
     @abstractmethod
     def forward(self, *args, **kwargs) -> Any:
