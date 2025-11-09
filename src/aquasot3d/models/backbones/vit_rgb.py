@@ -86,6 +86,7 @@ class ViTRGBBackbone(BaseModule):
                 img_size=img_size,
                 num_classes=0,  # Remove classification head
                 global_pool='',  # Remove global pooling
+                dynamic_img_size=True,  # Allow variable input sizes
             )
         except Exception as e:
             raise ValueError(f"Failed to load ViT model '{model_name}' from timm: {e}")
@@ -136,7 +137,11 @@ class ViTRGBBackbone(BaseModule):
 
         # Patch embedding
         if hasattr(self.vit, 'patch_embed'):
-            x = self.vit.patch_embed(x)  # (B, N, C)
+            x = self.vit.patch_embed(x)  # (B, N, C) or (B, H, W, C) with dynamic_img_size
+            # If dynamic_img_size is enabled, flatten spatial dimensions
+            if x.dim() == 4:  # (B, H, W, C)
+                B, H, W, C = x.shape
+                x = x.reshape(B, H * W, C)  # (B, N, C)
         else:
             raise AttributeError("ViT model does not have patch_embed attribute")
 

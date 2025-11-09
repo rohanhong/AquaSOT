@@ -62,7 +62,7 @@ class SonarEncoder(BaseModule):
         pretrained: bool = False,
         use_logpolar: bool = True,
         learnable_logpolar: bool = True,
-        img_size: Tuple[int, int] = (682, 376),
+        img_size: Tuple[int, int] = (376, 682),
         embed_dim: int = 384,
         depth: int = 6,
         num_heads: int = 6,
@@ -92,6 +92,10 @@ class SonarEncoder(BaseModule):
         # Log-polar transformation (differentiable)
         if use_logpolar:
             self.logpolar_transform = LogPolarTransform(
+                sonar_height=img_size[0],
+                sonar_width=img_size[1],
+                output_height=224,  # Match ViT input size
+                output_width=224,   # Match ViT input size
                 learnable_scales=learnable_logpolar,
                 init_alpha=1.0,
                 init_beta=1.0,
@@ -101,8 +105,8 @@ class SonarEncoder(BaseModule):
 
         # Sonar geometry handler
         self.geometry_handler = SonarGeometryHandler(
-            height=img_size[0],
-            width=img_size[1],
+            sonar_height=img_size[0],
+            sonar_width=img_size[1],
             max_range=max_range_pixels,
             fov_angle=sonar_fov_angle,
         )
@@ -240,16 +244,20 @@ class SonarEncoder(BaseModule):
         B = template.shape[0]
 
         # Apply geometry handler (fan mask and radial weights)
-        template_masked, template_weights = self.geometry_handler(template)
-        search_masked, search_weights = self.geometry_handler(search)
+        template_geo = self.geometry_handler(template)
+        search_geo = self.geometry_handler(search)
+        template_masked = template_geo['masked']
+        search_masked = search_geo['masked']
 
         # Apply log-polar transformation if enabled
         if self.use_logpolar:
             template_lp = self.logpolar_transform(template_masked)
             search_lp = self.logpolar_transform(search_masked)
         else:
-            template_lp = template_masked
-            search_lp = search_masked
+            # Resize to match encoder input size (224x224 for ViT)
+            import torch.nn.functional as F
+            template_lp = F.interpolate(template_masked, size=(224, 224), mode='bilinear', align_corners=False)
+            search_lp = F.interpolate(search_masked, size=(224, 224), mode='bilinear', align_corners=False)
 
         # Adapt input channels (1 -> 3)
         template_rgb = self.input_adapter(template_lp)
@@ -292,8 +300,8 @@ class SonarEncoder(BaseModule):
 
         # Add geometry information
         outputs['geometry_info'] = {
-            'template_weights': template_weights,
-            'search_weights': search_weights,
+            'template_weights': template_geo['weighted'],
+            'search_weights': search_geo['weighted'],
             'fov_angle': self.sonar_fov_angle,
             'max_range': self.max_range_pixels,
         }

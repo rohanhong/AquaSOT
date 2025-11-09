@@ -166,7 +166,7 @@ class TestSonarEncoder:
             pretrained=False,
             use_logpolar=True,
             learnable_logpolar=True,
-            img_size=(682, 376),
+            img_size=(376, 682),
         )
 
     @pytest.fixture
@@ -177,7 +177,7 @@ class TestSonarEncoder:
             model_name='resnet18',
             pretrained=False,
             use_logpolar=True,
-            img_size=(682, 376),
+            img_size=(376, 682),
         )
 
     def test_sonar_initialization_vit(self, sonar_encoder_vit):
@@ -195,8 +195,8 @@ class TestSonarEncoder:
 
     def test_sonar_forward_separate(self, sonar_encoder_vit):
         """Test Sonar forward pass with separate processing."""
-        template = torch.randn(2, 1, 682, 376)  # Grayscale sonar
-        search = torch.randn(2, 1, 682, 376)
+        template = torch.randn(2, 1, 376, 682)  # Grayscale sonar
+        search = torch.randn(2, 1, 376, 682)
 
         outputs = sonar_encoder_vit(template, search, return_separate=True)
 
@@ -206,8 +206,8 @@ class TestSonarEncoder:
 
     def test_sonar_forward_combined(self, sonar_encoder_vit):
         """Test Sonar forward pass with combined processing."""
-        template = torch.randn(2, 1, 682, 376)
-        search = torch.randn(2, 1, 682, 376)
+        template = torch.randn(2, 1, 376, 682)
+        search = torch.randn(2, 1, 376, 682)
 
         outputs = sonar_encoder_vit(template, search, return_separate=False)
 
@@ -218,8 +218,8 @@ class TestSonarEncoder:
 
     def test_sonar_radial_profile_extraction(self, sonar_encoder_vit):
         """Test radial profile extraction for depth proxy."""
-        template = torch.randn(2, 1, 682, 376)
-        search = torch.randn(2, 1, 682, 376)
+        template = torch.randn(2, 1, 376, 682)
+        search = torch.randn(2, 1, 376, 682)
 
         outputs = sonar_encoder_vit(template, search)
 
@@ -235,8 +235,8 @@ class TestSonarEncoder:
             use_logpolar=False,
         )
 
-        template = torch.randn(2, 1, 682, 376)
-        search = torch.randn(2, 1, 682, 376)
+        template = torch.randn(2, 1, 376, 682)
+        search = torch.randn(2, 1, 376, 682)
 
         outputs = encoder(template, search)
         assert 'features' in outputs
@@ -334,8 +334,8 @@ class TestMultiModalBackbone:
         """Test multi-modal forward pass."""
         rgb_template = torch.randn(2, 3, 224, 224)
         rgb_search = torch.randn(2, 3, 224, 224)
-        sonar_template = torch.randn(2, 1, 682, 376)
-        sonar_search = torch.randn(2, 1, 682, 376)
+        sonar_template = torch.randn(2, 1, 376, 682)
+        sonar_search = torch.randn(2, 1, 376, 682)
 
         outputs = multimodal_backbone(
             rgb_template, rgb_search,
@@ -415,8 +415,8 @@ class TestBackboneIntegration:
 
         rgb_template = torch.randn(2, 3, 224, 224)
         rgb_search = torch.randn(2, 3, 224, 224)
-        sonar_template = torch.randn(2, 1, 682, 376)
-        sonar_search = torch.randn(2, 1, 682, 376)
+        sonar_template = torch.randn(2, 1, 376, 682)
+        sonar_search = torch.randn(2, 1, 376, 682)
 
         rgb_out = rgb_backbone(rgb_template, rgb_search)
         sonar_out = sonar_encoder(sonar_template, sonar_search)

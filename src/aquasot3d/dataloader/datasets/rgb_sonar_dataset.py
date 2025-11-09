@@ -45,7 +45,7 @@ def is_occluded(bbox: np.ndarray) -> bool:
     Returns:
         True if bbox is (0,0,0,0), indicating occlusion
     """
-    return np.all(bbox == 0)
+    return bool(np.all(bbox == 0))
 
 
 def parse_groundtruth(gt_path: Union[str, Path]) -> np.ndarray:

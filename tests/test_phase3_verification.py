@@ -20,8 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 
-def test_import(module_path, module_name):
-    """Test if a module can be imported."""
+def check_import(module_path, module_name):
+    """Check if a module can be imported."""
     try:
         exec(f"from {module_path} import {module_name}")
         return True, None
@@ -59,7 +59,7 @@ def main():
     skipped = 0
 
     for module_path, module_name in tests:
-        success, error = test_import(module_path, module_name)
+        success, error = check_import(module_path, module_name)
 
         if success:
             if error:
