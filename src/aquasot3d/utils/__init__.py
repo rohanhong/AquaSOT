@@ -2,10 +2,10 @@
 Utility Modules
 
 Geometry utilities for coordinate transformations, 3D-2D projections,
-and cyclic consistency loss.
+cyclic consistency loss, and configuration management.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-10
 """
 
 from .geometry import (
@@ -18,6 +18,15 @@ from .geometry import (
     compute_reprojection_error,
     create_coordinate_transform,
     create_cyclic_consistency_loss,
+)
+
+from .config import (
+    ConfigDict,
+    load_config,
+    save_config,
+    validate_config,
+    print_config,
+    setup_config_logging,
 )
 
 __all__ = [
@@ -37,4 +46,12 @@ __all__ = [
     'CyclicConsistencyLoss',
     'create_cyclic_consistency_loss',
     'compute_reprojection_error',
+
+    # Configuration
+    'ConfigDict',
+    'load_config',
+    'save_config',
+    'validate_config',
+    'print_config',
+    'setup_config_logging',
 ]

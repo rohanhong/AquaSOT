@@ -1,0 +1,126 @@
+# ==============================================================================
+# Sonar-Only Pretraining Configuration
+#
+# Pretrain the sonar branch independently to learn sonar-specific features.
+# Helps initialize the sonar encoder before multi-modal fusion training.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-10
+# ==============================================================================
+
+_base_: ../base/default.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: aquasot3d_pretrain_sonar
+  tags: [uuv2, sonar_only, pretrain, single_modal]
+  notes: "Sonar-only pretraining with log-polar preprocessing"
+  group: pretraining
+
+
+# ------------------------------------------------------------------------------
+# Data Configuration
+# ------------------------------------------------------------------------------
+data:
+  train_root: data/UUV2
+  val_root: data/UUV3
+
+  # Sonar-specific augmentation
+  augmentation:
+    enabled: true
+    brightness: 0.2  # Less aggressive for sonar
+    contrast: 0.25
+    rotation: 15.0
+    scale_range: [0.8, 1.2]
+    random_erase: 0.3  # Simulate sonar noise
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration
+# ------------------------------------------------------------------------------
+model:
+  # Disable RGB branch and fusion
+  backbone:
+    rgb:
+      type: null  # Disable RGB backbone
+
+    sonar:
+      type: sonar_encoder
+      base_channels: 64
+      use_logpolar: true  # Important for sonar
+      output_dim: 768
+
+  fusion:
+    type: null  # Disable fusion
+
+  temporal:
+    enabled: true  # Keep temporal for sonar sequences
+    history_length: 8
+
+  heads:
+    # Only sonar head enabled
+    rgb_box:
+      type: null  # Disable
+
+    sonar_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+
+    fusion_box:
+      type: null  # Disable
+
+    weak3d:
+      type: null  # Disable 3D estimation
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------------------------
+training:
+  num_epochs: 40  # Shorter pretraining
+
+  batch_size: 24  # Can use larger batch
+  gradient_accumulation_steps: 1
+
+  optimizer:
+    lr: 0.0003  # Slightly higher for pretraining
+    weight_decay: 0.0001
+    backbone_lr_multiplier: 1.0  # No pretrained backbone
+
+  scheduler:
+    type: cosine_warmup
+    warmup_epochs: 3
+    t_max: 40
+
+  # Loss weights - Sonar only
+  loss_weights:
+    sonar_box: 1.0
+    sonar_cls: 0.5
+    temporal_smooth: 0.05
+    # All other losses disabled
+    rgb_box: 0.0
+    fusion_box: 0.0
+    weak3d_reg: 0.0
+    weak3d_cycle: 0.0
+    component_consistency: 0.0
+    representation_consistency: 0.0
+
+  val_interval: 5
+
+  checkpoint:
+    save_interval: 5
+    metric: sonar_success_auc  # Use sonar metric
+    mode: max
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/pretrain_sonar
+  checkpoint_dir: outputs/pretrain_sonar/checkpoints
+  log_dir: outputs/pretrain_sonar/logs

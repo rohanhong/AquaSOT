@@ -1,0 +1,55 @@
+# ==============================================================================
+# Ablation: No Vision-Mamba Temporal Modeling
+#
+# Disable Vision-Mamba temporal modeling to assess its contribution.
+# Uses single-frame processing without temporal history.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-10
+# ==============================================================================
+
+_base_: ../train/train_uuv2.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: ablation_no_mamba
+  tags: [ablation, no_mamba, no_temporal]
+  notes: "Ablation study: Disable Vision-Mamba temporal modeling"
+  group: ablation
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration - Disable Temporal
+# ------------------------------------------------------------------------------
+model:
+  temporal:
+    enabled: false  # Disable Vision-Mamba
+    type: null
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------------------------
+training:
+  # Adjust loss weights (no temporal loss)
+  loss_weights:
+    rgb_box: 1.0
+    sonar_box: 1.0
+    fusion_box: 2.0
+    weak3d_reg: 1.0
+    weak3d_cycle: 0.5
+    component_consistency: 0.1
+    representation_consistency: 0.1
+    temporal_smooth: 0.0  # Disabled
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/ablation_no_mamba
+  checkpoint_dir: outputs/ablation_no_mamba/checkpoints
+  log_dir: outputs/ablation_no_mamba/logs

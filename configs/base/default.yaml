@@ -1,0 +1,441 @@
+# ==============================================================================
+# AquaSOT-3D Default Configuration
+#
+# This is the base configuration file containing all default parameters for
+# the AquaSOT-3D multi-modal tracking system.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-10
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# System Configuration
+# ------------------------------------------------------------------------------
+system:
+  # Random seed for reproducibility
+  seed: 42
+
+  # Device configuration
+  device: cuda
+  num_gpus: 1
+
+  # Distributed training
+  distributed: false
+  dist_backend: nccl
+  dist_url: env://
+
+  # Mixed precision training
+  use_amp: true
+  amp_dtype: float16  # float16 or bfloat16
+
+  # Deterministic mode (slower but reproducible)
+  deterministic: false
+  benchmark: true
+
+
+# ------------------------------------------------------------------------------
+# Data Configuration
+# ------------------------------------------------------------------------------
+data:
+  # Dataset paths
+  train_root: data/UUV2
+  val_root: data/UUV3
+  test_root: data/UUV3
+
+  # Dataset splits
+  train_split: train
+  val_split: val
+  test_split: test
+
+  # Dataloader settings
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
+
+  # Image sizes
+  template_size: 127
+  search_size: 255
+
+  # Data augmentation (training)
+  augmentation:
+    enabled: true
+
+    # Color jitter
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.1
+
+    # Geometric transforms
+    rotation: 15.0  # degrees
+    scale_range: [0.8, 1.2]
+    translation_range: [0.1, 0.1]  # fraction of image size
+
+    # Flip
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+
+    # Occlusion simulation
+    random_erase: 0.3
+    erase_ratio: [0.02, 0.2]
+
+  # Normalization
+  normalize:
+    rgb_mean: [0.485, 0.456, 0.406]
+    rgb_std: [0.229, 0.224, 0.225]
+    sonar_mean: [0.5]
+    sonar_std: [0.5]
+
+
+# ------------------------------------------------------------------------------
+# Model Architecture Configuration
+# ------------------------------------------------------------------------------
+model:
+  # Model type
+  type: AquaSOT3DTracker
+
+  # Backbone configuration
+  backbone:
+    # RGB backbone
+    rgb:
+      type: vit_base_patch16  # vit_base_patch16, convnext_base
+      pretrained: true
+      pretrained_path: null  # If null, use timm default
+      freeze_bn: false
+      output_layers: [9, 11]  # Which layers to extract features from
+      embed_dim: 768
+
+    # Sonar encoder
+    sonar:
+      type: sonar_encoder
+      in_channels: 1
+      base_channels: 64
+      num_stages: 3
+      use_logpolar: true  # Enable log-polar transform
+      logpolar:
+        radial_bins: 128
+        angular_bins: 360
+        min_radius: 1.0
+        max_radius: 100.0
+      output_dim: 768  # Match RGB embedding dim
+
+  # Fusion configuration (G²-DCMA)
+  fusion:
+    type: G2DCMAFusion
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 2
+
+    # Geometric gating
+    use_geometry_gating: true
+    geometry_gate_type: adaptive  # adaptive, fixed, learned
+
+    # Quality-aware gating
+    use_quality_gating: true
+    quality_threshold: 0.5
+
+    # Deformable attention
+    use_deformable: true
+    num_points: 4
+    num_levels: 1
+
+    # Dual consistency
+    component_consistency_weight: 0.1
+    representation_consistency_weight: 0.1
+
+  # Temporal modeling (Vision-Mamba)
+  temporal:
+    type: VisionMambaTemporal
+    enabled: true
+    d_model: 768
+    d_state: 16
+    d_conv: 4
+    expand_factor: 2
+    num_layers: 4
+    history_length: 8
+    use_bidirectional: false
+
+  # Prediction heads
+  heads:
+    # RGB box head
+    rgb_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+      num_layers: 3
+      output_format: cxcywh
+
+    # Sonar box head
+    sonar_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+      num_layers: 3
+      output_format: cxcywh
+
+    # Fusion box head
+    fusion_box:
+      type: FusionHead
+      rgb_channels: 768
+      sonar_channels: 768
+      hidden_dim: 256
+      num_layers: 3
+      output_format: cxcywh
+
+    # Weak 3D estimation head
+    weak3d:
+      type: Weak3DHead
+      in_channels: 768
+      hidden_dim: 256
+      output_dim: 3  # X, Y, Z
+      use_cyclic_loss: true
+      cycle_weight: 0.5
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------------------------
+training:
+  # Total training epochs
+  num_epochs: 60
+
+  # Batch sizes
+  batch_size: 16
+  val_batch_size: 32
+  gradient_accumulation_steps: 1
+
+  # Optimizer
+  optimizer:
+    type: adamw
+    lr: 0.0002
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+    # Parameter groups
+    use_layer_decay: true
+    layer_decay_rate: 0.75
+
+    # Backbone specific
+    backbone_lr_multiplier: 0.1
+
+  # Learning rate scheduler
+  scheduler:
+    type: cosine_warmup
+    warmup_epochs: 5
+    warmup_lr: 0.00001
+    min_lr: 0.000001
+
+    # Cosine annealing
+    t_max: 60
+    eta_min: 0.000001
+
+    # Step scheduler (alternative)
+    # type: step
+    # step_size: 20
+    # gamma: 0.1
+
+  # Gradient clipping
+  grad_clip:
+    enabled: true
+    max_norm: 1.0
+    norm_type: 2
+
+  # Loss weights
+  loss_weights:
+    # Box regression losses
+    rgb_box: 1.0
+    sonar_box: 1.0
+    fusion_box: 2.0
+
+    # Classification losses (if applicable)
+    rgb_cls: 0.5
+    sonar_cls: 0.5
+    fusion_cls: 1.0
+
+    # Weak 3D losses
+    weak3d_reg: 1.0
+    weak3d_cycle: 0.5
+
+    # Consistency losses
+    component_consistency: 0.1
+    representation_consistency: 0.1
+
+    # Temporal smoothness
+    temporal_smooth: 0.05
+
+  # Loss weight scheduling
+  loss_schedule:
+    enabled: true
+    type: linear  # linear, step, cosine
+    max_epoch: 60
+
+    # Target weights at end of training
+    target_weights:
+      fusion_box: 3.0
+      weak3d_cycle: 1.0
+
+  # Validation
+  val_interval: 5  # Validate every N epochs
+  val_num_samples: null  # null means use all val data
+
+  # Checkpointing
+  checkpoint:
+    save_interval: 5
+    save_best: true
+    save_last: true
+    max_keep: 5
+    metric: fusion_success_auc  # Metric for best model selection
+    mode: max  # max or min
+
+  # Logging
+  log_interval: 10  # Log every N iterations
+  tensorboard: true
+  wandb: false
+
+  # Resume training
+  resume: null  # Path to checkpoint or null
+  load_optimizer: true
+  load_scheduler: true
+
+
+# ------------------------------------------------------------------------------
+# Evaluation Configuration
+# ------------------------------------------------------------------------------
+evaluation:
+  # Evaluation mode
+  mode: test  # val or test
+
+  # Batch size
+  batch_size: 1  # Usually 1 for tracking evaluation
+
+  # Metrics to compute
+  metrics:
+    - success_auc
+    - precision_20
+    - avg_center_error
+    - mean_iou
+    - success_0.5
+
+  # Per-modality evaluation
+  evaluate_rgb: true
+  evaluate_sonar: true
+  evaluate_fusion: true
+
+  # Visualization
+  visualization:
+    enabled: true
+    save_dir: outputs/visualization
+
+    # What to visualize
+    plot_trajectories: true
+    plot_curves: true
+    plot_attention: false  # Attention maps (slow)
+    create_videos: false  # Create tracking videos (slow)
+
+    # Failure analysis
+    save_failure_cases: true
+    num_best: 5
+    num_worst: 5
+
+  # Result saving
+  save_predictions: true
+  save_metrics: true
+  save_report: true
+  output_dir: outputs/evaluation
+
+
+# ------------------------------------------------------------------------------
+# Ablation Study Configuration
+# ------------------------------------------------------------------------------
+ablation:
+  # Which components to ablate (set to false to disable)
+  components:
+    vision_mamba: true
+    geometry_gating: true
+    quality_gating: true
+    weak3d_cycle: true
+    deformable_attention: true
+    logpolar_transform: true
+    dual_consistency: true
+
+  # Alternative configurations
+  temporal_alternative: null  # null, 'transformer', 'lstm'
+
+
+# ------------------------------------------------------------------------------
+# Demo/Inference Configuration
+# ------------------------------------------------------------------------------
+demo:
+  # Input source
+  input_type: video  # video, images, camera
+  input_path: null  # Path to video/image directory
+  camera_id: 0  # For camera input
+
+  # Initial bounding box
+  init_bbox: null  # [cx, cy, w, h] or null for manual selection
+
+  # Visualization
+  display: true
+  save_video: false
+  output_path: outputs/demo/result.mp4
+
+  # FPS limit
+  fps: 30
+
+  # Modality to display
+  show_modality: fusion  # rgb, sonar, fusion
+
+
+# ------------------------------------------------------------------------------
+# Paths Configuration
+# ------------------------------------------------------------------------------
+paths:
+  # Working directories
+  work_dir: outputs
+  checkpoint_dir: outputs/checkpoints
+  log_dir: outputs/logs
+
+  # Pretrained models
+  pretrained:
+    vit_base: null  # Will use timm default
+    convnext_base: null
+
+  # Data cache
+  cache_dir: .cache
+
+
+# ------------------------------------------------------------------------------
+# Experiment Tracking
+# ------------------------------------------------------------------------------
+experiment:
+  name: aquasot3d_default
+  tags: []
+  notes: ""
+
+  # Experiment ID (auto-generated if null)
+  id: null
+
+  # Group experiments
+  group: default
+
+
+# ------------------------------------------------------------------------------
+# Debugging Configuration
+# ------------------------------------------------------------------------------
+debug:
+  enabled: false
+
+  # Fast dev run (train on small subset)
+  fast_dev_run: false
+  fast_dev_run_steps: 10
+
+  # Profiling
+  profiler: false  # simple, advanced, pytorch
+
+  # Detect anomaly
+  detect_anomaly: false
+
+  # Overfit test (train on 1 batch)
+  overfit_batches: 0  # 0 means disabled, >0 means number of batches

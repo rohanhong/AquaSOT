@@ -1,0 +1,163 @@
+# ==============================================================================
+# Training Configuration for UUV2 Dataset
+#
+# Full multi-modal training with RGB + Sonar on UUV2 dataset.
+# This is the main training configuration for the complete AquaSOT-3D system.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-10
+# ==============================================================================
+
+# Inherit from base configuration
+_base_: ../base/default.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: aquasot3d_uuv2_full
+  tags: [uuv2, rgb, sonar, fusion, full_training]
+  notes: "Full multi-modal training on UUV2 dataset with all components enabled"
+  group: main_training
+
+
+# ------------------------------------------------------------------------------
+# Data Configuration Override
+# ------------------------------------------------------------------------------
+data:
+  train_root: data/UUV2
+  val_root: data/UUV3
+
+  # Use full dataset
+  train_split: train
+  val_split: val
+
+  # Training batch size (adjust based on GPU memory)
+  num_workers: 8
+  prefetch_factor: 4
+
+  # Data augmentation - aggressive for full training
+  augmentation:
+    enabled: true
+    brightness: 0.3
+    contrast: 0.3
+    saturation: 0.2
+    hue: 0.15
+    rotation: 20.0
+    scale_range: [0.7, 1.3]
+    translation_range: [0.15, 0.15]
+    horizontal_flip: 0.5
+    random_erase: 0.4
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration Override
+# ------------------------------------------------------------------------------
+model:
+  # All components enabled
+  fusion:
+    use_geometry_gating: true
+    use_quality_gating: true
+    use_deformable: true
+
+  temporal:
+    enabled: true
+    history_length: 8
+
+  heads:
+    weak3d:
+      use_cyclic_loss: true
+      cycle_weight: 0.5
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration Override
+# ------------------------------------------------------------------------------
+training:
+  # Full training duration
+  num_epochs: 60
+
+  # Batch configuration
+  batch_size: 16  # Reduce if OOM
+  val_batch_size: 32
+  gradient_accumulation_steps: 2  # Effective batch size: 16 * 2 = 32
+
+  # Optimizer
+  optimizer:
+    lr: 0.0002
+    weight_decay: 0.0001
+    use_layer_decay: true
+    layer_decay_rate: 0.75
+    backbone_lr_multiplier: 0.1
+
+  # Scheduler
+  scheduler:
+    type: cosine_warmup
+    warmup_epochs: 5
+    warmup_lr: 0.00001
+    min_lr: 0.000001
+    t_max: 60
+
+  # Loss weights - balanced for full training
+  loss_weights:
+    rgb_box: 1.0
+    sonar_box: 1.0
+    fusion_box: 2.0
+    rgb_cls: 0.5
+    sonar_cls: 0.5
+    fusion_cls: 1.0
+    weak3d_reg: 1.0
+    weak3d_cycle: 0.5
+    component_consistency: 0.1
+    representation_consistency: 0.1
+    temporal_smooth: 0.05
+
+  # Loss scheduling
+  loss_schedule:
+    enabled: true
+    type: linear
+    max_epoch: 60
+    target_weights:
+      fusion_box: 3.0
+      weak3d_cycle: 1.0
+
+  # Validation
+  val_interval: 5
+  val_num_samples: null
+
+  # Checkpointing
+  checkpoint:
+    save_interval: 5
+    save_best: true
+    save_last: true
+    max_keep: 10
+    metric: fusion_success_auc
+    mode: max
+
+  # Logging
+  log_interval: 10
+  tensorboard: true
+  wandb: false
+
+
+# ------------------------------------------------------------------------------
+# System Configuration Override
+# ------------------------------------------------------------------------------
+system:
+  # Use mixed precision for faster training
+  use_amp: true
+  amp_dtype: float16
+
+  # Enable benchmark mode for better performance
+  benchmark: true
+  deterministic: false
+
+
+# ------------------------------------------------------------------------------
+# Paths Override
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/train_uuv2
+  checkpoint_dir: outputs/train_uuv2/checkpoints
+  log_dir: outputs/train_uuv2/logs

@@ -1,0 +1,37 @@
+# ==============================================================================
+# Ablation: No Deformable Attention
+#
+# Disable deformable attention in fusion, use standard attention instead.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-10
+# ==============================================================================
+
+_base_: ../train/train_uuv2.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: ablation_no_deformable
+  tags: [ablation, no_deformable, standard_attention]
+  notes: "Ablation study: Replace deformable attention with standard attention"
+  group: ablation
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration
+# ------------------------------------------------------------------------------
+model:
+  fusion:
+    use_deformable: false  # Use standard attention
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/ablation_no_deformable
+  checkpoint_dir: outputs/ablation_no_deformable/checkpoints
+  log_dir: outputs/ablation_no_deformable/logs
