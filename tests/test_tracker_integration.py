@@ -215,8 +215,8 @@ class TestTrackerIntegration:
         for t in range(seq_length):
             rgb_template = torch.randn(batch_size, 3, 128, 128)
             rgb_search = torch.randn(batch_size, 3, 256, 256)
-            sonar_template = torch.randn(batch_size, 1, 682, 376)
-            sonar_search = torch.randn(batch_size, 1, 682, 376)
+            sonar_template = torch.randn(batch_size, 1, 376, 682)
+            sonar_search = torch.randn(batch_size, 1, 376, 682)
 
             with torch.no_grad():
                 outputs = tracker(
@@ -246,8 +246,8 @@ class TestTrackerIntegration:
         for h_t, w_t, h_s, w_s in resolutions:
             rgb_template = torch.randn(batch_size, 3, h_t, w_t)
             rgb_search = torch.randn(batch_size, 3, h_s, w_s)
-            sonar_template = torch.randn(batch_size, 1, 682, 376)
-            sonar_search = torch.randn(batch_size, 1, 682, 376)
+            sonar_template = torch.randn(batch_size, 1, 376, 682)
+            sonar_search = torch.randn(batch_size, 1, 376, 682)
 
             with torch.no_grad():
                 outputs = tracker(

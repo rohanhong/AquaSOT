@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def generate_fan_mask(
@@ -289,6 +290,15 @@ class SonarGeometryHandler(nn.Module):
         # Expand mask to match batch and channel dimensions
         mask = self.fan_mask.unsqueeze(0)  # (1, 1, H, W)
 
+        # Check if mask size matches input image size
+        if mask.shape[2:] != sonar_img.shape[2:]:
+            # Resize mask to match input dimensions
+            mask = F.interpolate(
+                mask,
+                size=sonar_img.shape[2:],
+                mode='nearest'
+            )
+
         return sonar_img * mask
 
     def apply_radial_weighting(self, sonar_img: torch.Tensor) -> torch.Tensor:
@@ -302,6 +312,16 @@ class SonarGeometryHandler(nn.Module):
             Radially weighted sonar image (B, C, H, W)
         """
         weights = self.radial_weights.unsqueeze(0)  # (1, 1, H, W)
+
+        # Check if weights size matches input image size
+        if weights.shape[2:] != sonar_img.shape[2:]:
+            # Resize weights to match input dimensions
+            weights = F.interpolate(
+                weights,
+                size=sonar_img.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
 
         return sonar_img * weights
 

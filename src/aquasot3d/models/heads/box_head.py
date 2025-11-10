@@ -504,6 +504,62 @@ class BoxHead(BaseHead):
 
         return outputs
 
+    def compute_loss(
+        self,
+        predictions: Dict[str, torch.Tensor],
+        target_boxes: torch.Tensor,
+        target_labels: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Compute box prediction loss from predictions and targets.
+
+        Args:
+            predictions: Dictionary from forward() containing pred_boxes and pred_scores
+            target_boxes: Target boxes in cxcywh format, shape (B, 4)
+            target_labels: Optional target labels (default: all positive)
+
+        Returns:
+            Total loss (scalar)
+        """
+        # Extract predictions
+        pred_boxes = predictions['pred_boxes']
+        pred_scores = predictions['pred_scores']
+
+        # Convert boxes to cxcywh if needed
+        if self.box_format == 'xyxy':
+            pred_boxes_cxcywh = box_xyxy_to_cxcywh(pred_boxes)
+        else:
+            pred_boxes_cxcywh = pred_boxes
+
+        # L1 loss
+        l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes)
+
+        # IoU loss
+        iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes)
+
+        # Classification loss
+        if target_labels is None:
+            target_labels = torch.ones_like(pred_scores)
+
+        if self.use_quality_focal:
+            # Compute IoU as quality target
+            with torch.no_grad():
+                pred_xyxy = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
+                target_xyxy = box_cxcywh_to_xyxy(target_boxes)
+                target_quality = compute_iou(pred_xyxy, target_xyxy)
+            cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
+        else:
+            cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())
+
+        # Total weighted loss
+        total_loss = (
+            cls_loss * self.loss_weight_cls +
+            l1_loss * self.loss_weight_l1 +
+            iou_loss * self.loss_weight_iou
+        )
+
+        return total_loss
+
 
 @PREDICTION_HEAD_REGISTRY.register("RGBBoxHead")
 class RGBBoxHead(BoxHead):

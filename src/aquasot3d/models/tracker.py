@@ -648,7 +648,7 @@ class AquaSOT3DTracker(BaseModule):
             # Consistency losses
             if 'consistency_losses' in fusion_outputs:
                 losses['component_consistency'] = fusion_outputs['consistency_losses']['component_loss']
-                losses['representation_consistency'] = fusion_outputs['consistency_losses']['representation_loss']
+                losses['representation_consistency'] = fusion_outputs['consistency_losses']['infonce_loss']
 
             # 3D losses
             if 'X_consistency_loss' in weak3d_outputs:
