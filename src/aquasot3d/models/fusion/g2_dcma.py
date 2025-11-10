@@ -187,12 +187,30 @@ class G2DCMA(BaseModule):
 
         # Step 3: Feature Fusion
         # Concatenate and fuse
-        concat_features = torch.cat([rgb_features, deformable_attended], dim=1)  # [B, 2C, H_rgb, W_rgb]
-        fused_features = self.fusion_layer(concat_features)  # [B, C, H_rgb, W_rgb]
+        concat_features = torch.cat([rgb_features, deformable_attended], dim=1)  # [B, 2*C_rgb, H_rgb, W_rgb]
+
+        # Check if concat dimension matches fusion_layer expectation
+        concat_dim = concat_features.shape[1]
+        expected_dim = self.embed_dim * 2
+        if concat_dim != expected_dim:
+            # Create dynamic projection layer
+            if not hasattr(self, 'concat_proj'):
+                self.concat_proj = nn.Conv2d(concat_dim, expected_dim, kernel_size=1).to(concat_features.device)
+            concat_features = self.concat_proj(concat_features)  # [B, embed_dim*2, H_rgb, W_rgb]
+
+        fused_features = self.fusion_layer(concat_features)  # [B, embed_dim, H_rgb, W_rgb]
 
         # Residual connection
+        # If rgb_features dimension doesn't match fused_features, project it
+        if rgb_features.shape[1] != fused_features.shape[1]:
+            if not hasattr(self, 'rgb_residual_proj'):
+                self.rgb_residual_proj = nn.Conv2d(rgb_features.shape[1], fused_features.shape[1], kernel_size=1).to(rgb_features.device)
+            rgb_features_proj = self.rgb_residual_proj(rgb_features)
+        else:
+            rgb_features_proj = rgb_features
+
         alpha = torch.sigmoid(self.residual_weight)
-        fused_features = alpha * fused_features + (1 - alpha) * rgb_features
+        fused_features = alpha * fused_features + (1 - alpha) * rgb_features_proj
 
         output = {
             'fused_features': fused_features,

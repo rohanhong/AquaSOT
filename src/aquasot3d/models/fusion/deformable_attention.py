@@ -251,26 +251,46 @@ class DeformableCrossAttention(BaseModule):
         if value_features is None:
             value_features = key_features
 
-        B, C, H_q, W_q = query_features.shape
-        _, _, H_k, W_k = key_features.shape
+        B, C_q, H_q, W_q = query_features.shape
+        _, C_k, H_k, W_k = key_features.shape
+        _, C_v, H_v, W_v = value_features.shape
         N_q = H_q * W_q
+        N_k = H_k * W_k
+        N_v = H_v * W_v
 
         # Flatten spatial dimensions
-        query_flat = query_features.flatten(2).permute(0, 2, 1)  # [B, N_q, C]
-        key_flat = key_features.flatten(2).permute(0, 2, 1)  # [B, N_k, C]
-        value_flat = value_features.flatten(2).permute(0, 2, 1)  # [B, N_k, C]
+        query_flat = query_features.flatten(2).permute(0, 2, 1)  # [B, N_q, C_q]
+        key_flat = key_features.flatten(2).permute(0, 2, 1)  # [B, N_k, C_k]
+        value_flat = value_features.flatten(2).permute(0, 2, 1)  # [B, N_v, C_v]
+
+        # Check if feature dimensions match embed_dim, if not, project them
+        if C_q != self.embed_dim:
+            if not hasattr(self, 'query_input_proj'):
+                self.query_input_proj = nn.Linear(C_q, self.embed_dim).to(query_flat.device)
+            query_flat = self.query_input_proj(query_flat)  # [B, N_q, embed_dim]
+
+        if C_k != self.embed_dim:
+            if not hasattr(self, 'key_input_proj'):
+                self.key_input_proj = nn.Linear(C_k, self.embed_dim).to(key_flat.device)
+            key_flat = self.key_input_proj(key_flat)  # [B, N_k, embed_dim]
+
+        if C_v != self.embed_dim:
+            if not hasattr(self, 'value_input_proj'):
+                self.value_input_proj = nn.Linear(C_v, self.embed_dim).to(value_flat.device)
+            value_flat = self.value_input_proj(value_flat)  # [B, N_k, embed_dim]
 
         # Project to Q, K, V
-        q = self.q_proj(query_flat)  # [B, N_q, C]
-        k = self.k_proj(key_flat)  # [B, N_k, C]
-        v = self.v_proj(value_flat)  # [B, N_k, C]
+        q = self.q_proj(query_flat)  # [B, N_q, embed_dim]
+        k = self.k_proj(key_flat)  # [B, N_k, embed_dim]
+        v = self.v_proj(value_flat)  # [B, N_k, embed_dim]
 
         # Reshape query to multi-head
         q = q.view(B, N_q, self.num_heads, self.head_dim)  # [B, N_q, num_heads, head_dim]
 
         # Reshape projected k and v back to spatial for sampling
-        k_spatial = k.view(B, H_k, W_k, -1).permute(0, 3, 1, 2)  # [B, C, H_k, W_k]
-        v_spatial = v.view(B, H_k, W_k, -1).permute(0, 3, 1, 2)  # [B, C, H_k, W_k]
+        # Note: k and v may have different spatial dimensions if value_features != key_features
+        k_spatial = k.view(B, H_k, W_k, -1).permute(0, 3, 1, 2)  # [B, embed_dim, H_k, W_k]
+        v_spatial = v.view(B, H_v, W_v, -1).permute(0, 3, 1, 2)  # [B, embed_dim, H_v, W_v]
 
         # Predict sampling offsets
         offsets = self.offset_network(query_flat)  # [B, N_q, num_heads, num_points, 2]
@@ -304,7 +324,7 @@ class DeformableCrossAttention(BaseModule):
             head_end = (head_idx + 1) * self.head_dim
 
             k_head_spatial = k_spatial[:, head_start:head_end, :, :]  # [B, head_dim, H_k, W_k]
-            v_head_spatial = v_spatial[:, head_start:head_end, :, :]  # [B, head_dim, H_k, W_k]
+            v_head_spatial = v_spatial[:, head_start:head_end, :, :]  # [B, head_dim, H_v, W_v]
 
             # Sample features
             k_head_sampled = self.sampler(k_head_spatial, head_sampling_flat)  # [B, N_q*num_points, head_dim]
@@ -344,11 +364,18 @@ class DeformableCrossAttention(BaseModule):
         )  # [B, N_q, num_heads, head_dim]
 
         # Reshape and project output
-        attn_output = attn_output.reshape(B, N_q, C)  # [B, N_q, C]
-        attn_output = self.out_proj(attn_output)  # [B, N_q, C]
+        attn_output = attn_output.reshape(B, N_q, self.embed_dim)  # [B, N_q, embed_dim]
+        attn_output = self.out_proj(attn_output)  # [B, N_q, embed_dim]
+
+        # If input query dimension was different, project back to original dimension
+        if C_q != self.embed_dim:
+            if not hasattr(self, 'query_output_proj'):
+                self.query_output_proj = nn.Linear(self.embed_dim, C_q).to(attn_output.device)
+            attn_output = self.query_output_proj(attn_output)  # [B, N_q, C_q]
 
         # Reshape back to spatial dimensions
-        fused_features = attn_output.permute(0, 2, 1).view(B, C, H_q, W_q)  # [B, C, H_q, W_q]
+        output_dim = C_q if C_q != self.embed_dim else self.embed_dim
+        fused_features = attn_output.permute(0, 2, 1).view(B, output_dim, H_q, W_q)  # [B, C_q, H_q, W_q]
 
         return {
             'fused_features': fused_features,
