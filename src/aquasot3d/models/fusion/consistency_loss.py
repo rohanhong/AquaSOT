@@ -368,6 +368,15 @@ class ProjectionHead(BaseModule):
         if features.dim() == 4:
             features = F.adaptive_avg_pool2d(features, 1).flatten(1)
 
+        # Check if input dimension matches expected dimension
+        actual_dim = features.shape[1]
+        expected_dim = self.projection[0].in_features
+        if actual_dim != expected_dim:
+            # Create dynamic projection layer to adapt input dimension
+            if not hasattr(self, 'input_proj'):
+                self.input_proj = nn.Linear(actual_dim, expected_dim).to(features.device)
+            features = self.input_proj(features)
+
         embeddings = self.projection(features)
         return embeddings
 

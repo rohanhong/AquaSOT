@@ -235,6 +235,22 @@ class Weak3DHead(BaseHead):
 
         batch_size = rgb_features.shape[0]
 
+        # Check if feature dimensions match expected dimensions
+        rgb_actual_dim = rgb_features.shape[1]
+        sonar_actual_dim = sonar_features.shape[1]
+
+        if rgb_actual_dim != self.rgb_feat_dim:
+            # Create dynamic projection layer for RGB features
+            if not hasattr(self, 'rgb_input_proj'):
+                self.rgb_input_proj = nn.Linear(rgb_actual_dim, self.rgb_feat_dim).to(rgb_features.device)
+            rgb_features = self.rgb_input_proj(rgb_features)
+
+        if sonar_actual_dim != self.sonar_feat_dim:
+            # Create dynamic projection layer for Sonar features
+            if not hasattr(self, 'sonar_input_proj'):
+                self.sonar_input_proj = nn.Linear(sonar_actual_dim, self.sonar_feat_dim).to(sonar_features.device)
+            sonar_features = self.sonar_input_proj(sonar_features)
+
         # ============================================
         # Z Estimation from Sonar Radial Activation
         # ============================================

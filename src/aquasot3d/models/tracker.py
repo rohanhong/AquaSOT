@@ -372,12 +372,20 @@ class AquaSOT3DTracker(BaseModule):
         Returns:
             Dictionary containing box predictions and losses
         """
+        # Ensure features are tensors (extract from list if needed)
+        if isinstance(rgb_features, list):
+            rgb_features = rgb_features[0]
+        if isinstance(sonar_features, list):
+            sonar_features = sonar_features[0]
+        if isinstance(fused_features, list):
+            fused_features = fused_features[0]
+
         outputs = {}
 
         # RGB box prediction
         rgb_box_outputs = self.rgb_box_head(rgb_features)
         outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
-        outputs['rgb_quality'] = rgb_box_outputs['pred_quality']
+        outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
 
         if gt_boxes is not None and 'rgb' in gt_boxes:
             rgb_loss = self.rgb_box_head.compute_loss(
@@ -389,7 +397,7 @@ class AquaSOT3DTracker(BaseModule):
         # Sonar box prediction
         sonar_box_outputs = self.sonar_box_head(sonar_features)
         outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
-        outputs['sonar_quality'] = sonar_box_outputs['pred_quality']
+        outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
 
         if gt_boxes is not None and 'sonar' in gt_boxes:
             sonar_loss = self.sonar_box_head.compute_loss(
@@ -401,7 +409,7 @@ class AquaSOT3DTracker(BaseModule):
         # Fusion box prediction
         fusion_box_outputs = self.fusion_box_head(fused_features)
         outputs['fusion_boxes'] = fusion_box_outputs['pred_boxes']
-        outputs['fusion_quality'] = fusion_box_outputs['pred_quality']
+        outputs['fusion_quality'] = fusion_box_outputs['pred_scores']
 
         if gt_boxes is not None and 'fusion' in gt_boxes:
             fusion_loss = self.fusion_box_head.compute_loss(
@@ -435,6 +443,12 @@ class AquaSOT3DTracker(BaseModule):
         """
         if not self.use_weak3d:
             return {}
+
+        # Ensure features are tensors (extract from list if needed)
+        if isinstance(rgb_features, list):
+            rgb_features = rgb_features[0]
+        if isinstance(sonar_features, list):
+            sonar_features = sonar_features[0]
 
         # Predict 3D center
         weak3d_outputs = self.weak3d_head(
@@ -581,9 +595,14 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         if self.use_weak3d:
             # Extract sonar radial activation for depth proxy
+            # Ensure sonar_features is a tensor
+            sonar_feat_for_3d = sonar_features
+            if isinstance(sonar_feat_for_3d, list):
+                sonar_feat_for_3d = sonar_feat_for_3d[0]
+
             sonar_radial = extract_radial_activation(
                 sonar_img=sonar_search,
-                sonar_feat_map=sonar_features,
+                sonar_feat_map=sonar_feat_for_3d,
                 num_bins=50
             )
 

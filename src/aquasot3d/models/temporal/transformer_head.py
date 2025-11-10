@@ -129,6 +129,14 @@ class SpatialPositionalEncoding2D(nn.Module):
         # Concatenate and reshape to [C, H, W]
         pos_embed = torch.cat([pos_h, pos_w], dim=-1).permute(2, 0, 1)
 
+        # Check if feature dimension matches expected dimension
+        actual_dim = C
+        if actual_dim != self.d_model:
+            # Create dynamic projection layer to adapt position encoding
+            if not hasattr(self, 'pos_proj'):
+                self.pos_proj = nn.Conv2d(self.d_model, actual_dim, kernel_size=1).to(x.device)
+            pos_embed = self.pos_proj(pos_embed.unsqueeze(0)).squeeze(0)
+
         # Add to features
         x = x + pos_embed.unsqueeze(0)
 
@@ -355,6 +363,19 @@ class TransformerTemporalHead(BaseTemporalHead):
                 f"got shape {features.shape}"
             )
 
+        # Check if input feature dimension matches expected feature_dim
+        if C != self.feature_dim:
+            # Create dynamic projection to adapt input features to expected dimension
+            if not hasattr(self, 'input_feature_proj'):
+                self.input_feature_proj = nn.Conv2d(C, self.feature_dim, kernel_size=1).to(features.device)
+            # Apply projection to each temporal frame
+            features_adapted = []
+            for t in range(T):
+                feat_t_adapted = self.input_feature_proj(features[:, t])
+                features_adapted.append(feat_t_adapted)
+            features = torch.stack(features_adapted, dim=1)  # [B, T, feature_dim, H, W]
+            C = self.feature_dim  # Update C to match projected dimension
+
         # Apply spatial positional encoding
         if self.spatial_encoding:
             features_with_pos = []
@@ -373,7 +394,16 @@ class TransformerTemporalHead(BaseTemporalHead):
             # Extract features for this timestep [B, H*W, C]
             feat_t = features_seq[:, t * H * W:(t + 1) * H * W, :]
             # Create temporal position encoding for this timestep
-            pos_t = self.temporal_pos_enc.pos_embedding[:, t:t + 1, :].expand(B, H * W, C)
+            pos_t_base = self.temporal_pos_enc.pos_embedding[:, t:t + 1, :]  # [1, 1, d_model]
+
+            # Check if temporal position encoding dimension matches actual feature dimension
+            if pos_t_base.shape[-1] != C:
+                # Create dynamic projection layer to adapt temporal positional encoding
+                if not hasattr(self, 'temporal_pos_proj'):
+                    self.temporal_pos_proj = nn.Linear(pos_t_base.shape[-1], C).to(feat_t.device)
+                pos_t_base = self.temporal_pos_proj(pos_t_base)
+
+            pos_t = pos_t_base.expand(B, H * W, C)
             # Add positional encoding
             feat_t_with_pos = feat_t + pos_t
             temporal_pos_features.append(feat_t_with_pos)
@@ -403,6 +433,14 @@ class TransformerTemporalHead(BaseTemporalHead):
         # Aggregate temporal dimension (use last frame)
         # For more sophisticated aggregation, can use attention pooling
         aggregated_features = features_out[:, -1]  # [B, C, H, W]
+
+        # Project back to original dimension if input was adapted
+        if hasattr(self, 'input_feature_proj'):
+            if not hasattr(self, 'output_feature_proj'):
+                # Create inverse projection to restore original dimension
+                original_dim = self.input_feature_proj.in_channels
+                self.output_feature_proj = nn.Conv2d(self.feature_dim, original_dim, kernel_size=1).to(aggregated_features.device)
+            aggregated_features = self.output_feature_proj(aggregated_features)
 
         return aggregated_features, None
 

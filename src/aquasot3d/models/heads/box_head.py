@@ -428,6 +428,14 @@ class BoxHead(BaseHead):
 
         batch_size = features.shape[0]
 
+        # Check if input dimension matches expected dimension
+        actual_dim = features.shape[1]
+        if actual_dim != self.in_channels:
+            # Create dynamic projection layer to adapt input dimension
+            if not hasattr(self, 'input_proj'):
+                self.input_proj = nn.Linear(actual_dim, self.in_channels).to(features.device)
+            features = self.input_proj(features)
+
         # Shared feature processing
         shared_feat = self.shared_mlp(features)  # (B, hidden_dim)
 
