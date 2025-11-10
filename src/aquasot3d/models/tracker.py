@@ -544,11 +544,19 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         # Stage 3: Quality Estimation
         # =====================================================
+        # Ensure features are tensors for fusion_head
+        rgb_features_for_quality = rgb_features
+        sonar_features_for_quality = sonar_features
+        if isinstance(rgb_features_for_quality, list):
+            rgb_features_for_quality = rgb_features_for_quality[0]
+        if isinstance(sonar_features_for_quality, list):
+            sonar_features_for_quality = sonar_features_for_quality[0]
+
         quality_outputs = self.fusion_head(
-            rgb_features, sonar_features
+            rgb_features_for_quality, sonar_features_for_quality
         )
 
-        fusion_quality = quality_outputs['fusion_quality']  # (B,)
+        fusion_quality = quality_outputs['quality_score']  # (B,)
 
         # =====================================================
         # Stage 4: Temporal Modeling (Optional)

@@ -81,6 +81,14 @@ class UncertaintyEstimator(nn.Module):
         elif features.dim() == 3:
             features = features.mean(dim=1)
 
+        # Check if feature dimension matches expected dimension
+        actual_dim = features.shape[1]
+        if actual_dim != self.in_channels:
+            if not hasattr(self, 'input_proj'):
+                # Create dynamic projection layer
+                self.input_proj = nn.Linear(actual_dim, self.in_channels).to(features.device)
+            features = self.input_proj(features)
+
         if self.method == 'learned':
             confidence = self.estimator(features).squeeze(-1)
         elif self.method == 'entropy':
@@ -215,9 +223,29 @@ class AdaptiveFusionGate(nn.Module):
             fusion_weights = torch.ones(batch_size, 2, device=rgb_features.device) * 0.5
 
         elif self.fusion_method == 'uncertainty_weighted':
+            # Check if feature dimensions match expected dimensions
+            rgb_actual_dim = rgb_features.shape[1]
+            sonar_actual_dim = sonar_features.shape[1]
+
+            # Dynamic projection for RGB features if needed
+            if rgb_actual_dim != self.rgb_channels:
+                if not hasattr(self, 'rgb_input_proj'):
+                    self.rgb_input_proj = nn.Linear(rgb_actual_dim, self.rgb_channels).to(rgb_features.device)
+                rgb_features_adapted = self.rgb_input_proj(rgb_features)
+            else:
+                rgb_features_adapted = rgb_features
+
+            # Dynamic projection for Sonar features if needed
+            if sonar_actual_dim != self.sonar_channels:
+                if not hasattr(self, 'sonar_input_proj'):
+                    self.sonar_input_proj = nn.Linear(sonar_actual_dim, self.sonar_channels).to(sonar_features.device)
+                sonar_features_adapted = self.sonar_input_proj(sonar_features)
+            else:
+                sonar_features_adapted = sonar_features
+
             # Project to common space
-            rgb_proj = self.rgb_proj(rgb_features)
-            sonar_proj = self.sonar_proj(sonar_features)
+            rgb_proj = self.rgb_proj(rgb_features_adapted)
+            sonar_proj = self.sonar_proj(sonar_features_adapted)
 
             # Default confidence if not provided
             if rgb_confidence is None:
@@ -227,8 +255,8 @@ class AdaptiveFusionGate(nn.Module):
 
             # Predict fusion weights based on features and confidence
             weight_input = torch.cat([
-                rgb_features,
-                sonar_features,
+                rgb_features_adapted,
+                sonar_features_adapted,
                 rgb_confidence.unsqueeze(-1),
                 sonar_confidence.unsqueeze(-1)
             ], dim=-1)
