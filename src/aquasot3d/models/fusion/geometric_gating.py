@@ -102,6 +102,22 @@ class RadialProfileExtractor(BaseModule):
         r_normalized = (r / (r_max + 1e-6)) * (self.num_bins - 1)
         r_bins = r_normalized.long().clamp(0, self.num_bins - 1)  # [H, W]
 
+        # Check if channel weights need adjustment
+        if self.learnable_weights and self.channel_weights.shape[0] != C:
+            # Dynamically adjust channel weights to match input dimension
+            # This handles cases where input dimension differs from initialization
+            if C > self.feature_dim:
+                # Pad with zeros
+                padding = torch.zeros(C - self.feature_dim, device=device)
+                adjusted_weights = torch.cat([self.channel_weights, padding], dim=0)
+            else:
+                # Truncate
+                adjusted_weights = self.channel_weights[:C]
+            # Renormalize
+            adjusted_weights = adjusted_weights / (adjusted_weights.sum() + 1e-6)
+        else:
+            adjusted_weights = self.channel_weights if self.learnable_weights else None
+
         # Aggregate feature activations per bin
         radial_profiles = []
         for b in range(B):
@@ -110,7 +126,7 @@ class RadialProfileExtractor(BaseModule):
 
             # Weighted channel aggregation
             if self.learnable_weights:
-                feat = (feature_map[b] * self.channel_weights.view(C, 1, 1)).sum(dim=0)  # [H, W]
+                feat = (feature_map[b] * adjusted_weights.view(C, 1, 1)).sum(dim=0)  # [H, W]
             else:
                 feat = feature_map[b].mean(dim=0)  # [H, W]
 
@@ -228,6 +244,14 @@ class ScalePyramidExtractor(BaseModule):
                 pyramid_levels.append(downsampled)
 
         B = rgb_features.shape[0] if not isinstance(rgb_features, list) else pyramid_levels[0].shape[0]
+
+        # Check if input dimension matches expected dimension
+        actual_dim = pyramid_levels[0].shape[1]
+        if actual_dim != self.feature_dim:
+            # Create dynamic projection layer if needed
+            projection = nn.Conv2d(actual_dim, self.feature_dim, kernel_size=1).to(pyramid_levels[0].device)
+            # Project all pyramid levels to expected dimension
+            pyramid_levels = [projection(level) for level in pyramid_levels[:self.num_scales]]
 
         # Extract scale-specific features
         scale_features = []
@@ -391,20 +415,36 @@ class GeometryGatedAttention(BaseModule):
                 - radial_encoding: Radial profile encoding [B, 64]
                 - scale_encoding: Scale pyramid encoding [B, 64]
         """
-        B, C, H_rgb, W_rgb = rgb_features.shape
-        _, _, H_sonar, W_sonar = sonar_features.shape
+        B, C_rgb, H_rgb, W_rgb = rgb_features.shape
+        _, C_sonar, H_sonar, W_sonar = sonar_features.shape
 
-        # Extract geometric encodings
+        # Check if feature dimensions match embed_dim, if not, project them
+        if C_rgb != self.embed_dim:
+            if not hasattr(self, 'rgb_proj'):
+                # Create projection layer on the fly
+                self.rgb_proj = nn.Linear(C_rgb, self.embed_dim).to(rgb_features.device)
+            rgb_flat = rgb_features.flatten(2).permute(0, 2, 1)  # [B, H_rgb*W_rgb, C_rgb]
+            rgb_flat = self.rgb_proj(rgb_flat)  # [B, H_rgb*W_rgb, embed_dim]
+            rgb_features_proj = rgb_flat.permute(0, 2, 1).view(B, self.embed_dim, H_rgb, W_rgb)
+        else:
+            rgb_features_proj = rgb_features
+            rgb_flat = rgb_features.flatten(2).permute(0, 2, 1)
+
+        if C_sonar != self.embed_dim:
+            if not hasattr(self, 'sonar_proj'):
+                # Create projection layer on the fly
+                self.sonar_proj = nn.Linear(C_sonar, self.embed_dim).to(sonar_features.device)
+            sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)  # [B, H_sonar*W_sonar, C_sonar]
+            sonar_flat = self.sonar_proj(sonar_flat)  # [B, H_sonar*W_sonar, embed_dim]
+        else:
+            sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)
+
+        # Extract geometric encodings (using original features)
         radial_encoding = self.radial_extractor(sonar_features)  # [B, 64]
         scale_encoding = self.scale_extractor(rgb_features, rgb_pyramid)  # [B, 64]
 
         # Compute gating weights
         gating_weights = self.gating_function(radial_encoding, scale_encoding)  # [B, num_heads]
-
-        # Reshape features for attention
-        # RGB as queries, Sonar as keys/values
-        rgb_flat = rgb_features.flatten(2).permute(0, 2, 1)  # [B, H_rgb*W_rgb, C]
-        sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)  # [B, H_sonar*W_sonar, C]
 
         N_rgb = H_rgb * W_rgb
         N_sonar = H_sonar * W_sonar
@@ -430,11 +470,19 @@ class GeometryGatedAttention(BaseModule):
         attn_output = torch.matmul(attn_probs, v)  # [B, num_heads, N_rgb, head_dim]
 
         # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).contiguous().view(B, N_rgb, C)  # [B, N_rgb, C]
-        attn_output = self.out_proj(attn_output)  # [B, N_rgb, C]
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, N_rgb, self.embed_dim)  # [B, N_rgb, embed_dim]
+        attn_output = self.out_proj(attn_output)  # [B, N_rgb, embed_dim]
+
+        # If input RGB dimension was different, project back to original dimension
+        if C_rgb != self.embed_dim:
+            if not hasattr(self, 'rgb_out_proj'):
+                # Create output projection layer
+                self.rgb_out_proj = nn.Linear(self.embed_dim, C_rgb).to(attn_output.device)
+            attn_output = self.rgb_out_proj(attn_output)  # [B, N_rgb, C_rgb]
 
         # Reshape back to spatial dimensions
-        fused_features = attn_output.permute(0, 2, 1).view(B, C, H_rgb, W_rgb)  # [B, C, H_rgb, W_rgb]
+        output_dim = C_rgb if C_rgb != self.embed_dim else self.embed_dim
+        fused_features = attn_output.permute(0, 2, 1).view(B, output_dim, H_rgb, W_rgb)  # [B, C_rgb, H_rgb, W_rgb]
 
         return {
             'fused_features': fused_features,
