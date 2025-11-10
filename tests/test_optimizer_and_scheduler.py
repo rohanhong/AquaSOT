@@ -287,7 +287,17 @@ class TestScheduler:
         assert mid_lr < initial_lr
 
     def test_warmup_scheduler_wrapper(self):
-        """Test warmup scheduler wrapper"""
+        """
+        Test warmup scheduler wrapper.
+
+        Warmup schedule with linear mode:
+        - Epoch 0 (before step): base_lr = 2e-4
+        - Epoch 1: lr = warmup_start + (base - warmup_start) * (1/5) ≈ 4.08e-5
+        - Epoch 2: lr = warmup_start + (base - warmup_start) * (2/5) ≈ 8.06e-5
+        - Epoch 3: lr = warmup_start + (base - warmup_start) * (3/5) ≈ 1.20e-4
+        - Epoch 4: lr = warmup_start + (base - warmup_start) * (4/5) ≈ 1.60e-4
+        - Epoch 5+: base scheduler takes over
+        """
         model = SimpleModel()
         optimizer = optim.AdamW(model.parameters(), lr=2e-4)
 
@@ -298,15 +308,30 @@ class TestScheduler:
             warmup_start_lr=1e-6
         )
 
-        initial_lr = get_current_lr(optimizer)[0]
+        # Before first step, lr should still be base lr
+        lr_before_warmup = get_current_lr(optimizer)[0]
+        assert lr_before_warmup == 2e-4
 
-        # Step through warmup
-        for _ in range(5):
+        # Track learning rates during warmup (epochs 1-4)
+        lrs = []
+        for _ in range(4):  # Only 4 steps in warmup (epochs 1-4)
             scheduler.step()
+            lrs.append(get_current_lr(optimizer)[0])
 
-        warmup_end_lr = get_current_lr(optimizer)[0]
+        # Verify warmup progression: lr should increase
+        assert lrs[0] < lrs[1] < lrs[2] < lrs[3]
 
-        assert warmup_end_lr > initial_lr
+        # First warmup step should be > warmup_start_lr
+        assert lrs[0] > 1e-6
+
+        # Last warmup step (epoch 4, alpha=4/5) should be ~1.6e-4
+        assert abs(lrs[3] - 1.6e-4) < 1e-5
+
+        # One more step should exit warmup and use base scheduler
+        scheduler.step()
+        lr_after_warmup = get_current_lr(optimizer)[0]
+        # CosineAnnealingLR at epoch 0 should keep base_lr
+        assert abs(lr_after_warmup - 2e-4) < 1e-5
 
     def test_get_current_lr(self):
         """Test getting current learning rate"""

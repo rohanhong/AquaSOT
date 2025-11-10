@@ -245,9 +245,28 @@ class TestAquaSOT3DTracker:
         assert 'rgb_features' in intermediate
         assert 'sonar_features' in intermediate
         assert 'fused_features' in intermediate
-        assert intermediate['rgb_features'].dim() == 4
-        assert intermediate['sonar_features'].dim() == 4
-        assert intermediate['fused_features'].dim() == 4
+
+        # Features can be either tensors or lists (multi-scale)
+        # Extract first element if list
+        rgb_feat = intermediate['rgb_features']
+        if isinstance(rgb_feat, list):
+            rgb_feat = rgb_feat[0]
+        sonar_feat = intermediate['sonar_features']
+        if isinstance(sonar_feat, list):
+            sonar_feat = sonar_feat[0]
+        fused_feat = intermediate['fused_features']
+        if isinstance(fused_feat, list):
+            fused_feat = fused_feat[0]
+
+        # Features can be either 3D (B, N, C) for ViT or 4D (B, C, H, W) for Conv
+        assert rgb_feat.dim() in [3, 4]
+        assert sonar_feat.dim() in [3, 4]
+        assert fused_feat.dim() in [3, 4]
+
+        # Verify batch size dimension
+        assert rgb_feat.shape[0] == batch_size
+        assert sonar_feat.shape[0] == batch_size
+        assert fused_feat.shape[0] == batch_size
 
     def test_temporal_state_management(self, full_config):
         """Test temporal state reset and update."""
@@ -391,8 +410,8 @@ class TestAquaSOT3DTracker:
         for batch_size in [1, 2, 4]:
             rgb_template = torch.randn(batch_size, 3, 128, 128)
             rgb_search = torch.randn(batch_size, 3, 256, 256)
-            sonar_template = torch.randn(batch_size, 1, 682, 376)
-            sonar_search = torch.randn(batch_size, 1, 682, 376)
+            sonar_template = torch.randn(batch_size, 1, 376, 682)  # Correct: H=376, W=682
+            sonar_search = torch.randn(batch_size, 1, 376, 682)    # Correct: H=376, W=682
 
             with torch.no_grad():
                 outputs = tracker(

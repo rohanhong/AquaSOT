@@ -116,11 +116,13 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         # 2. Cross-Modal Fusion (G2-DCMA)
         # =====================================================
-        fusion_type = fusion_config.pop('type', 'g2_dcma')
+        # Make a copy to avoid modifying the original config (high-generalization fix)
+        fusion_config_copy = fusion_config.copy()
+        fusion_type = fusion_config_copy.pop('type', 'g2_dcma')
         if fusion_type == 'g2_dcma':
-            self.fusion = build_g2_dcma(fusion_config)
+            self.fusion = build_g2_dcma(fusion_config_copy)
         elif fusion_type == 'g2_dcma_lite':
-            self.fusion = build_g2_dcma_lite(fusion_config)
+            self.fusion = build_g2_dcma_lite(fusion_config_copy)
         else:
             raise ValueError(f"Unknown fusion type: {fusion_type}")
 
@@ -133,22 +135,24 @@ class AquaSOT3DTracker(BaseModule):
         self.temporal_aggregator = None
 
         if self.use_temporal and temporal_config is not None:
-            temporal_type = temporal_config.pop('type', 'mamba')
+            # Make a copy to avoid modifying the original config (high-generalization fix)
+            temporal_config_copy = temporal_config.copy()
+            temporal_type = temporal_config_copy.pop('type', 'mamba')
 
             if temporal_type == 'mamba':
                 self.temporal_head = build_vision_mamba_head(
                     feature_dim=self.fused_feat_dim,
-                    **temporal_config
+                    **temporal_config_copy
                 )
             elif temporal_type == 'transformer':
                 self.temporal_head = build_transformer_head(
                     feature_dim=self.fused_feat_dim,
-                    **temporal_config
+                    **temporal_config_copy
                 )
             elif temporal_type == 'artrack':
                 self.temporal_head = build_artrack_head(
                     feature_dim=self.fused_feat_dim,
-                    **temporal_config
+                    **temporal_config_copy
                 )
             else:
                 raise ValueError(f"Unknown temporal type: {temporal_type}")

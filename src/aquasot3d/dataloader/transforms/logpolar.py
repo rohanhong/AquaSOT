@@ -197,14 +197,21 @@ class LogPolarTransform(nn.Module):
         """
         B, C, H, W = sonar_img.shape
 
-        assert H == self.sonar_height and W == self.sonar_width, \
-            f"Input size mismatch: expected ({self.sonar_height}, {self.sonar_width}), got ({H}, {W})"
+        # High-generalization: adapt to input size if different from initialized size
+        if H != self.sonar_height or W != self.sonar_width:
+            # Dynamically compute grid for new dimensions
+            # Scale parameters proportionally
+            scale_h = H / self.sonar_height
+            scale_w = W / self.sonar_width
 
-        # Compute Cartesian sampling grid
-        x_grid, y_grid = self._compute_cartesian_grid()
-
-        # Normalize grid for grid_sample (requires [-1, 1] range)
-        grid_normalized = self._normalize_grid(x_grid, y_grid)
+            # Recompute sampling grid with scaled dimensions
+            # This preserves geometric relationships
+            x_grid, y_grid = self._compute_cartesian_grid_dynamic(H, W, scale_h, scale_w)
+            grid_normalized = self._normalize_grid_dynamic(x_grid, y_grid, H, W)
+        else:
+            # Use cached grids for standard size (performance optimization)
+            x_grid, y_grid = self._compute_cartesian_grid()
+            grid_normalized = self._normalize_grid(x_grid, y_grid)
 
         # Expand grid to match batch size
         grid_batch = grid_normalized.unsqueeze(0).expand(B, -1, -1, -1)  # (B, H_out, W_out, 2)

@@ -279,7 +279,10 @@ class SonarGeometryHandler(nn.Module):
 
     def apply_fan_mask(self, sonar_img: torch.Tensor) -> torch.Tensor:
         """
-        Apply fan-shape mask to sonar image.
+        Apply fan-shape mask to sonar image with adaptive size handling.
+
+        High-generalization approach: regenerates mask for new sizes to maintain
+        geometric accuracy instead of interpolation.
 
         Args:
             sonar_img: Sonar image tensor (B, C, H, W)
@@ -287,23 +290,36 @@ class SonarGeometryHandler(nn.Module):
         Returns:
             Masked sonar image (B, C, H, W)
         """
-        # Expand mask to match batch and channel dimensions
-        mask = self.fan_mask.unsqueeze(0)  # (1, 1, H, W)
+        H, W = sonar_img.shape[2:]
 
         # Check if mask size matches input image size
-        if mask.shape[2:] != sonar_img.shape[2:]:
-            # Resize mask to match input dimensions
-            mask = F.interpolate(
-                mask,
-                size=sonar_img.shape[2:],
-                mode='nearest'
+        if self.fan_mask.shape[1:] != (H, W):
+            # Regenerate mask with correct geometry for new dimensions
+            # This preserves fan-shape properties better than interpolation
+            mask = generate_fan_mask(
+                height=H,
+                width=W,
+                max_range=None if self.max_range is None else self.max_range * (H / self.sonar_height),
+                fov_angle=self.fov_angle,
+                sensor_pos=None if self.sensor_pos is None else (
+                    self.sensor_pos[0] * (W / self.sonar_width),
+                    self.sensor_pos[1] * (H / self.sonar_height)
+                ),
+                device=sonar_img.device
             )
+        else:
+            mask = self.fan_mask
 
+        # Expand mask to match batch and channel dimensions
+        mask = mask.unsqueeze(0)  # (1, 1, H, W)
         return sonar_img * mask
 
     def apply_radial_weighting(self, sonar_img: torch.Tensor) -> torch.Tensor:
         """
-        Apply radial quality weighting to sonar image.
+        Apply radial quality weighting to sonar image with adaptive size handling.
+
+        High-generalization approach: regenerates weights for new sizes to maintain
+        accurate radial decay model instead of interpolation.
 
         Args:
             sonar_img: Sonar image tensor (B, C, H, W)
@@ -311,18 +327,26 @@ class SonarGeometryHandler(nn.Module):
         Returns:
             Radially weighted sonar image (B, C, H, W)
         """
-        weights = self.radial_weights.unsqueeze(0)  # (1, 1, H, W)
+        H, W = sonar_img.shape[2:]
 
         # Check if weights size matches input image size
-        if weights.shape[2:] != sonar_img.shape[2:]:
-            # Resize weights to match input dimensions
-            weights = F.interpolate(
-                weights,
-                size=sonar_img.shape[2:],
-                mode='bilinear',
-                align_corners=False
-            )
+        if self.radial_weights.shape[1:] != (H, W):
+            # Regenerate weights with correct geometry for new dimensions
+            # This preserves radial decay model better than interpolation
+            weights = compute_radial_weights(
+                height=H,
+                width=W,
+                sensor_pos=None if self.sensor_pos is None else (
+                    self.sensor_pos[0] * (W / self.sonar_width),
+                    self.sensor_pos[1] * (H / self.sonar_height)
+                ),
+                decay_factor=self.decay_factor
+            ).to(sonar_img.device)
+        else:
+            weights = self.radial_weights
 
+        # Expand weights to match batch and channel dimensions
+        weights = weights.unsqueeze(0)  # (1, 1, H, W)
         return sonar_img * weights
 
     def get_radial_profile(

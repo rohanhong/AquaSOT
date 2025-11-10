@@ -72,20 +72,24 @@ class TrackingVisualizer:
         Draw tracking result on a frame.
 
         Args:
-            frame: Input frame (H, W, 3)
+            frame: Input frame (H, W, 3) or (H, W)
             pred_box: Predicted bounding box [x, y, w, h] or [cx, cy, w, h]
             gt_box: Ground truth bounding box
             frame_id: Frame number (for annotation)
             save_name: Filename to save (optional)
 
         Returns:
-            Annotated frame
+            Annotated frame (always RGB format)
 
         Example:
             >>> vis_frame = visualizer.draw_tracking_result(frame, pred_box, gt_box, frame_id=0)
         """
         # Copy frame to avoid modifying original
         vis_frame = frame.copy()
+
+        # Convert grayscale to RGB if needed (high-generalization image format handling)
+        if len(vis_frame.shape) == 2:
+            vis_frame = cv2.cvtColor(vis_frame, cv2.COLOR_GRAY2RGB)
 
         # Draw ground truth (red)
         if gt_box is not None:
@@ -145,6 +149,8 @@ class TrackingVisualizer:
         """
         # Draw on RGB frame
         rgb_vis = rgb_frame.copy()
+        if len(rgb_vis.shape) == 2:
+            rgb_vis = cv2.cvtColor(rgb_vis, cv2.COLOR_GRAY2RGB)
         if rgb_gt is not None:
             rgb_vis = self._draw_bbox(rgb_vis, rgb_gt, self.colors['gt'], label='GT')
         if rgb_pred is not None:
@@ -155,7 +161,7 @@ class TrackingVisualizer:
         # Draw on Sonar frame
         sonar_vis = sonar_frame.copy()
         if len(sonar_vis.shape) == 2:
-            sonar_vis = cv2.cvtColor(sonar_vis, cv2.COLOR_GRAY2BGR)
+            sonar_vis = cv2.cvtColor(sonar_vis, cv2.COLOR_GRAY2RGB)
         if sonar_gt is not None:
             sonar_vis = self._draw_bbox(sonar_vis, sonar_gt, self.colors['gt'], label='GT')
         if sonar_pred is not None:
@@ -248,18 +254,18 @@ class TrackingVisualizer:
 
     def plot_success_curves(
         self,
-        rgb_curve: Tuple[np.ndarray, np.ndarray],
-        sonar_curve: Tuple[np.ndarray, np.ndarray],
-        fusion_curve: Tuple[np.ndarray, np.ndarray],
+        rgb_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        sonar_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        fusion_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         save_name: Optional[str] = None
     ) -> Figure:
         """
         Plot success curves for all modalities.
 
         Args:
-            rgb_curve: (thresholds, success_rates) for RGB
-            sonar_curve: (thresholds, success_rates) for Sonar
-            fusion_curve: (thresholds, success_rates) for Fusion
+            rgb_curve: (thresholds, success_rates) for RGB (optional)
+            sonar_curve: (thresholds, success_rates) for Sonar (optional)
+            fusion_curve: (thresholds, success_rates) for Fusion (optional)
             save_name: Filename to save
 
         Returns:
@@ -267,10 +273,13 @@ class TrackingVisualizer:
         """
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Plot curves
-        ax.plot(rgb_curve[0], rgb_curve[1], 'c-', linewidth=2, label='RGB')
-        ax.plot(sonar_curve[0], sonar_curve[1], 'm-', linewidth=2, label='Sonar')
-        ax.plot(fusion_curve[0], fusion_curve[1], 'y-', linewidth=3, label='Fusion')
+        # Plot curves (only if provided)
+        if rgb_curve is not None:
+            ax.plot(rgb_curve[0], rgb_curve[1], 'c-', linewidth=2, label='RGB')
+        if sonar_curve is not None:
+            ax.plot(sonar_curve[0], sonar_curve[1], 'm-', linewidth=2, label='Sonar')
+        if fusion_curve is not None:
+            ax.plot(fusion_curve[0], fusion_curve[1], 'y-', linewidth=3, label='Fusion')
 
         ax.set_xlabel('Overlap Threshold', fontsize=self.font_size)
         ax.set_ylabel('Success Rate', fontsize=self.font_size)
@@ -291,18 +300,18 @@ class TrackingVisualizer:
 
     def plot_precision_curves(
         self,
-        rgb_curve: Tuple[np.ndarray, np.ndarray],
-        sonar_curve: Tuple[np.ndarray, np.ndarray],
-        fusion_curve: Tuple[np.ndarray, np.ndarray],
+        rgb_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        sonar_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        fusion_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         save_name: Optional[str] = None
     ) -> Figure:
         """
         Plot precision curves for all modalities.
 
         Args:
-            rgb_curve: (thresholds, precisions) for RGB
-            sonar_curve: (thresholds, precisions) for Sonar
-            fusion_curve: (thresholds, precisions) for Fusion
+            rgb_curve: (thresholds, precisions) for RGB (optional)
+            sonar_curve: (thresholds, precisions) for Sonar (optional)
+            fusion_curve: (thresholds, precisions) for Fusion (optional)
             save_name: Filename to save
 
         Returns:
@@ -310,10 +319,13 @@ class TrackingVisualizer:
         """
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Plot curves
-        ax.plot(rgb_curve[0], rgb_curve[1], 'c-', linewidth=2, label='RGB')
-        ax.plot(sonar_curve[0], sonar_curve[1], 'm-', linewidth=2, label='Sonar')
-        ax.plot(fusion_curve[0], fusion_curve[1], 'y-', linewidth=3, label='Fusion')
+        # Plot curves (only if provided)
+        if rgb_curve is not None:
+            ax.plot(rgb_curve[0], rgb_curve[1], 'c-', linewidth=2, label='RGB')
+        if sonar_curve is not None:
+            ax.plot(sonar_curve[0], sonar_curve[1], 'm-', linewidth=2, label='Sonar')
+        if fusion_curve is not None:
+            ax.plot(fusion_curve[0], fusion_curve[1], 'y-', linewidth=3, label='Fusion')
 
         ax.set_xlabel('Location Error Threshold (pixels)', fontsize=self.font_size)
         ax.set_ylabel('Precision', fontsize=self.font_size)
@@ -335,46 +347,58 @@ class TrackingVisualizer:
         self,
         frame: np.ndarray,
         attention_map: np.ndarray,
-        save_name: Optional[str] = None
-    ) -> Figure:
+        save_name: Optional[str] = None,
+        alpha: float = 0.5,
+        pred_box: Optional[np.ndarray] = None,
+        gt_box: Optional[np.ndarray] = None
+    ) -> np.ndarray:
         """
         Visualize attention map overlaid on frame.
 
         Args:
-            frame: Input frame
+            frame: Input frame (H, W, 3) or (H, W)
             attention_map: Attention weights (H, W)
             save_name: Filename to save
+            alpha: Transparency for attention overlay (0-1)
+            pred_box: Optional prediction box to draw
+            gt_box: Optional ground truth box to draw
 
         Returns:
-            Matplotlib figure
+            Visualization frame with attention overlay (high-generalization implementation)
         """
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-        # Original frame
-        ax1.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        ax1.set_title('Original Frame', fontsize=self.font_size + 2)
-        ax1.axis('off')
-
-        # Attention overlay
-        ax2.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), alpha=0.5)
+        # Convert frame to RGB for visualization (high-generalization format handling)
+        if len(frame.shape) == 2:
+            vis_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        else:
+            vis_frame = frame.copy()
 
         # Resize attention map if needed
         if attention_map.shape[:2] != frame.shape[:2]:
             attention_map = cv2.resize(attention_map, (frame.shape[1], frame.shape[0]))
 
-        im = ax2.imshow(attention_map, cmap='jet', alpha=0.5)
-        ax2.set_title('Attention Map Overlay', fontsize=self.font_size + 2)
-        ax2.axis('off')
+        # Normalize attention map to 0-255
+        attention_normalized = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
+        attention_normalized = (attention_normalized * 255).astype(np.uint8)
 
-        plt.colorbar(im, ax=ax2, fraction=0.046, pad=0.04)
-        plt.tight_layout()
+        # Apply colormap (jet)
+        attention_colored = cv2.applyColorMap(attention_normalized, cv2.COLORMAP_JET)
+        attention_colored = cv2.cvtColor(attention_colored, cv2.COLOR_BGR2RGB)
+
+        # Blend with original frame
+        result = cv2.addWeighted(vis_frame, 1 - alpha, attention_colored, alpha, 0)
+
+        # Draw bounding boxes if provided
+        if gt_box is not None:
+            result = self._draw_bbox(result, gt_box, self.colors['gt'], label='GT')
+        if pred_box is not None:
+            result = self._draw_bbox(result, pred_box, self.colors['pred'], label='Pred')
 
         # Save if requested
         if save_name and self.save_dir:
             save_path = self.save_dir / save_name
-            fig.savefig(save_path, dpi=self.dpi, bbox_inches='tight')
+            cv2.imwrite(str(save_path), cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
 
-        return fig
+        return result
 
     def create_failure_case_report(
         self,
@@ -504,6 +528,103 @@ class TrackingVisualizer:
             )
 
         return frame
+
+    def visualize_batch_results(
+        self,
+        rgb_frames: List[np.ndarray],
+        sonar_frames: List[np.ndarray],
+        predictions: Dict[str, List[np.ndarray]],
+        save_frames: bool = False,
+        prefix: str = 'frame'
+    ) -> List[np.ndarray]:
+        """
+        Visualize batch of multi-modal tracking results.
+
+        Args:
+            rgb_frames: List of RGB frames
+            sonar_frames: List of sonar frames
+            predictions: Dictionary of predictions with keys:
+                - 'rgb_pred': RGB predictions
+                - 'sonar_pred': Sonar predictions
+                - 'fusion_pred': Fusion predictions
+                - 'rgb_gt': RGB ground truth (optional)
+                - 'sonar_gt': Sonar ground truth (optional)
+            save_frames: Whether to save individual frames
+            prefix: Prefix for saved frame filenames
+
+        Returns:
+            List of visualization frames
+        """
+        results = []
+        num_frames = len(rgb_frames)
+
+        for i in range(num_frames):
+            # Get predictions for this frame
+            rgb_pred = predictions.get('rgb_pred', [None] * num_frames)[i]
+            sonar_pred = predictions.get('sonar_pred', [None] * num_frames)[i]
+            fusion_pred = predictions.get('fusion_pred', [None] * num_frames)[i]
+            rgb_gt = predictions.get('rgb_gt', [None] * num_frames)[i]
+            sonar_gt = predictions.get('sonar_gt', [None] * num_frames)[i]
+
+            # Draw multi-modal result
+            vis_frame = self.draw_multi_modal_result(
+                rgb_frames[i],
+                sonar_frames[i],
+                rgb_pred=rgb_pred,
+                sonar_pred=sonar_pred,
+                fusion_pred=fusion_pred,
+                rgb_gt=rgb_gt,
+                sonar_gt=sonar_gt,
+                frame_id=i,
+                save_name=f'{prefix}_{i:04d}.png' if save_frames else None
+            )
+            results.append(vis_frame)
+
+        return results
+
+    def create_video_from_frames(
+        self,
+        frames: List[np.ndarray],
+        output_filename: str,
+        fps: int = 30
+    ) -> Optional[str]:
+        """
+        Create video from list of frames.
+
+        Args:
+            frames: List of frames (H, W, 3)
+            output_filename: Output video filename (relative to save_dir)
+            fps: Frames per second
+
+        Returns:
+            Output path if successful, None otherwise
+        """
+        if len(frames) == 0:
+            logger.warning("No frames to save")
+            return None
+
+        if not self.save_dir:
+            logger.warning("No save_dir specified, cannot create video")
+            return None
+
+        output_path = self.save_dir / output_filename
+        height, width = frames[0].shape[:2]
+
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+        for frame in frames:
+            # Convert RGB to BGR for OpenCV
+            if len(frame.shape) == 3 and frame.shape[2] == 3:
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:
+                frame_bgr = frame
+            writer.write(frame_bgr)
+
+        writer.release()
+        logger.info(f"Saved video to: {output_path}")
+        return str(output_path)
 
 
 def create_video_from_frames(

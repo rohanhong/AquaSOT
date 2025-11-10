@@ -28,14 +28,59 @@ from aquasot3d.training.scheduler import build_scheduler
 
 
 class SimpleModel(nn.Module):
-    """Simple model for testing"""
+    """
+    Simple model for testing that mimics AquaSOT3DTracker interface.
+
+    Expected by Trainer:
+    - forward(rgb_template, rgb_search, sonar_template, sonar_search)
+    - Returns dict with 'rgb_box', 'sonar_box', 'fusion_box' predictions
+    """
     def __init__(self):
         super().__init__()
-        self.linear = nn.Linear(10, 2)
+        # Simple feature extractors
+        self.rgb_encoder = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        self.sonar_encoder = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+        # Box prediction heads (output 4 values: cx, cy, w, h)
+        self.rgb_box_head = nn.Linear(3, 4)
+        self.sonar_box_head = nn.Linear(1, 4)
+        self.fusion_box_head = nn.Linear(4, 4)  # Fused features
 
-    def forward(self, x, *args):
-        # Accept variable arguments for compatibility
-        return self.linear(x)
+    def forward(self, rgb_template, rgb_search, sonar_template, sonar_search):
+        """
+        Forward pass matching Tracker interface.
+
+        Args:
+            rgb_template: (B, 3, H, W)
+            rgb_search: (B, 3, H, W)
+            sonar_template: (B, 1, H, W)
+            sonar_search: (B, 1, H, W)
+
+        Returns:
+            dict with 'rgb_box', 'sonar_box', 'fusion_box' predictions
+        """
+        # Extract features
+        rgb_feat = self.rgb_encoder(rgb_search)  # (B, 3)
+        sonar_feat = self.sonar_encoder(sonar_search)  # (B, 1)
+
+        # Predict boxes
+        rgb_box = self.rgb_box_head(rgb_feat)  # (B, 4)
+        sonar_box = self.sonar_box_head(sonar_feat)  # (B, 4)
+
+        # Fusion (concatenate and predict)
+        fusion_feat = torch.cat([rgb_feat, sonar_feat], dim=1)  # (B, 4)
+        fusion_box = self.fusion_box_head(fusion_feat)  # (B, 4)
+
+        return {
+            'rgb_box': rgb_box,
+            'sonar_box': sonar_box,
+            'fusion_box': fusion_box
+        }
 
 
 class TestCheckpointManager:

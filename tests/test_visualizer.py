@@ -214,7 +214,7 @@ class TestTrajectoryPlotting:
             visualizer = TrackingVisualizer(save_dir=tmpdir)
 
             centers_3d = np.array([[i, i, i] for i in range(5)])
-            fig = visualizer.plot_trajectory_3d(centers_3d, filename='trajectory.png')
+            fig = visualizer.plot_trajectory_3d(centers_3d, save_name='trajectory.png')
 
             save_path = Path(tmpdir) / 'trajectory.png'
             assert save_path.exists()
@@ -273,7 +273,7 @@ class TestSuccessCurvePlotting:
 
             fig = visualizer.plot_success_curves(
                 fusion_curve=fusion_curve,
-                filename='success_curves.png'
+                save_name='success_curves.png'
             )
 
             save_path = Path(tmpdir) / 'success_curves.png'
@@ -321,7 +321,7 @@ class TestPrecisionCurvePlotting:
 
             fig = visualizer.plot_precision_curves(
                 fusion_curve=fusion_curve,
-                filename='precision_curves.png'
+                save_name='precision_curves.png'
             )
 
             save_path = Path(tmpdir) / 'precision_curves.png'
@@ -419,7 +419,7 @@ class TestFailureCaseReport:
 
             fig = visualizer.create_failure_case_report(
                 'test_seq', frames, pred_boxes, gt_boxes, metrics,
-                filename='failure_report.png'
+                save_name='failure_report.png'
             )
 
             save_path = Path(tmpdir) / 'failure_report.png'

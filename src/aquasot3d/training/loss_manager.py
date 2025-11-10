@@ -133,11 +133,11 @@ class LossManager(nn.Module):
         # ============================================
         # 1. RGB Branch Losses
         # ============================================
-        if 'rgb_box' in predictions and 'rgb_box' in targets:
-            rgb_box_loss = self._compute_box_loss(
-                predictions['rgb_box'],
-                targets['rgb_box']
-            )
+        # Support both singular and plural forms (avoid tensor boolean ambiguity)
+        rgb_box_pred = predictions.get('rgb_box') if 'rgb_box' in predictions else predictions.get('rgb_boxes')
+        rgb_box_target = targets.get('rgb_box') if 'rgb_box' in targets else targets.get('rgb_boxes')
+        if rgb_box_pred is not None and rgb_box_target is not None:
+            rgb_box_loss = self._compute_box_loss(rgb_box_pred, rgb_box_target)
             loss_dict['rgb_box'] = rgb_box_loss
 
         if 'rgb_cls' in predictions and 'rgb_cls' in targets:
@@ -150,11 +150,10 @@ class LossManager(nn.Module):
         # ============================================
         # 2. Sonar Branch Losses
         # ============================================
-        if 'sonar_box' in predictions and 'sonar_box' in targets:
-            sonar_box_loss = self._compute_box_loss(
-                predictions['sonar_box'],
-                targets['sonar_box']
-            )
+        sonar_box_pred = predictions.get('sonar_box') if 'sonar_box' in predictions else predictions.get('sonar_boxes')
+        sonar_box_target = targets.get('sonar_box') if 'sonar_box' in targets else targets.get('sonar_boxes')
+        if sonar_box_pred is not None and sonar_box_target is not None:
+            sonar_box_loss = self._compute_box_loss(sonar_box_pred, sonar_box_target)
             loss_dict['sonar_box'] = sonar_box_loss
 
         if 'sonar_cls' in predictions and 'sonar_cls' in targets:
@@ -167,11 +166,10 @@ class LossManager(nn.Module):
         # ============================================
         # 3. Fusion Branch Losses
         # ============================================
-        if 'fusion_box' in predictions and 'fusion_box' in targets:
-            fusion_box_loss = self._compute_box_loss(
-                predictions['fusion_box'],
-                targets['fusion_box']
-            )
+        fusion_box_pred = predictions.get('fusion_box') if 'fusion_box' in predictions else predictions.get('fusion_boxes')
+        fusion_box_target = targets.get('fusion_box') if 'fusion_box' in targets else targets.get('fusion_boxes')
+        if fusion_box_pred is not None and fusion_box_target is not None:
+            fusion_box_loss = self._compute_box_loss(fusion_box_pred, fusion_box_target)
             loss_dict['fusion_box'] = fusion_box_loss
 
         if 'fusion_cls' in predictions and 'fusion_cls' in targets:
@@ -208,16 +206,26 @@ class LossManager(nn.Module):
         # ============================================
         # 7. Combine All Losses
         # ============================================
-        total_loss = torch.tensor(0.0, device=self._get_device(predictions))
+        # Collect weighted losses first to ensure proper gradient tracking
+        weighted_losses = {}
+        loss_components = []
 
         for loss_name, loss_value in loss_dict.items():
             if loss_name in weights and loss_value is not None:
                 weighted_loss = weights[loss_name] * loss_value
-                total_loss = total_loss + weighted_loss
+                loss_components.append(weighted_loss)
+                weighted_losses[f'{loss_name}_weighted'] = weighted_loss
 
-                # Log individual weighted loss
-                loss_dict[f'{loss_name}_weighted'] = weighted_loss
+        # Compute total loss with proper gradient tracking
+        if len(loss_components) > 0:
+            total_loss = sum(loss_components)
+        else:
+            # Fallback: create zero tensor with gradient tracking
+            device = self._get_device(predictions)
+            total_loss = torch.tensor(0.0, device=device, requires_grad=True)
 
+        # Second pass: add weighted losses to dict
+        loss_dict.update(weighted_losses)
         loss_dict['total'] = total_loss
 
         # Store for logging
