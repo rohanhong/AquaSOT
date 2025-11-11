@@ -32,7 +32,8 @@ from torch.utils.data import DataLoader
 import logging
 
 from aquasot3d.utils.config import load_config, save_config, setup_config_logging
-from aquasot3d.dataloader import RGBSonarDataset, create_dataloader
+from aquasot3d.dataloader import RGBSonarDataset, TrackingDataset, create_dataloader
+from aquasot3d.dataloader.loader import collate_fn_template_search
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.training import Trainer, LossManager, build_optimizer, build_scheduler
 
@@ -81,52 +82,123 @@ def setup_distributed(cfg):
 
 
 def build_model(cfg):
-    """Build tracking model"""
+    """Build tracking model with proper config preprocessing"""
     logger.info(f"Building model: {cfg.model.type}")
-    
-    # Build model based on config
+
+    # Convert ConfigDict to plain dict for model building
+    from aquasot3d.utils.config import _config_to_dict
+
+    # Prepare backbone configs
+    rgb_backbone_cfg = _config_to_dict(cfg.model.backbone.rgb) if cfg.model.backbone.rgb.get('type') not in [None, 'null'] else None
+    sonar_backbone_cfg = _config_to_dict(cfg.model.backbone.sonar) if cfg.model.backbone.sonar.get('type') not in [None, 'null'] else None
+
+    # Prepare fusion config
+    fusion_cfg = _config_to_dict(cfg.model.fusion) if cfg.model.fusion.get('type') not in [None, 'null'] else None
+
+    # Prepare temporal config (remove control parameters)
+    temporal_cfg = None
+    if cfg.model.temporal.get('enabled', True) and cfg.model.temporal.get('type') not in [None, 'null']:
+        temporal_cfg = _config_to_dict(cfg.model.temporal)
+
+    # Prepare head configs (remove 'type' and 'in_channels' which will be provided by tracker)
+    def clean_head_config(head_cfg):
+        """Remove parameters that tracker will provide explicitly"""
+        if not head_cfg or head_cfg.get('type') in [None, 'null']:
+            return None
+        cfg_dict = _config_to_dict(head_cfg)
+        cfg_dict.pop('type', None)
+        cfg_dict.pop('in_channels', None)
+        cfg_dict.pop('rgb_channels', None)
+        cfg_dict.pop('sonar_channels', None)
+        return cfg_dict
+
+    box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
+    fusion_head_cfg = clean_head_config(cfg.model.heads.get('fusion_box', {}))
+    weak3d_cfg = clean_head_config(cfg.model.heads.get('weak3d', {}))
+
+    # Determine use_weak3d
+    use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
+
+    # Build model
     model = AquaSOT3DTracker(
-        rgb_backbone_type=cfg.model.backbone.rgb.type,
-        sonar_encoder_type=cfg.model.backbone.sonar.type,
-        fusion_config=cfg.model.fusion,
-        temporal_config=cfg.model.temporal,
-        head_configs=cfg.model.heads
+        rgb_backbone_config=rgb_backbone_cfg,
+        sonar_backbone_config=sonar_backbone_cfg,
+        fusion_config=fusion_cfg,
+        temporal_config=temporal_cfg,
+        box_head_config=box_head_cfg,
+        fusion_head_config=fusion_head_cfg,
+        weak3d_config=weak3d_cfg,
+        use_temporal=cfg.model.temporal.get('enabled', True),
+        use_weak3d=use_weak3d
     )
-    
+
     logger.info(f"Model built successfully")
     logger.info(f"Total parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-    
+
     return model
 
 
 def build_dataloaders(cfg):
     """Build training and validation dataloaders"""
     logger.info("Building dataloaders")
-    
-    # Training dataloader
+
+    # Create base datasets (single frames)
+    train_base_dataset = RGBSonarDataset(
+        data_root='data',
+        sequence_name='uuv2',  # Will look in data/uuv2/light and data/uuv2/sonar
+        return_occluded=True
+    )
+
+    val_base_dataset = RGBSonarDataset(
+        data_root='data',
+        sequence_name='uuv3',  # Will look in data/uuv3/light and data/uuv3/sonar
+        return_occluded=True
+    )
+
+    # Wrap with TrackingDataset for template-search pair sampling
+    template_search_gap = cfg.data.get('template_search_gap', 30)
+    template_size = cfg.data.get('template_size', 127)
+    search_size = cfg.data.get('search_size', 255)
+
+    train_dataset = TrackingDataset(
+        base_dataset=train_base_dataset,
+        template_search_gap=template_search_gap,
+        template_size=template_size,
+        search_size=search_size
+    )
+    val_dataset = TrackingDataset(
+        base_dataset=val_base_dataset,
+        template_search_gap=template_search_gap,
+        template_size=template_size,
+        search_size=search_size
+    )
+
+    logger.info(f"Train dataset: {len(train_dataset)} samples")
+    logger.info(f"Val dataset: {len(val_dataset)} samples")
+
+    # Create dataloaders with template-search collate function
     train_loader = create_dataloader(
-        root=cfg.data.train_root,
-        split=cfg.data.train_split,
+        dataset=train_dataset,
         batch_size=cfg.training.batch_size,
-        num_workers=cfg.data.num_workers,
-        pin_memory=cfg.data.pin_memory,
         shuffle=True,
-        augmentation=cfg.data.augmentation if cfg.data.augmentation.enabled else None
-    )
-    
-    # Validation dataloader
-    val_loader = create_dataloader(
-        root=cfg.data.val_root,
-        split=cfg.data.val_split,
-        batch_size=cfg.training.val_batch_size,
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
-        shuffle=False,
-        augmentation=None  # No augmentation for validation
+        collate_fn=collate_fn_template_search,
+        distributed=cfg.system.distributed
     )
-    
+
+    val_loader = create_dataloader(
+        dataset=val_dataset,
+        batch_size=cfg.training.val_batch_size,
+        shuffle=False,
+        num_workers=cfg.data.num_workers,
+        pin_memory=cfg.data.pin_memory,
+        collate_fn=collate_fn_template_search,
+        distributed=False  # No distributed for validation
+    )
+
     logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
-    
+
     return train_loader, val_loader
 
 
@@ -185,15 +257,20 @@ def main():
     )
     
     # Build optimizer
-    optimizer = build_optimizer(
-        model,
-        optimizer_type=cfg.training.optimizer.type,
-        base_lr=cfg.training.optimizer.lr,
-        weight_decay=cfg.training.optimizer.weight_decay,
-        betas=cfg.training.optimizer.betas,
-        use_layer_decay=cfg.training.optimizer.use_layer_decay,
-        layer_decay_rate=cfg.training.optimizer.layer_decay_rate if cfg.training.optimizer.use_layer_decay else None
-    )
+    # Prepare optimizer parameters (separate control params from actual params)
+    optimizer_params = {
+        'model': model,
+        'optimizer_type': cfg.training.optimizer.type,
+        'base_lr': cfg.training.optimizer.lr,
+        'weight_decay': cfg.training.optimizer.weight_decay,
+        'betas': cfg.training.optimizer.betas,
+    }
+
+    # Add layer_decay only if use_layer_decay is enabled
+    if cfg.training.optimizer.get('use_layer_decay', False):
+        optimizer_params['layer_decay'] = cfg.training.optimizer.get('layer_decay_rate', 0.75)
+
+    optimizer = build_optimizer(**optimizer_params)
     
     # Build scheduler
     scheduler = build_scheduler(
@@ -215,6 +292,7 @@ def main():
         val_loader=val_loader,
         cfg=cfg,
         device=cfg.system.device,
+        max_epochs=cfg.training.num_epochs,
         use_amp=cfg.system.use_amp,
         grad_clip_norm=cfg.training.grad_clip.max_norm if cfg.training.grad_clip.enabled else None,
         checkpoint_dir=cfg.paths.checkpoint_dir,
@@ -239,10 +317,7 @@ def main():
     logger.info("="*70)
     
     try:
-        trainer.train(
-            num_epochs=cfg.training.num_epochs,
-            start_epoch=start_epoch
-        )
+        trainer.train(start_epoch=start_epoch)
     except KeyboardInterrupt:
         logger.info("Training interrupted by user")
         if is_main_process:

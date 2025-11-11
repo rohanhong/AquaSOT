@@ -99,12 +99,12 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
     Returns:
         Batched dictionary with stacked tensors
 
-    Sample structure:
+    Sample structure (TrackingDataset format):
         batch[i] = {
-            'template_rgb': ndarray (H_t, W_t, 3),
-            'template_sonar': ndarray (H_t, W_t, 3),
-            'search_rgb': ndarray (H_s, W_s, 3),
-            'search_sonar': ndarray (H_s, W_s, 3),
+            'rgb_template': Tensor (C, H_t, W_t),
+            'rgb_search': Tensor (C, H_s, W_s),
+            'sonar_template': Tensor (C, H_t, W_t),
+            'sonar_search': Tensor (C, H_s, W_s),
             'template_bbox_rgb': ndarray [x, y, w, h],
             'template_bbox_sonar': ndarray [x, y, w, h],
             'search_bbox_rgb': ndarray [x, y, w, h],
@@ -121,37 +121,35 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
 
     batched = {}
 
-    # Handle image arrays
-    image_keys = ['template_rgb', 'template_sonar', 'search_rgb', 'search_sonar']
+    # Handle image tensors (trainer expects: rgb_template, rgb_search, sonar_template, sonar_search)
+    image_keys = ['rgb_template', 'rgb_search', 'sonar_template', 'sonar_search']
     for key in image_keys:
         if key in batch[0]:
             imgs = [sample[key] for sample in batch]
 
-            # Convert to tensors
-            if isinstance(imgs[0], np.ndarray):
-                # Transpose (H, W, C) -> (C, H, W) and stack
-                imgs_tensor = [
-                    torch.from_numpy(img.transpose(2, 0, 1).copy())
-                    for img in imgs
-                ]
-                batched[key] = torch.stack(imgs_tensor, dim=0)
-            elif isinstance(imgs[0], torch.Tensor):
+            # Stack tensors (already in CHW format from TrackingDataset)
+            if isinstance(imgs[0], torch.Tensor):
                 batched[key] = torch.stack(imgs, dim=0)
+            elif isinstance(imgs[0], np.ndarray):
+                # Convert numpy arrays to tensors
+                imgs_tensor = [torch.from_numpy(img) for img in imgs]
+                batched[key] = torch.stack(imgs_tensor, dim=0)
 
     # Handle bounding boxes
     bbox_keys = [
         'template_bbox_rgb', 'template_bbox_sonar',
         'search_bbox_rgb', 'search_bbox_sonar',
-        'search_region_rgb', 'search_region_sonar'
+        'search_region_rgb', 'search_region_sonar',
+        'rgb_boxes', 'sonar_boxes'  # Trainer-expected keys for loss computation
     ]
     for key in bbox_keys:
         if key in batch[0]:
             bboxes = [sample[key] for sample in batch]
 
             if isinstance(bboxes[0], np.ndarray):
-                batched[key] = torch.from_numpy(np.stack(bboxes, axis=0))
+                batched[key] = torch.from_numpy(np.stack(bboxes, axis=0).astype(np.float32))
             else:
-                batched[key] = torch.stack([torch.tensor(bbox) for bbox in bboxes], dim=0)
+                batched[key] = torch.stack([torch.tensor(bbox, dtype=torch.float32) for bbox in bboxes], dim=0)
 
     # Handle scalar values
     scalar_keys = ['template_idx', 'search_idx', 'is_valid', 'is_rgb_valid', 'is_sonar_valid']

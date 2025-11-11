@@ -1,0 +1,146 @@
+# ==============================================================================
+# Multi-Modal Fusion Test Configuration (Small Scale)
+#
+# Quick test configuration for Stage 3 validation with minimal resources.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-11
+# ==============================================================================
+
+_base_: ../base/default.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: aquasot3d_test_fusion
+  tags: [test, multimodal, fusion, debug]
+  notes: "Small-scale multi-modal fusion test for validation"
+  group: testing
+
+
+# ------------------------------------------------------------------------------
+# Data Configuration
+# ------------------------------------------------------------------------------
+data:
+  train_root: data/uuv2
+  val_root: data/uuv3
+  num_workers: 2
+  prefetch_factor: 1
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration
+# ------------------------------------------------------------------------------
+model:
+  # All components enabled
+  backbone:
+    rgb:
+      type: vit_rgb
+      model_name: vit_base_patch16_224
+      pretrained: true
+      output_dim: 768
+    sonar:
+      type: sonar
+      encoder_type: vit
+      use_logpolar: true
+      output_dim: 768
+
+  fusion:
+    type: G2DCMAFusion
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 2
+
+  temporal:
+    enabled: true
+    type: VisionMambaTemporal
+    history_length: 4
+
+  heads:
+    rgb_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+
+    sonar_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+
+    fusion_box:
+      type: FusionHead
+      rgb_channels: 768
+      sonar_channels: 768
+      hidden_dim: 256
+
+    weak3d:
+      type: Weak3DHead
+      in_channels: 768
+      hidden_dim: 256
+      output_dim: 3
+      use_cyclic_loss: true
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------------------------
+training:
+  num_epochs: 5
+
+  batch_size: 2  # Smaller batch for full model
+  gradient_accumulation_steps: 2  # Effective batch = 4
+
+  optimizer:
+    lr: 0.0002
+    weight_decay: 0.0001
+    backbone_lr_multiplier: 0.1
+
+  scheduler:
+    type: cosine_warmup
+    warmup_epochs: 1
+    t_max: 5
+
+  # Full loss weights
+  loss_weights:
+    rgb_box: 1.0
+    rgb_cls: 0.5
+    sonar_box: 1.0
+    sonar_cls: 0.5
+    fusion_box: 2.0
+    fusion_cls: 1.0
+    weak3d_reg: 1.0
+    weak3d_cycle: 0.5
+    component_consistency: 0.1
+    representation_consistency: 0.1
+    temporal_smooth: 0.05
+
+  val_interval: 2
+
+  checkpoint:
+    save_interval: 2
+    metric: fusion_success_auc
+    mode: max
+
+  log_interval: 5
+
+  # Load pretrained weights (will be set via command line)
+  resume: null
+
+
+# ------------------------------------------------------------------------------
+# Debugging
+# ------------------------------------------------------------------------------
+debug:
+  enabled: true
+  fast_dev_run: false
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/test_stage3_fusion
+  checkpoint_dir: outputs/test_stage3_fusion/checkpoints
+  log_dir: outputs/test_stage3_fusion/logs

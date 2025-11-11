@@ -53,9 +53,12 @@ data:
   prefetch_factor: 2
   persistent_workers: true
 
-  # Image sizes
-  template_size: 127
-  search_size: 255
+  # Image sizes (must be divisible by patch_size=16 for ViT)
+  template_size: 128  # 128 = 16 * 8
+  search_size: 256    # 256 = 16 * 16
+
+  # Template-search pair sampling
+  template_search_gap: 30  # Maximum frame gap between template and search
 
   # Data augmentation (training)
   augmentation:
@@ -99,16 +102,18 @@ model:
   backbone:
     # RGB backbone
     rgb:
-      type: vit_base_patch16  # vit_base_patch16, convnext_base
+      type: vit_rgb  # vit_rgb, convnext_rgb
+      model_name: vit_base_patch16_224
       pretrained: true
       pretrained_path: null  # If null, use timm default
       freeze_bn: false
       output_layers: [9, 11]  # Which layers to extract features from
-      embed_dim: 768
+      output_dim: 768
 
     # Sonar encoder
     sonar:
-      type: sonar_encoder
+      type: sonar
+      encoder_type: vit
       in_channels: 1
       base_channels: 64
       num_stages: 3
@@ -146,15 +151,17 @@ model:
 
   # Temporal modeling (Vision-Mamba)
   temporal:
-    type: VisionMambaTemporal
+    type: mamba  # mamba, transformer, or artrack
     enabled: true
-    d_model: 768
+    # Module parameters (passed to VisionMambaHead.__init__)
+    num_layers: 4
     d_state: 16
     d_conv: 4
-    expand_factor: 2
-    num_layers: 4
-    history_length: 8
-    use_bidirectional: false
+    expand: 2
+    bidirectional: false
+    use_occlusion_gating: true
+    dropout: 0.1
+    max_spatial_size: 32
 
   # Prediction heads
   heads:
@@ -222,7 +229,7 @@ training:
 
   # Learning rate scheduler
   scheduler:
-    type: cosine_warmup
+    type: cosine  # cosine, step, multistep, exponential, polynomial
     warmup_epochs: 5
     warmup_lr: 0.00001
     min_lr: 0.000001

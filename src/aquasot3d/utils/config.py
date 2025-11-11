@@ -225,6 +225,26 @@ def load_config(
     return config
 
 
+def _config_to_dict(obj):
+    """
+    Recursively convert ConfigDict to plain dict for YAML serialization.
+
+    Args:
+        obj: Object to convert (ConfigDict, dict, list, or other)
+
+    Returns:
+        Plain dictionary/list/value
+    """
+    if isinstance(obj, ConfigDict):
+        return {k: _config_to_dict(v) for k, v in obj.items()}
+    elif isinstance(obj, dict):
+        return {k: _config_to_dict(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_config_to_dict(item) for item in obj]
+    else:
+        return obj
+
+
 def save_config(config: Dict, save_path: str):
     """
     Save configuration to YAML file.
@@ -236,12 +256,11 @@ def save_config(config: Dict, save_path: str):
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Convert ConfigDict back to dict if needed
-    if isinstance(config, ConfigDict):
-        config = dict(config)
+    # Recursively convert ConfigDict to plain dict
+    plain_config = _config_to_dict(config)
 
     with open(save_path, 'w') as f:
-        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump(plain_config, f, default_flow_style=False, sort_keys=False)
 
     logger.info(f"Configuration saved to: {save_path}")
 

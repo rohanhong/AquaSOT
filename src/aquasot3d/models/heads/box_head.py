@@ -67,7 +67,7 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
         boxes2: Second set of boxes in xyxy format, shape (N, 4)
 
     Returns:
-        IoU values, shape (N,)
+        IoU values, shape (N,), clamped to [0, 1]
     """
     # Calculate intersection
     x1_max = torch.max(boxes1[:, 0], boxes2[:, 0])
@@ -80,11 +80,27 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     inter_area = inter_w * inter_h
 
     # Calculate union
-    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
-    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+    # Clamp box dimensions to prevent negative areas
+    w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=1e-6)
+    h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=1e-6)
+    w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=1e-6)
+    h2 = (boxes2[:, 3] - boxes2[:, 1]).clamp(min=1e-6)
+
+    area1 = w1 * h1
+    area2 = w2 * h2
     union_area = area1 + area2 - inter_area
 
+    # Compute IoU with epsilon for numerical stability
     iou = inter_area / (union_area + 1e-7)
+
+    # Clamp to valid IoU range [0, 1]
+    # This is critical for preventing BCE assertion failures when IoU is used as quality target
+    # IoU can theoretically exceed 1.0 due to floating point precision issues
+    iou = torch.clamp(iou, min=0.0, max=1.0)
+
+    # Replace any NaN/inf values with 0 (no overlap)
+    iou = torch.where(torch.isfinite(iou), iou, torch.zeros_like(iou))
+
     return iou
 
 
@@ -99,9 +115,9 @@ def compute_giou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
         boxes2: Second set of boxes in xyxy format, shape (N, 4)
 
     Returns:
-        GIoU values, shape (N,)
+        GIoU values, shape (N,), in range [-1, 1]
     """
-    # IoU
+    # IoU (now returns values clamped to [0, 1])
     iou = compute_iou(boxes1, boxes2)
 
     # Enclosing box
@@ -110,17 +126,34 @@ def compute_giou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     x2_max = torch.max(boxes1[:, 2], boxes2[:, 2])
     y2_max = torch.max(boxes1[:, 3], boxes2[:, 3])
 
-    enclosing_area = (x2_max - x1_min) * (y2_max - y1_min)
+    # Clamp enclosing dimensions to prevent negative areas
+    enclosing_w = (x2_max - x1_min).clamp(min=1e-6)
+    enclosing_h = (y2_max - y1_min).clamp(min=1e-6)
+    enclosing_area = enclosing_w * enclosing_h
 
-    # Union area
-    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
-    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+    # Union area (use clamped dimensions)
+    w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=1e-6)
+    h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=1e-6)
+    w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=1e-6)
+    h2 = (boxes2[:, 3] - boxes2[:, 1]).clamp(min=1e-6)
+
+    area1 = w1 * h1
+    area2 = w2 * h2
+
     inter_w = (torch.min(boxes1[:, 2], boxes2[:, 2]) - torch.max(boxes1[:, 0], boxes2[:, 0])).clamp(min=0)
     inter_h = (torch.min(boxes1[:, 3], boxes2[:, 3]) - torch.max(boxes1[:, 1], boxes2[:, 1])).clamp(min=0)
     inter_area = inter_w * inter_h
     union_area = area1 + area2 - inter_area
 
+    # GIoU computation
     giou = iou - (enclosing_area - union_area) / (enclosing_area + 1e-7)
+
+    # Clamp to theoretical range [-1, 1]
+    giou = torch.clamp(giou, min=-1.0, max=1.0)
+
+    # Replace NaN/inf with -1 (worst case)
+    giou = torch.where(torch.isfinite(giou), giou, torch.full_like(giou, -1.0))
+
     return giou
 
 
@@ -135,9 +168,9 @@ def compute_ciou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
         boxes2: Second set of boxes in xyxy format, shape (N, 4)
 
     Returns:
-        CIoU values, shape (N,)
+        CIoU values, shape (N,), in range [-1, 1]
     """
-    # IoU
+    # IoU (now returns values clamped to [0, 1])
     iou = compute_iou(boxes1, boxes2)
 
     # Convert to cxcywh for center distance and aspect ratio
@@ -154,14 +187,31 @@ def compute_ciou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     y1_min = torch.min(boxes1[:, 1], boxes2[:, 1])
     x2_max = torch.max(boxes1[:, 2], boxes2[:, 2])
     y2_max = torch.max(boxes1[:, 3], boxes2[:, 3])
-    diagonal_sq = (x2_max - x1_min) ** 2 + (y2_max - y1_min) ** 2
 
-    # Aspect ratio consistency
-    v = (4 / (math.pi ** 2)) * torch.pow(torch.atan(w2 / (h2 + 1e-7)) - torch.atan(w1 / (h1 + 1e-7)), 2)
+    # Clamp diagonal dimensions to prevent division by zero
+    diagonal_w = (x2_max - x1_min).clamp(min=1e-6)
+    diagonal_h = (y2_max - y1_min).clamp(min=1e-6)
+    diagonal_sq = diagonal_w ** 2 + diagonal_h ** 2
+
+    # Aspect ratio consistency (clamp w and h to prevent division by zero)
+    w1_safe = w1.clamp(min=1e-6)
+    h1_safe = h1.clamp(min=1e-6)
+    w2_safe = w2.clamp(min=1e-6)
+    h2_safe = h2.clamp(min=1e-6)
+
+    v = (4 / (math.pi ** 2)) * torch.pow(torch.atan(w2_safe / h2_safe) - torch.atan(w1_safe / h1_safe), 2)
     with torch.no_grad():
         alpha = v / (1 - iou + v + 1e-7)
 
+    # CIoU computation
     ciou = iou - (center_dist_sq / (diagonal_sq + 1e-7) + alpha * v)
+
+    # Clamp to theoretical range [-1, 1]
+    ciou = torch.clamp(ciou, min=-1.0, max=1.0)
+
+    # Replace NaN/inf with -1 (worst case)
+    ciou = torch.where(torch.isfinite(ciou), ciou, torch.full_like(ciou, -1.0))
+
     return ciou
 
 
@@ -192,6 +242,11 @@ class GIoULoss(nn.Module):
         target_xyxy = box_cxcywh_to_xyxy(target_boxes)
 
         giou = compute_giou(pred_xyxy, target_xyxy)
+
+        # Clamp GIoU to prevent numerical instability
+        # Theoretical range is [-1, 1], but we add margin for safety
+        giou = torch.clamp(giou, min=-1.0, max=1.0)
+
         loss = 1 - giou
 
         if self.reduction == 'mean':
@@ -229,6 +284,11 @@ class CIoULoss(nn.Module):
         target_xyxy = box_cxcywh_to_xyxy(target_boxes)
 
         ciou = compute_ciou(pred_xyxy, target_xyxy)
+
+        # Clamp CIoU to prevent numerical instability
+        # Theoretical range is [-1, 1], but we add margin for safety
+        ciou = torch.clamp(ciou, min=-1.0, max=1.0)
+
         loss = 1 - ciou
 
         if self.reduction == 'mean':
@@ -276,12 +336,23 @@ class QualityFocalLoss(nn.Module):
         # Focal weight
         focal_weight = torch.abs(scale_factor) ** self.beta
 
-        # BCE loss
-        bce_loss = F.binary_cross_entropy(
-            pred_scores,
-            target_labels * target_quality,
-            reduction='none'
-        )
+        # BCE loss (disable autocast for AMP compatibility)
+        # Note: pred_scores are already sigmoid outputs, so we use binary_cross_entropy
+        with torch.cuda.amp.autocast(enabled=False):
+            pred_scores_fp32 = pred_scores.float()
+            target_fp32 = (target_labels * target_quality).float()
+
+            # Clamp to [0, 1] to prevent numerical instability
+            # Sigmoid can occasionally produce values slightly outside [0, 1] due to FP precision
+            # IoU-based quality scores should also be clamped for safety
+            pred_scores_fp32 = torch.clamp(pred_scores_fp32, min=0.0, max=1.0)
+            target_fp32 = torch.clamp(target_fp32, min=0.0, max=1.0)
+
+            bce_loss = F.binary_cross_entropy(
+                pred_scores_fp32,
+                target_fp32,
+                reduction='none'
+            )
 
         loss = focal_weight * bce_loss
 

@@ -1,0 +1,122 @@
+# ==============================================================================
+# Sonar-Only Pretraining Test Configuration (Small Scale)
+#
+# Quick test configuration for Stage 2 validation with minimal resources.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-11
+# ==============================================================================
+
+_base_: ../base/default.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: aquasot3d_test_sonar
+  tags: [test, sonar_only, pretrain, debug]
+  notes: "Small-scale Sonar pretraining test for validation"
+  group: testing
+
+
+# ------------------------------------------------------------------------------
+# Data Configuration
+# ------------------------------------------------------------------------------
+data:
+  train_root: data/uuv2
+  val_root: data/uuv3
+  num_workers: 2
+  prefetch_factor: 1
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration
+# ------------------------------------------------------------------------------
+model:
+  # Disable RGB branch and fusion
+  backbone:
+    rgb:
+      type: null  # Disable RGB backbone
+
+  fusion:
+    type: null
+
+  temporal:
+    enabled: true
+    history_length: 4
+
+  heads:
+    # Only Sonar head enabled
+    rgb_box:
+      type: null
+
+    sonar_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+
+    fusion_box:
+      type: null
+
+    weak3d:
+      type: null
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------------------------
+training:
+  num_epochs: 5
+
+  batch_size: 4
+  gradient_accumulation_steps: 1
+
+  optimizer:
+    lr: 0.0003
+    weight_decay: 0.0001
+
+  scheduler:
+    type: cosine_warmup
+    warmup_epochs: 1
+    t_max: 5
+
+  # Loss weights - Sonar only
+  loss_weights:
+    rgb_box: 0.0
+    rgb_cls: 0.0
+    sonar_box: 1.0
+    sonar_cls: 0.5
+    fusion_box: 0.0
+    fusion_cls: 0.0
+    weak3d_reg: 0.0
+    weak3d_cycle: 0.0
+    component_consistency: 0.0
+    representation_consistency: 0.0
+    temporal_smooth: 0.05
+
+  val_interval: 2
+
+  checkpoint:
+    save_interval: 2
+    metric: sonar_success_auc
+    mode: max
+
+  log_interval: 5
+
+
+# ------------------------------------------------------------------------------
+# Debugging
+# ------------------------------------------------------------------------------
+debug:
+  enabled: true
+  fast_dev_run: false
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/test_stage2_sonar
+  checkpoint_dir: outputs/test_stage2_sonar/checkpoints
+  log_dir: outputs/test_stage2_sonar/logs

@@ -109,24 +109,32 @@ class AquaSOT3DTracker(BaseModule):
             sonar_config=sonar_backbone_config
         )
 
-        # Get feature dimensions from backbone
-        self.rgb_feat_dim = rgb_backbone_config.get('output_dim', 768)
-        self.sonar_feat_dim = sonar_backbone_config.get('output_dim', 384)
+        # Get feature dimensions from backbone configs (handle None for single-modal training)
+        self.rgb_feat_dim = rgb_backbone_config.get('output_dim', 768) if rgb_backbone_config else 768
+        self.sonar_feat_dim = sonar_backbone_config.get('output_dim', 384) if sonar_backbone_config else 384
 
         # =====================================================
         # 2. Cross-Modal Fusion (G2-DCMA)
         # =====================================================
-        # Make a copy to avoid modifying the original config (high-generalization fix)
-        fusion_config_copy = fusion_config.copy()
-        fusion_type = fusion_config_copy.pop('type', 'g2_dcma')
-        if fusion_type == 'g2_dcma':
-            self.fusion = build_g2_dcma(fusion_config_copy)
-        elif fusion_type == 'g2_dcma_lite':
-            self.fusion = build_g2_dcma_lite(fusion_config_copy)
-        else:
-            raise ValueError(f"Unknown fusion type: {fusion_type}")
+        self.fusion = None
+        self.fused_feat_dim = self.rgb_feat_dim  # Default to RGB dimension
 
-        self.fused_feat_dim = fusion_config.get('output_dim', self.rgb_feat_dim)
+        # Only build fusion if config is provided and type is not null (for multi-modal training)
+        if fusion_config and fusion_config.get('type') not in [None, 'null']:
+            # Make a copy to avoid modifying the original config (high-generalization fix)
+            fusion_config_copy = fusion_config.copy()
+            fusion_type = fusion_config_copy.pop('type', 'g2_dcma')
+            if fusion_type == 'g2_dcma':
+                self.fusion = build_g2_dcma(fusion_config_copy)
+            elif fusion_type == 'g2_dcma_lite':
+                self.fusion = build_g2_dcma_lite(fusion_config_copy)
+            else:
+                raise ValueError(f"Unknown fusion type: {fusion_type}")
+
+            self.fused_feat_dim = fusion_config.get('output_dim', self.rgb_feat_dim)
+            logger.info(f"Initialized fusion module: {fusion_type}")
+        else:
+            logger.info("Fusion module disabled (single-modal training)")
 
         # =====================================================
         # 3. Temporal Modeling (Optional)
@@ -134,10 +142,13 @@ class AquaSOT3DTracker(BaseModule):
         self.temporal_head = None
         self.temporal_aggregator = None
 
-        if self.use_temporal and temporal_config is not None:
+        if self.use_temporal and temporal_config is not None and temporal_config.get('enabled', True):
             # Make a copy to avoid modifying the original config (high-generalization fix)
             temporal_config_copy = temporal_config.copy()
             temporal_type = temporal_config_copy.pop('type', 'mamba')
+            # Remove control parameters and feature_dim (we override it)
+            temporal_config_copy.pop('enabled', None)
+            temporal_config_copy.pop('feature_dim', None)  # Remove to avoid conflict
 
             if temporal_type == 'mamba':
                 self.temporal_head = build_vision_mamba_head(
@@ -156,6 +167,10 @@ class AquaSOT3DTracker(BaseModule):
                 )
             else:
                 raise ValueError(f"Unknown temporal type: {temporal_type}")
+
+            logger.info(f"Initialized temporal head: {temporal_type}")
+        else:
+            logger.info("Temporal modeling disabled")
 
             # Optional temporal aggregation
             if self.temporal_aggregation:
@@ -191,14 +206,20 @@ class AquaSOT3DTracker(BaseModule):
         )
 
         # 4.2 Multi-Modal Fusion Head (for quality prediction)
-        if fusion_head_config is None:
-            fusion_head_config = {}
+        # Only build fusion_head if both modalities are available (multi-modal training)
+        self.fusion_head = None
+        if self.backbone.rgb_backbone is not None and self.backbone.sonar_encoder is not None:
+            if fusion_head_config is None:
+                fusion_head_config = {}
 
-        self.fusion_head = build_fusion_head(
-            rgb_feat_dim=self.rgb_feat_dim,
-            sonar_feat_dim=self.sonar_feat_dim,
-            **fusion_head_config
-        )
+            self.fusion_head = build_fusion_head(
+                rgb_feat_dim=self.rgb_feat_dim,
+                sonar_feat_dim=self.sonar_feat_dim,
+                **fusion_head_config
+            )
+            logger.info("Initialized fusion_head for multi-modal quality estimation")
+        else:
+            logger.info("Fusion head disabled (single-modal training)")
 
         # 4.3 Weak 3D Center Estimation (Optional)
         if self.use_weak3d:
@@ -275,11 +296,14 @@ class AquaSOT3DTracker(BaseModule):
             return_separate=True
         )
 
-        # Extract features from nested structure
-        # backbone_outputs = {'rgb': {...}, 'sonar': {...}}
+        # Extract features from nested structure (handle None for single-modal training)
+        # backbone_outputs = {'rgb': {...} or None, 'sonar': {...} or None}
+        rgb_features = backbone_outputs['rgb']['search_features'] if backbone_outputs['rgb'] is not None else None
+        sonar_features = backbone_outputs['sonar']['search_features'] if backbone_outputs['sonar'] is not None else None
+
         return {
-            'rgb_features': backbone_outputs['rgb']['search_features'],
-            'sonar_features': backbone_outputs['sonar']['search_features'],
+            'rgb_features': rgb_features,
+            'sonar_features': sonar_features,
         }
 
     def fuse_features(
@@ -299,8 +323,29 @@ class AquaSOT3DTracker(BaseModule):
         Returns:
             Dictionary containing fused features and losses
         """
+        # Handle single-modal case (fusion module disabled)
+        if self.fusion is None:
+            # Return available modality features as fused features
+            if rgb_features is not None:
+                # Reshape RGB features if needed
+                if rgb_features.dim() == 3:
+                    B, N, C = rgb_features.shape
+                    # Check if class token is present
+                    if int((N - 1) ** 0.5) ** 2 == N - 1:
+                        rgb_features = rgb_features[:, 1:, :]
+                        N = N - 1
+                    H = W = int(N ** 0.5)
+                    rgb_features = rgb_features.permute(0, 2, 1).reshape(B, C, H, W)
+                return {'fused_features': rgb_features}
+            elif sonar_features is not None:
+                if isinstance(sonar_features, list):
+                    sonar_features = sonar_features[0]
+                return {'fused_features': sonar_features}
+            else:
+                raise ValueError("At least one modality must be available")
+
         # Handle ViT sequence features: reshape (B, N, C) -> (B, C, H, W)
-        if rgb_features.dim() == 3:
+        if rgb_features is not None and rgb_features.dim() == 3:
             B, N, C = rgb_features.shape
             # Check if class token is present (N = H*W + 1)
             if int((N - 1) ** 0.5) ** 2 == N - 1:
@@ -312,7 +357,7 @@ class AquaSOT3DTracker(BaseModule):
             rgb_features = rgb_features.permute(0, 2, 1).reshape(B, C, H, W)
 
         # Ensure sonar_features is a tensor, not a list
-        if isinstance(sonar_features, list):
+        if sonar_features is not None and isinstance(sonar_features, list):
             sonar_features = sonar_features[0]
 
         fusion_outputs = self.fusion(
@@ -377,50 +422,53 @@ class AquaSOT3DTracker(BaseModule):
             Dictionary containing box predictions and losses
         """
         # Ensure features are tensors (extract from list if needed)
-        if isinstance(rgb_features, list):
+        if rgb_features is not None and isinstance(rgb_features, list):
             rgb_features = rgb_features[0]
-        if isinstance(sonar_features, list):
+        if sonar_features is not None and isinstance(sonar_features, list):
             sonar_features = sonar_features[0]
-        if isinstance(fused_features, list):
+        if fused_features is not None and isinstance(fused_features, list):
             fused_features = fused_features[0]
 
         outputs = {}
 
         # RGB box prediction
-        rgb_box_outputs = self.rgb_box_head(rgb_features)
-        outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
-        outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
+        if self.rgb_box_head is not None and rgb_features is not None:
+            rgb_box_outputs = self.rgb_box_head(rgb_features)
+            outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
+            outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
 
-        if gt_boxes is not None and 'rgb' in gt_boxes:
-            rgb_loss = self.rgb_box_head.compute_loss(
-                rgb_box_outputs,
-                gt_boxes['rgb']
-            )
-            outputs['rgb_box_loss'] = rgb_loss
+            if gt_boxes is not None and 'rgb' in gt_boxes:
+                rgb_loss = self.rgb_box_head.compute_loss(
+                    rgb_box_outputs,
+                    gt_boxes['rgb']
+                )
+                outputs['rgb_box_loss'] = rgb_loss
 
         # Sonar box prediction
-        sonar_box_outputs = self.sonar_box_head(sonar_features)
-        outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
-        outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
+        if self.sonar_box_head is not None and sonar_features is not None:
+            sonar_box_outputs = self.sonar_box_head(sonar_features)
+            outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
+            outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
 
-        if gt_boxes is not None and 'sonar' in gt_boxes:
-            sonar_loss = self.sonar_box_head.compute_loss(
-                sonar_box_outputs,
-                gt_boxes['sonar']
-            )
-            outputs['sonar_box_loss'] = sonar_loss
+            if gt_boxes is not None and 'sonar' in gt_boxes:
+                sonar_loss = self.sonar_box_head.compute_loss(
+                    sonar_box_outputs,
+                    gt_boxes['sonar']
+                )
+                outputs['sonar_box_loss'] = sonar_loss
 
         # Fusion box prediction
-        fusion_box_outputs = self.fusion_box_head(fused_features)
-        outputs['fusion_boxes'] = fusion_box_outputs['pred_boxes']
-        outputs['fusion_quality'] = fusion_box_outputs['pred_scores']
+        if self.fusion_box_head is not None and fused_features is not None:
+            fusion_box_outputs = self.fusion_box_head(fused_features)
+            outputs['fusion_boxes'] = fusion_box_outputs['pred_boxes']
+            outputs['fusion_quality'] = fusion_box_outputs['pred_scores']
 
-        if gt_boxes is not None and 'fusion' in gt_boxes:
-            fusion_loss = self.fusion_box_head.compute_loss(
-                fusion_box_outputs,
-                gt_boxes['fusion']
-            )
-            outputs['fusion_box_loss'] = fusion_loss
+            if gt_boxes is not None and 'fusion' in gt_boxes:
+                fusion_loss = self.fusion_box_head.compute_loss(
+                    fusion_box_outputs,
+                    gt_boxes['fusion']
+                )
+                outputs['fusion_box_loss'] = fusion_loss
 
         return outputs
 
@@ -563,18 +611,22 @@ class AquaSOT3DTracker(BaseModule):
         # Stage 3: Quality Estimation
         # =====================================================
         # Ensure features are tensors for fusion_head
-        rgb_features_for_quality = rgb_features
-        sonar_features_for_quality = sonar_features
-        if isinstance(rgb_features_for_quality, list):
-            rgb_features_for_quality = rgb_features_for_quality[0]
-        if isinstance(sonar_features_for_quality, list):
-            sonar_features_for_quality = sonar_features_for_quality[0]
+        if self.fusion_head is not None:
+            rgb_features_for_quality = rgb_features
+            sonar_features_for_quality = sonar_features
+            if rgb_features_for_quality is not None and isinstance(rgb_features_for_quality, list):
+                rgb_features_for_quality = rgb_features_for_quality[0]
+            if sonar_features_for_quality is not None and isinstance(sonar_features_for_quality, list):
+                sonar_features_for_quality = sonar_features_for_quality[0]
 
-        quality_outputs = self.fusion_head(
-            rgb_features_for_quality, sonar_features_for_quality
-        )
-
-        fusion_quality = quality_outputs['quality_score']  # (B,)
+            quality_outputs = self.fusion_head(
+                rgb_features_for_quality, sonar_features_for_quality
+            )
+            fusion_quality = quality_outputs['quality_score']  # (B,)
+        else:
+            # Single-modal training: use default quality score
+            B = fused_features.shape[0]
+            fusion_quality = torch.ones(B, device=fused_features.device)
 
         # =====================================================
         # Stage 4: Temporal Modeling (Optional)
@@ -622,16 +674,19 @@ class AquaSOT3DTracker(BaseModule):
         # Stage 7: Output Organization
         # =====================================================
         outputs = {
-            # Primary predictions
-            'fusion_boxes': box_outputs['fusion_boxes'],
-            'rgb_boxes': box_outputs['rgb_boxes'],
-            'sonar_boxes': box_outputs['sonar_boxes'],
-
-            # Quality scores
+            # Quality scores (always present)
             'fusion_quality': fusion_quality,
-            'rgb_quality': box_outputs['rgb_quality'],
-            'sonar_quality': box_outputs['sonar_quality'],
         }
+
+        # Add predictions conditionally based on available modalities
+        if 'fusion_boxes' in box_outputs:
+            outputs['fusion_boxes'] = box_outputs['fusion_boxes']
+        if 'rgb_boxes' in box_outputs:
+            outputs['rgb_boxes'] = box_outputs['rgb_boxes']
+            outputs['rgb_quality'] = box_outputs.get('rgb_quality', None)
+        if 'sonar_boxes' in box_outputs:
+            outputs['sonar_boxes'] = box_outputs['sonar_boxes']
+            outputs['sonar_quality'] = box_outputs.get('sonar_quality', None)
 
         # Add 3D predictions if available
         if 'center_3d' in weak3d_outputs:

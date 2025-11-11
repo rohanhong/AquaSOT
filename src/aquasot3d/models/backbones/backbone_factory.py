@@ -172,8 +172,17 @@ class BackboneFactory:
             ... }
             >>> backbone = BackboneFactory.create_from_config(config)
         """
+        # Handle disabled backbone (type=null or config is None/empty)
+        if config is None or not config:
+            return None
+
         config = config.copy()
-        backbone_type = config.pop('type')
+        backbone_type = config.pop('type', None)
+
+        # Handle null type (for single-modal training)
+        if backbone_type is None or backbone_type == 'null':
+            return None
+
         return BackboneFactory.create(backbone_type, **config)
 
     @staticmethod
@@ -243,15 +252,24 @@ class MultiModalBackbone(nn.Module):
 
     def __init__(
         self,
-        rgb_config: Dict[str, Any],
-        sonar_config: Dict[str, Any]
+        rgb_config: Optional[Dict[str, Any]],
+        sonar_config: Optional[Dict[str, Any]]
     ):
         super().__init__()
 
-        self.rgb_backbone = BackboneFactory.create_from_config(rgb_config)
-        self.sonar_encoder = BackboneFactory.create_from_config(sonar_config)
+        # Create backbones (can be None for single-modal training)
+        self.rgb_backbone = BackboneFactory.create_from_config(rgb_config) if rgb_config else None
+        self.sonar_encoder = BackboneFactory.create_from_config(sonar_config) if sonar_config else None
 
-        logger.info("Initialized MultiModalBackbone with RGB and Sonar encoders")
+        # Log initialization status
+        if self.rgb_backbone and self.sonar_encoder:
+            logger.info("Initialized MultiModalBackbone with RGB and Sonar encoders")
+        elif self.rgb_backbone:
+            logger.info("Initialized MultiModalBackbone with RGB encoder only (sonar disabled)")
+        elif self.sonar_encoder:
+            logger.info("Initialized MultiModalBackbone with Sonar encoder only (RGB disabled)")
+        else:
+            raise ValueError("At least one modality (RGB or Sonar) must be enabled")
 
     def forward(
         self,
@@ -274,15 +292,19 @@ class MultiModalBackbone(nn.Module):
         Returns:
             Dictionary containing features from both modalities
         """
-        # Extract RGB features
-        rgb_outputs = self.rgb_backbone(
-            rgb_template, rgb_search, return_separate=return_separate
-        )
+        # Extract RGB features (if RGB encoder is available)
+        rgb_outputs = None
+        if self.rgb_backbone is not None:
+            rgb_outputs = self.rgb_backbone(
+                rgb_template, rgb_search, return_separate=return_separate
+            )
 
-        # Extract Sonar features
-        sonar_outputs = self.sonar_encoder(
-            sonar_template, sonar_search, return_separate=return_separate
-        )
+        # Extract Sonar features (if Sonar encoder is available)
+        sonar_outputs = None
+        if self.sonar_encoder is not None:
+            sonar_outputs = self.sonar_encoder(
+                sonar_template, sonar_search, return_separate=return_separate
+            )
 
         # Combine outputs
         outputs = {

@@ -5,6 +5,7 @@ This module contains dataset classes for loading RGB-Sonar tracking sequences.
 """
 
 from .rgb_sonar_dataset import RGBSonarDataset, is_occluded, parse_groundtruth
+from .tracking_dataset import TrackingDataset
 from .sequence_sampler import (
     BaseSampler,
     UniformSampler,
@@ -24,6 +25,7 @@ from .augmentation import (
 
 __all__ = [
     'RGBSonarDataset',
+    'TrackingDataset',
     'is_occluded',
     'parse_groundtruth',
     'BaseSampler',

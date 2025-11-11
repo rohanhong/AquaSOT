@@ -226,6 +226,13 @@ class Trainer:
             # Move batch to device
             batch = self._to_device(batch)
 
+            # Prepare ground truth boxes
+            gt_boxes = {}
+            if 'rgb_boxes' in batch:
+                gt_boxes['rgb'] = batch['rgb_boxes']
+            if 'sonar_boxes' in batch:
+                gt_boxes['sonar'] = batch['sonar_boxes']
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():
@@ -233,7 +240,9 @@ class Trainer:
                         batch['rgb_template'],
                         batch['rgb_search'],
                         batch['sonar_template'],
-                        batch['sonar_search']
+                        batch['sonar_search'],
+                        gt_boxes=gt_boxes,
+                        return_losses=True
                     )
                     total_loss, loss_dict = self.loss_manager.compute_losses(
                         outputs,
@@ -245,7 +254,9 @@ class Trainer:
                     batch['rgb_template'],
                     batch['rgb_search'],
                     batch['sonar_template'],
-                    batch['sonar_search']
+                    batch['sonar_search'],
+                    gt_boxes=gt_boxes,
+                    return_losses=True
                 )
                 total_loss, loss_dict = self.loss_manager.compute_losses(
                     outputs,
