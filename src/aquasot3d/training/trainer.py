@@ -65,6 +65,7 @@ class Trainer:
         grad_clip_norm: Maximum gradient norm (None = no clipping)
         log_interval: Logging interval in iterations
         eval_interval: Evaluation interval in epochs
+        checkpoint_save_interval: Checkpoint save interval in epochs (default: 1)
         tensorboard_dir: TensorBoard log directory
         distributed: Whether using distributed training
 
@@ -98,6 +99,7 @@ class Trainer:
         grad_clip_norm: Optional[float] = 1.0,
         log_interval: int = 10,
         eval_interval: int = 1,
+        checkpoint_save_interval: int = 1,
         tensorboard_dir: Optional[Union[str, Path]] = None,
         distributed: bool = False,
         rank: int = 0,
@@ -118,6 +120,7 @@ class Trainer:
         self.grad_clip_norm = grad_clip_norm
         self.log_interval = log_interval
         self.eval_interval = eval_interval
+        self.checkpoint_save_interval = checkpoint_save_interval
 
         self.distributed = distributed
         self.rank = rank
@@ -177,19 +180,20 @@ class Trainer:
             # Update learning rate
             self.scheduler.step()
 
-            # Save checkpoint
+            # Save checkpoint (respect save_interval from config)
             if self.checkpoint_manager is not None and self.is_main_process:
-                metrics = {**train_metrics}
-                if val_metrics is not None:
-                    metrics.update(val_metrics)
+                if (epoch + 1) % self.checkpoint_save_interval == 0:
+                    metrics = {**train_metrics}
+                    if val_metrics is not None:
+                        metrics.update(val_metrics)
 
-                self.checkpoint_manager.save(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    scheduler=self.scheduler,
-                    epoch=epoch,
-                    metrics=metrics
-                )
+                    self.checkpoint_manager.save(
+                        model=self.model,
+                        optimizer=self.optimizer,
+                        scheduler=self.scheduler,
+                        epoch=epoch,
+                        metrics=metrics
+                    )
 
             # Log epoch summary
             if self.is_main_process:

@@ -394,7 +394,8 @@ def main():
         grad_clip_norm=cfg.training.grad_clip.max_norm if cfg.training.grad_clip.enabled else None,
         tensorboard_dir=cfg.paths.log_dir if cfg.training.get('tensorboard', True) else None,
         log_interval=cfg.training.log_interval,
-        eval_interval=cfg.training.val_interval
+        eval_interval=cfg.training.val_interval,
+        checkpoint_save_interval=cfg.training.checkpoint.get('save_interval', 1)
     )
     
     # Resume from checkpoint if specified
