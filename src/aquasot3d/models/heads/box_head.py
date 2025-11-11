@@ -408,7 +408,7 @@ class BoxHead(BaseHead):
         use_quality_focal: bool = True,
         iou_loss_type: Literal['giou', 'ciou'] = 'giou',
         loss_weight_cls: float = 1.0,
-        loss_weight_l1: float = 5.0,
+        loss_weight_l1: float = 1.0,  # Reduced from 5.0 for numerical stability
         loss_weight_iou: float = 2.0,
         **kwargs
     ):
@@ -443,11 +443,14 @@ class BoxHead(BaseHead):
             nn.Sigmoid()
         )
 
-        # Regression head (box coordinates)
+        # Regression head (box coordinates with constrained output)
+        # Critical fix: Add Sigmoid activation to constrain output to [0, 1]
+        # This ensures predictions are in normalized coordinate space matching targets
         self.reg_head = nn.Sequential(
             nn.Linear(current_dim, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 4)
+            nn.Linear(hidden_dim, 4),
+            nn.Sigmoid()  # Constrain to [0, 1] for normalized coordinates
         )
 
         # Loss functions
@@ -465,12 +468,43 @@ class BoxHead(BaseHead):
         else:
             raise ValueError(f"Unknown IoU loss type: {iou_loss_type}")
 
+        # Initialize regression head with small weights for stable initial predictions
+        # This ensures initial box predictions are centered around [0.5, 0.5, 0.3, 0.3]
+        self._init_weights()
+
         self.logger.info(
             f"Initialized BoxHead: in_channels={in_channels}, "
             f"hidden_dim={hidden_dim}, num_layers={num_layers}, "
             f"box_format={box_format}, use_quality_focal={use_quality_focal}, "
             f"iou_loss={iou_loss_type}"
         )
+
+    def _init_weights(self):
+        """
+        Initialize weights for stable training.
+
+        Uses Xavier/Kaiming initialization for linear layers and small bias
+        initialization for regression output to center initial predictions.
+        """
+        # Initialize all linear layers
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+        # Special initialization for regression head output layer
+        # Set bias to produce initial predictions around [0.5, 0.5, 0.3, 0.3]
+        # After sigmoid: logit(0.5)=0, logit(0.3)≈-0.85
+        reg_output_layer = self.reg_head[-2]  # Last linear before sigmoid
+        if isinstance(reg_output_layer, nn.Linear):
+            nn.init.zeros_(reg_output_layer.weight)
+            if reg_output_layer.bias is not None:
+                # Bias values to initialize around center with moderate size
+                reg_output_layer.bias.data[0] = 0.0  # cx ≈ 0.5 after sigmoid
+                reg_output_layer.bias.data[1] = 0.0  # cy ≈ 0.5 after sigmoid
+                reg_output_layer.bias.data[2] = -0.85  # w ≈ 0.3 after sigmoid
+                reg_output_layer.bias.data[3] = -0.85  # h ≈ 0.3 after sigmoid
 
     def forward(
         self,
