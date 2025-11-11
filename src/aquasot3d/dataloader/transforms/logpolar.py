@@ -185,6 +185,87 @@ class LogPolarTransform(nn.Module):
 
         return grid
 
+    def _compute_cartesian_grid_dynamic(
+        self, H: int, W: int, scale_h: float, scale_w: float
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute Cartesian sampling coordinates for dynamically sized inputs.
+
+        This method preserves geometric relationships by scaling sensor position
+        and max range proportionally, while keeping FOV angle and learnable
+        parameters (alpha, beta) unchanged.
+
+        Mathematical Principle:
+            When input size changes from (H_init, W_init) to (H, W):
+            - Sensor position scales: cx_new = cx * scale_w, cy_new = cy * scale_h
+            - Max range scales: max_range_new = max_range * scale_h
+            - FOV angle, alpha, beta remain constant (intrinsic geometric properties)
+
+        Args:
+            H: Dynamic input height
+            W: Dynamic input width
+            scale_h: Height scaling factor (H / H_init)
+            scale_w: Width scaling factor (W / W_init)
+
+        Returns:
+            Tuple of (x_grid, y_grid) in Cartesian coordinates
+        """
+        # Scale sensor position proportionally to maintain geometric center
+        cx_scaled = self.cx * scale_w
+        cy_scaled = self.cy * scale_h
+
+        # Scale max range proportionally
+        max_range_scaled = self.max_range * scale_h
+
+        # Convert FOV angle to radians (same for all sizes)
+        fov_angle_rad = torch.deg2rad(
+            torch.tensor(self.fov_angle, device=self.rho_grid.device)
+        )
+
+        # Use base log-polar grids (output size remains constant)
+        # Denormalize rho and phi using scaled max_range
+        rho_denorm = self.rho_grid * self.alpha * np.log(max_range_scaled + 1)
+        phi_denorm = self.phi_grid * self.beta * (fov_angle_rad / 2)
+
+        # Compute radial distance (inverse log transform)
+        r = torch.exp(rho_denorm / (self.alpha + 1e-6)) - 1
+
+        # Compute angle
+        theta = phi_denorm / (self.beta + 1e-6)
+
+        # Convert polar (r, θ) to Cartesian (x, y) with scaled sensor position
+        # For upward-facing fan: x = cx + r * sin(θ), y = cy - r * cos(θ)
+        x = cx_scaled + r * torch.sin(theta)
+        y = cy_scaled - r * torch.cos(theta)
+
+        return x, y
+
+    def _normalize_grid_dynamic(
+        self, x: torch.Tensor, y: torch.Tensor, H: int, W: int
+    ) -> torch.Tensor:
+        """
+        Normalize Cartesian coordinates for dynamic input size to grid_sample format.
+
+        Args:
+            x: X coordinates in pixel space
+            y: Y coordinates in pixel space
+            H: Dynamic input height
+            W: Dynamic input width
+
+        Returns:
+            Normalized grid (H_out, W_out, 2) in range [-1, 1]
+        """
+        # Normalize x to [-1, 1] using dynamic width
+        x_norm = 2 * (x / (W - 1)) - 1
+
+        # Normalize y to [-1, 1] using dynamic height
+        y_norm = 2 * (y / (H - 1)) - 1
+
+        # Stack to create grid (H, W, 2)
+        grid = torch.stack([x_norm, y_norm], dim=-1)
+
+        return grid
+
     def forward(self, sonar_img: torch.Tensor) -> torch.Tensor:
         """
         Apply log-polar transformation to sonar image.
