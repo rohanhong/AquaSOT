@@ -40,8 +40,8 @@ def extract_radial_activation(
     Args:
         sonar_img: Original sonar image, shape (B, 1, H_orig, W_orig)
                    e.g., (B, 1, 376, 682) for standard FLS
-        sonar_feat_map: Sonar feature map, shape (B, C, H', W')
-                        Typically downsampled from original
+        sonar_feat_map: Sonar feature map, shape (B, C, H', W') or (B, N, C)
+                        Supports both CNN features and ViT sequence features
         num_bins: Number of radial bins (default: 50)
 
     Returns:
@@ -53,6 +53,34 @@ def extract_radial_activation(
         >>> profile = extract_radial_activation(sonar_img, sonar_feat, num_bins=50)
         >>> print(profile.shape)  # (4, 50)
     """
+    # Robust shape handling: support both (B, C, H, W) and (B, N, C) formats
+    if sonar_feat_map.dim() == 3:
+        # ViT sequence format (B, N, C) -> reshape to (B, C, H, W)
+        B, N, C = sonar_feat_map.shape
+
+        # Check if class token is present (N = H*W + 1)
+        if int((N - 1) ** 0.5) ** 2 == N - 1:
+            # Has class token, remove it
+            sonar_feat_map = sonar_feat_map[:, 1:, :]  # (B, H*W, C)
+            N = N - 1
+
+        # Assume square spatial layout
+        H = W = int(N ** 0.5)
+        if H * W != N:
+            raise ValueError(
+                f"Cannot reshape sonar_feat_map with N={N} to square spatial layout. "
+                f"Expected N to be a perfect square."
+            )
+
+        # Reshape: (B, N, C) -> (B, C, H, W)
+        sonar_feat_map = sonar_feat_map.permute(0, 2, 1).reshape(B, C, H, W)
+
+    elif sonar_feat_map.dim() != 4:
+        raise ValueError(
+            f"sonar_feat_map must be 3D (B, N, C) or 4D (B, C, H, W), "
+            f"got {sonar_feat_map.dim()}D with shape {sonar_feat_map.shape}"
+        )
+
     B, C, H, W = sonar_feat_map.shape
 
     # Calculate downsampling scale
