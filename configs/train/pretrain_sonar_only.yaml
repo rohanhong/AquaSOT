@@ -58,7 +58,7 @@ model:
 
   temporal:
     enabled: true  # Keep temporal for sonar sequences
-    history_length: 8
+    num_layers: 4
 
   heads:
     # Only sonar head enabled
@@ -92,9 +92,10 @@ training:
     backbone_lr_multiplier: 1.0  # No pretrained backbone
 
   scheduler:
-    type: cosine_warmup
+    type: cosine
     warmup_epochs: 3
     t_max: 40
+    eta_min: 1.0e-06
 
   # Loss weights - Sonar only
   loss_weights:

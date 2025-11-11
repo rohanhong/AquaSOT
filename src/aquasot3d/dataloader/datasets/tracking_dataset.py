@@ -106,10 +106,10 @@ class TrackingDataset(Dataset):
         # Build tracking pair
         pair = {
             # Images (convert HWC to CHW if needed and resize)
-            'rgb_template': self._prepare_image(template_data['rgb_img'], self.template_size),
-            'rgb_search': self._prepare_image(search_data['rgb_img'], self.search_size),
-            'sonar_template': self._prepare_image(template_data['sonar_img'], self.template_size),
-            'sonar_search': self._prepare_image(search_data['sonar_img'], self.search_size),
+            'rgb_template': self._prepare_image(template_data['rgb_img'], self.template_size, is_sonar=False),
+            'rgb_search': self._prepare_image(search_data['rgb_img'], self.search_size, is_sonar=False),
+            'sonar_template': self._prepare_image(template_data['sonar_img'], self.template_size, is_sonar=True),
+            'sonar_search': self._prepare_image(search_data['sonar_img'], self.search_size, is_sonar=True),
 
             # Bounding boxes (original keys)
             'template_bbox_rgb': template_data['rgb_bbox'],
@@ -129,7 +129,7 @@ class TrackingDataset(Dataset):
 
         return pair
 
-    def _prepare_image(self, img, target_size):
+    def _prepare_image(self, img, target_size, is_sonar=False):
         """
         Prepare image for training.
 
@@ -138,23 +138,31 @@ class TrackingDataset(Dataset):
         Args:
             img: Input image (numpy array or tensor)
             target_size: Target image size (square)
+            is_sonar: If True, prepare as 1-channel grayscale; if False, as 3-channel RGB
 
         Returns:
-            Tensor of shape (C, target_size, target_size)
+            Tensor of shape (C, target_size, target_size) where C=1 for sonar, C=3 for RGB
         """
         if img is None:
             # Return zeros for None images (occluded frames)
-            return torch.zeros(3, target_size, target_size)
+            num_channels = 1 if is_sonar else 3
+            return torch.zeros(num_channels, target_size, target_size)
 
         if isinstance(img, np.ndarray):
             # Convert HWC to CHW
             if img.ndim == 3 and img.shape[2] in [1, 3]:
                 img = img.transpose(2, 0, 1)
+            elif img.ndim == 2:
+                # Handle 2D grayscale images (H, W) -> (1, H, W)
+                img = img[np.newaxis, :, :]
             # Convert to tensor
             img = torch.from_numpy(img).float()
         elif isinstance(img, torch.Tensor):
             # Already tensor, ensure CHW format
-            if img.ndim == 3 and img.shape[0] not in [1, 3]:
+            if img.ndim == 2:
+                # Handle 2D grayscale tensors (H, W) -> (1, H, W)
+                img = img.unsqueeze(0)
+            elif img.ndim == 3 and img.shape[0] not in [1, 3]:
                 img = img.permute(2, 0, 1)
 
         # Normalize to [0, 1] if in [0, 255] range

@@ -109,15 +109,26 @@ class AquaSOT3DTracker(BaseModule):
             sonar_config=sonar_backbone_config
         )
 
-        # Get feature dimensions from backbone configs (handle None for single-modal training)
-        self.rgb_feat_dim = rgb_backbone_config.get('output_dim', 768) if rgb_backbone_config else 768
-        self.sonar_feat_dim = sonar_backbone_config.get('output_dim', 384) if sonar_backbone_config else 384
+        # Get feature dimensions from actual backbones (not config, to handle timm model variations)
+        # Priority: actual model > config > default
+        if self.backbone.rgb_backbone is not None and hasattr(self.backbone.rgb_backbone, 'get_feature_dim'):
+            self.rgb_feat_dim = self.backbone.rgb_backbone.get_feature_dim()
+        elif rgb_backbone_config:
+            self.rgb_feat_dim = rgb_backbone_config.get('output_dim', 768)
+        else:
+            self.rgb_feat_dim = 768
+
+        if self.backbone.sonar_encoder is not None and hasattr(self.backbone.sonar_encoder, 'get_feature_dim'):
+            self.sonar_feat_dim = self.backbone.sonar_encoder.get_feature_dim()
+        elif sonar_backbone_config:
+            self.sonar_feat_dim = sonar_backbone_config.get('output_dim', 384)
+        else:
+            self.sonar_feat_dim = 384
 
         # =====================================================
         # 2. Cross-Modal Fusion (G2-DCMA)
         # =====================================================
         self.fusion = None
-        self.fused_feat_dim = self.rgb_feat_dim  # Default to RGB dimension
 
         # Only build fusion if config is provided and type is not null (for multi-modal training)
         if fusion_config and fusion_config.get('type') not in [None, 'null']:
@@ -134,6 +145,14 @@ class AquaSOT3DTracker(BaseModule):
             self.fused_feat_dim = fusion_config.get('output_dim', self.rgb_feat_dim)
             logger.info(f"Initialized fusion module: {fusion_type}")
         else:
+            # Single-modal training: use active modality's feature dimension
+            if rgb_backbone_config and rgb_backbone_config.get('type') not in [None, 'null']:
+                self.fused_feat_dim = self.rgb_feat_dim
+            elif sonar_backbone_config and sonar_backbone_config.get('type') not in [None, 'null']:
+                self.fused_feat_dim = self.sonar_feat_dim
+            else:
+                # Fallback: use RGB dimension if both are None
+                self.fused_feat_dim = self.rgb_feat_dim
             logger.info("Fusion module disabled (single-modal training)")
 
         # =====================================================
@@ -340,6 +359,15 @@ class AquaSOT3DTracker(BaseModule):
             elif sonar_features is not None:
                 if isinstance(sonar_features, list):
                     sonar_features = sonar_features[0]
+                # Reshape Sonar features if needed (ViT outputs tokens)
+                if sonar_features.dim() == 3:
+                    B, N, C = sonar_features.shape
+                    # Check if class token is present (N = H*W + 1)
+                    if int((N - 1) ** 0.5) ** 2 == N - 1:
+                        sonar_features = sonar_features[:, 1:, :]
+                        N = N - 1
+                    H = W = int(N ** 0.5)
+                    sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
                 return {'fused_features': sonar_features}
             else:
                 raise ValueError("At least one modality must be available")

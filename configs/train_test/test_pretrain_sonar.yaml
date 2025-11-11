@@ -44,7 +44,7 @@ model:
 
   temporal:
     enabled: true
-    history_length: 4
+    num_layers: 2
 
   heads:
     # Only Sonar head enabled
@@ -77,9 +77,10 @@ training:
     weight_decay: 0.0001
 
   scheduler:
-    type: cosine_warmup
+    type: cosine
     warmup_epochs: 1
     t_max: 5
+    eta_min: 1.0e-06
 
   # Loss weights - Sonar only
   loss_weights:

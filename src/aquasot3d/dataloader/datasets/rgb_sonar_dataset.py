@@ -232,27 +232,40 @@ class RGBSonarDataset(Dataset):
         """Return number of valid samples."""
         return len(self.valid_indices)
 
-    def _load_image(self, img_path: Path) -> Optional[np.ndarray]:
+    def _load_image(self, img_path: Path, is_sonar: bool = False) -> Optional[np.ndarray]:
         """
         Load image from disk.
 
         Args:
             img_path: Path to image file
+            is_sonar: If True, load as grayscale (1-channel); if False, load as RGB (3-channel)
 
         Returns:
-            Image array in RGB format (H, W, 3), or None if loading fails
+            Image array in RGB format (H, W, 3) for RGB images,
+            or grayscale format (H, W, 1) for sonar images,
+            or None if loading fails
         """
         if not img_path.exists():
             return None
 
-        # Load image in BGR format (OpenCV default)
-        img = cv2.imread(str(img_path))
+        if is_sonar:
+            # Load sonar as grayscale (Forward-Looking Sonar is single-channel intensity)
+            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
 
-        if img is None:
-            return None
+            if img is None:
+                return None
 
-        # Convert BGR to RGB
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            # Add channel dimension: (H, W) -> (H, W, 1)
+            img = img[:, :, np.newaxis]
+        else:
+            # Load RGB image
+            img = cv2.imread(str(img_path))
+
+            if img is None:
+                return None
+
+            # Convert BGR to RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         return img
 
@@ -303,8 +316,8 @@ class RGBSonarDataset(Dataset):
         rgb_img_path = self.rgb_img_dir / f"{frame_id}.jpg"
         sonar_img_path = self.sonar_img_dir / f"{frame_id}.jpg"
 
-        rgb_img = self._load_image(rgb_img_path)
-        sonar_img = self._load_image(sonar_img_path)
+        rgb_img = self._load_image(rgb_img_path, is_sonar=False)
+        sonar_img = self._load_image(sonar_img_path, is_sonar=True)
 
         # Get bounding boxes
         rgb_bbox = self.rgb_bboxes[idx].copy()

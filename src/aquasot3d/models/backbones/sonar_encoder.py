@@ -117,6 +117,11 @@ class SonarEncoder(BaseModule):
         # Encoder network
         if encoder_type == 'vit':
             self.encoder = self._create_vit_encoder(model_name, pretrained)
+            # Get actual embed_dim from loaded model (timm models may differ from config)
+            if hasattr(self.encoder, 'embed_dim'):
+                self.embed_dim = self.encoder.embed_dim
+            elif hasattr(self.encoder, 'num_features'):
+                self.embed_dim = self.encoder.num_features
         elif encoder_type == 'conv':
             self.encoder = self._create_conv_encoder(model_name, pretrained)
         else:
@@ -125,7 +130,7 @@ class SonarEncoder(BaseModule):
         # Radial profile extraction head (for depth proxy)
         if extract_radial_profile:
             self.radial_head = RadialProfileExtractor(
-                feature_dim=embed_dim,
+                feature_dim=self.embed_dim,  # Use actual model embed_dim
                 num_bins=50,
             )
 
