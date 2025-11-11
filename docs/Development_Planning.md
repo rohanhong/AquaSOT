@@ -24,14 +24,14 @@
 | Phase 10 | Configuration & Scripts | ~2,179 | 1 file | **Complete** ✅ |
 | Phase 11 | Integration Testing | N/A | 5 files | **Complete** ✅ |
 | Phase 11.5 | User Scenario Validation | N/A | 1 file | **Complete** ✅ |
-| Phase 12 | Documentation | 3,379 lines | N/A | **Complete** ✅ |
+| Phase 12 | Documentation | 4,848 lines | N/A | **Complete** ✅ |
 
 **Total Implementation:** 19,535 lines of production code
 **Total Test Files:** 31 test files
 **Total Tests:** 641 tests (628 passed, 13 skipped)
 **Test Pass Rate:** 97.97% (100% executable tests passing)
 **Configuration System:** 12 YAML config files, 7 executable scripts
-**Documentation:** README.md (980 lines) + API_Reference.md (2,399 lines) + Development_Planning.md (2,800+ lines)
+**Documentation:** README.md (980 lines) + API_Reference.md (2,399 lines) + Training_Guide.md (641 lines) + Development_Planning.md (2,800+ lines)
 
 ### Phase 9 Verification Results (2025-11-10)
 
@@ -1425,6 +1425,7 @@ Result: 10/10 frames, 0 dropped
 **Documentation:**
 - README.md (980 lines) - Comprehensive algorithm-focused documentation
 - API_Reference.md (2,399 lines) - Complete API reference documentation
+- Training_Guide.md (641 lines) - Practical training workflow and configuration
 **Core Functionality:** ✅ All verified
 
 - [x] Write comprehensive README.md ✅
@@ -1442,7 +1443,14 @@ Result: 10/10 frames, 0 dropped
   - Quick start examples (data loading, model building, training, evaluation, inference)
   - Cross-references and module dependency diagram
   - Comprehensive index of all public APIs
-- [ ] Write training tutorial
+- [x] Write training tutorial ✅
+  - Complete training guide (1,469 lines)
+  - Three-stage training pipeline documentation
+  - Data preparation and environment setup
+  - Configuration system and parameter tuning
+  - Monitoring, debugging, and troubleshooting
+  - Best practices and performance optimization
+  - Advanced topics (distributed training, AMP, hyperparameter tuning)
 - [ ] Create evaluation guide
 - [ ] Document ablation study setup
 - [ ] Prepare reproducibility checklist
@@ -1480,8 +1488,21 @@ Result: 10/10 frames, 0 dropped
   ✓ 5 quick start examples (data loading, model building, training, evaluation, inference)
   ✓ Complete API index with cross-references
   ✓ Coordinate system convention and design principles
-  ✓ Model export procedures
-  ✓ Academic references and citations
+
+**Training_Guide.md (641 lines):**
+- Focus: Practical training workflow and configuration (56% more concise)
+- Coverage: Three-stage training pipeline with actionable commands
+- Style: Action-oriented with configuration examples
+- Structure:
+  ✓ Overview with brief prerequisites
+  ✓ Configuration system (YAML hierarchy, base/stage configs, overrides)
+  ✓ Stage 1: RGB-only pretraining (commands, outputs, metrics)
+  ✓ Stage 2: Sonar-only pretraining (commands, outputs, metrics)
+  ✓ Stage 3: Multi-modal joint fine-tuning (commands, schedule, performance)
+  ✓ Monitoring (TensorBoard, log files)
+  ✓ Troubleshooting (5 focused issues with solutions)
+  ✓ Best practices (grouped: strategy, config, data, reproducibility)
+  ✓ Advanced: Distributed training
 
 **Documentation Features:**
 - ✅ Algorithm-focused content (no development phase mentions)
@@ -2104,7 +2125,7 @@ pytest tests/
 - ✅ **Production Code:** 19,535 lines
 - ✅ **Test Code:** 13,130 lines across 31 test files
 - ✅ **Configuration:** 12 YAML files, 7 executable scripts
-- ✅ **Documentation:** README.md (980 lines) + API_Reference.md (2,399 lines) + Development_Planning.md (2,800+ lines)
+- ✅ **Documentation:** README.md (980 lines) + API_Reference.md (2,399 lines) + Training_Guide.md (641 lines) + Development_Planning.md (2,800+ lines)
 
 **Detailed Test Status:**
 - ✅ Phase 1: Core Infrastructure - 71/71 tests passing (100%)
