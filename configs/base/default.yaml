@@ -114,6 +114,7 @@ model:
     sonar:
       type: sonar
       encoder_type: vit
+      model_name: vit_base_patch16_224  # Match RGB backbone architecture
       in_channels: 1
       base_channels: 64
       num_stages: 3

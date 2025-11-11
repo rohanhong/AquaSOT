@@ -45,7 +45,11 @@ data:
       speckle_level: 0.1
       speckle_prob: 0.5
 
-      enable_radial_jitter: true
+      # DISABLED: RadialScalingJitter has bbox synchronization bug
+      # Geometric transform modifies image coordinates but does not update bbox
+      # This causes ~19% IoU loss (proven mathematically)
+      # Will be re-enabled after implementing bbox-aware transform in Level 2 fix
+      enable_radial_jitter: false
       radial_scale_range: [0.9, 1.1]
       radial_jitter_prob: 0.3
 
