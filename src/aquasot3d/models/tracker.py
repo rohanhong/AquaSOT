@@ -384,9 +384,23 @@ class AquaSOT3DTracker(BaseModule):
             H = W = int(N ** 0.5)
             rgb_features = rgb_features.permute(0, 2, 1).reshape(B, C, H, W)
 
-        # Ensure sonar_features is a tensor, not a list
-        if sonar_features is not None and isinstance(sonar_features, list):
-            sonar_features = sonar_features[0]
+        # Handle Sonar ViT sequence features: reshape (B, N, C) -> (B, C, H, W)
+        if sonar_features is not None:
+            # Ensure sonar_features is a tensor, not a list
+            if isinstance(sonar_features, list):
+                sonar_features = sonar_features[0]
+
+            # Reshape sequence format to spatial format (symmetric to RGB handling)
+            if sonar_features.dim() == 3:
+                B, N, C = sonar_features.shape
+                # Check if class token is present (N = H*W + 1)
+                if int((N - 1) ** 0.5) ** 2 == N - 1:
+                    # Has class token, remove it
+                    sonar_features = sonar_features[:, 1:, :]  # Remove class token
+                    N = N - 1
+                # Assume square spatial layout
+                H = W = int(N ** 0.5)
+                sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
 
         fusion_outputs = self.fusion(
             rgb_features=rgb_features,
@@ -683,6 +697,18 @@ class AquaSOT3DTracker(BaseModule):
             sonar_feat_for_3d = sonar_features
             if isinstance(sonar_feat_for_3d, list):
                 sonar_feat_for_3d = sonar_feat_for_3d[0]
+
+            # Handle ViT sequence features: reshape (B, N, C) -> (B, C, H, W) for weak3d
+            if sonar_feat_for_3d.dim() == 3:
+                B, N, C = sonar_feat_for_3d.shape
+                # Check if class token is present (N = H*W + 1)
+                if int((N - 1) ** 0.5) ** 2 == N - 1:
+                    # Has class token, remove it
+                    sonar_feat_for_3d = sonar_feat_for_3d[:, 1:, :]  # Remove class token
+                    N = N - 1
+                # Assume square spatial layout
+                H = W = int(N ** 0.5)
+                sonar_feat_for_3d = sonar_feat_for_3d.permute(0, 2, 1).reshape(B, C, H, W)
 
             sonar_radial = extract_radial_activation(
                 sonar_img=sonar_search,

@@ -128,7 +128,7 @@ model:
 
   # Fusion configuration (G²-DCMA)
   fusion:
-    type: G2DCMAFusion
+    type: g2_dcma
     embed_dim: 768
     num_heads: 8
     num_layers: 2

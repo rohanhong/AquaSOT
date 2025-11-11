@@ -35,7 +35,7 @@ from aquasot3d.utils.config import load_config, save_config, setup_config_loggin
 from aquasot3d.dataloader import RGBSonarDataset, TrackingDataset, create_dataloader
 from aquasot3d.dataloader.loader import collate_fn_template_search
 from aquasot3d.models.tracker import AquaSOT3DTracker
-from aquasot3d.training import Trainer, LossManager, build_optimizer, build_scheduler
+from aquasot3d.training import Trainer, LossManager, CheckpointManager, build_optimizer, build_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +368,17 @@ def main():
         warmup_epochs=cfg.training.scheduler.warmup_epochs,
         min_lr=cfg.training.scheduler.min_lr
     )
-    
+
+    # Build checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir=cfg.paths.checkpoint_dir,
+        max_to_keep=cfg.training.checkpoint.get('max_keep', 5),
+        save_best_only=cfg.training.checkpoint.get('save_best_only', False),
+        metric_name=cfg.training.checkpoint.get('metric', 'val_total'),
+        mode=cfg.training.checkpoint.get('mode', 'min')
+    )
+    logger.info(f"CheckpointManager created: dir={cfg.paths.checkpoint_dir}, metric={checkpoint_manager.metric_name}")
+
     # Create trainer
     trainer = Trainer(
         model=model,
@@ -377,15 +387,14 @@ def main():
         loss_manager=loss_manager,
         train_loader=train_loader,
         val_loader=val_loader,
-        cfg=cfg,
+        checkpoint_manager=checkpoint_manager,
         device=cfg.system.device,
         max_epochs=cfg.training.num_epochs,
         use_amp=cfg.system.use_amp,
         grad_clip_norm=cfg.training.grad_clip.max_norm if cfg.training.grad_clip.enabled else None,
-        checkpoint_dir=cfg.paths.checkpoint_dir,
-        log_dir=cfg.paths.log_dir,
+        tensorboard_dir=cfg.paths.log_dir if cfg.training.get('tensorboard', True) else None,
         log_interval=cfg.training.log_interval,
-        val_interval=cfg.training.val_interval
+        eval_interval=cfg.training.val_interval
     )
     
     # Resume from checkpoint if specified

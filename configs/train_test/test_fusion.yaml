@@ -29,6 +29,46 @@ data:
   num_workers: 2
   prefetch_factor: 1
 
+  # Multi-modal augmentation (combine Stage 1 RGB + Stage 2 Sonar)
+  augmentation:
+    enabled: true
+
+    # RGB-specific transforms (match Stage 1 configuration)
+    rgb:
+      enable_color_jitter: true
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.3
+      hue: 0.2
+      color_jitter_prob: 0.5
+
+      enable_blur: true
+      blur_prob: 0.3
+
+      enable_occlusion: true
+      occlusion_prob: 0.2
+      occlusion_min_size: 0.05
+      occlusion_max_size: 0.3
+
+    # Sonar-specific transforms (match Stage 2 configuration)
+    sonar:
+      enable_speckle: true
+      speckle_level: 0.1
+      speckle_prob: 0.5
+
+      # DISABLED: RadialScalingJitter has bbox synchronization bug
+      # Geometric transform modifies image coordinates but does not update bbox
+      # This causes ~19% IoU loss (proven mathematically)
+      # Will be re-enabled after implementing bbox-aware transform in Level 2 fix
+      enable_radial_jitter: false
+      radial_scale_range: [0.9, 1.1]
+      radial_jitter_prob: 0.3
+
+      enable_sector_occlusion: true
+      sector_min_angle: 10.0
+      sector_max_angle: 40.0
+      sector_occlusion_prob: 0.2
+
 
 # ------------------------------------------------------------------------------
 # Model Configuration
@@ -48,15 +88,22 @@ model:
       output_dim: 768
 
   fusion:
-    type: G2DCMAFusion
+    type: g2_dcma
     embed_dim: 768
     num_heads: 8
     num_layers: 2
 
   temporal:
+    type: mamba
     enabled: true
-    type: VisionMambaTemporal
-    history_length: 4
+    num_layers: 2
+    d_state: 16
+    d_conv: 4
+    expand: 2
+    bidirectional: false
+    use_occlusion_gating: true
+    dropout: 0.1
+    max_spatial_size: 32
 
   heads:
     rgb_box:
@@ -98,9 +145,12 @@ training:
     backbone_lr_multiplier: 0.1
 
   scheduler:
-    type: cosine_warmup
+    type: cosine
     warmup_epochs: 1
+    warmup_lr: 0.00001
+    min_lr: 0.000001
     t_max: 5
+    eta_min: 0.000001
 
   # Full loss weights
   loss_weights:
