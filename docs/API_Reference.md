@@ -521,10 +521,11 @@ rgb_transformed = rgb_transform(rgb_image)  # (3, 256, 256)
 
 **Available Augmentations (train mode):**
 
-- Random horizontal flip
-- Color jittering (brightness, contrast, saturation, hue)
-- Random Gaussian blur
-- Random grayscale
+- **ColorJitter**: Brightness, contrast, saturation, hue variations (prob=0.5)
+- **RandomBlur**: Gaussian blur simulation for turbidity effects (prob=0.3)
+- **RandomOcclusion**: Synthetic rectangular occlusions (prob=0.2, size 5-30%)
+- Random horizontal flip (disabled in multi-modal training to preserve geometry)
+- Random grayscale conversion
 - Normalization (ImageNet statistics by default)
 
 **Class: `SonarTransforms`**
@@ -549,8 +550,10 @@ sonar_transformed = sonar_transform(sonar_image)  # (1, 256, 256)
 
 - Speckle noise simulation
 - Random sector occlusion
-- Radial scaling jitter
+- **Radial scaling jitter** (DISABLED - bbox synchronization bug causes ~19% IoU loss)
 - Intensity normalization
+
+**Note:** RadialScalingJitter is currently disabled due to a bbox synchronization issue where geometric transforms do not update bounding box coordinates accordingly. Re-enable only after fixing bbox transformation pipeline.
 
 ---
 
