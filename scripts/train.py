@@ -155,6 +155,91 @@ def build_dataloaders(cfg):
         return_occluded=True
     )
 
+    # Build augmentation pipeline for training
+    train_augmentation = None
+    if cfg.data.get('augmentation', {}).get('enabled', False):
+        from aquasot3d.dataloader.transforms.rgb_transforms import ColorJitter, RandomBlur, RandomOcclusion
+        from aquasot3d.dataloader.transforms.sonar_transforms import SpeckleNoise, RadialScalingJitter, SectorOcclusion
+
+        logger.info("Building data augmentation pipeline")
+
+        class SimpleAugmentation:
+            """Lightweight augmentation wrapper (no normalization or to_tensor)"""
+            def __init__(self, rgb_transforms, sonar_transforms):
+                self.rgb_transforms = rgb_transforms
+                self.sonar_transforms = sonar_transforms
+
+            def __call__(self, data):
+                """Apply augmentations to RGB and Sonar images"""
+                rgb_img = data.get('rgb_img')
+                sonar_img = data.get('sonar_img')
+                rgb_bbox = data.get('rgb_bbox')
+                sonar_bbox = data.get('sonar_bbox')
+
+                # Apply RGB transforms
+                if rgb_img is not None:
+                    for transform in self.rgb_transforms:
+                        rgb_img = transform(rgb_img)
+
+                # Apply Sonar transforms
+                if sonar_img is not None:
+                    for transform in self.sonar_transforms:
+                        sonar_img = transform(sonar_img)
+
+                return {
+                    'rgb_img': rgb_img,
+                    'sonar_img': sonar_img,
+                    'rgb_bbox': rgb_bbox,
+                    'sonar_bbox': sonar_bbox,
+                }
+
+        # Build RGB transforms
+        rgb_transforms = []
+        rgb_cfg = cfg.data.augmentation.get('rgb', {})
+        if rgb_cfg.get('enable_color_jitter', False):
+            rgb_transforms.append(ColorJitter(
+                brightness=rgb_cfg.get('brightness', 0.2),
+                contrast=rgb_cfg.get('contrast', 0.2),
+                saturation=rgb_cfg.get('saturation', 0.2),
+                hue=rgb_cfg.get('hue', 0.1),
+                prob=rgb_cfg.get('color_jitter_prob', 0.5),
+            ))
+        if rgb_cfg.get('enable_blur', False):
+            rgb_transforms.append(RandomBlur(
+                prob=rgb_cfg.get('blur_prob', 0.3),
+            ))
+        if rgb_cfg.get('enable_occlusion', False):
+            rgb_transforms.append(RandomOcclusion(
+                min_size=rgb_cfg.get('occlusion_min_size', 0.05),
+                max_size=rgb_cfg.get('occlusion_max_size', 0.3),
+                prob=rgb_cfg.get('occlusion_prob', 0.2),
+            ))
+
+        # Build Sonar transforms
+        sonar_transforms = []
+        sonar_cfg = cfg.data.augmentation.get('sonar', {})
+        if sonar_cfg.get('enable_speckle', False):
+            sonar_transforms.append(SpeckleNoise(
+                noise_level=sonar_cfg.get('speckle_level', 0.1),
+                prob=sonar_cfg.get('speckle_prob', 0.5),
+            ))
+        if sonar_cfg.get('enable_radial_jitter', False):
+            sonar_transforms.append(RadialScalingJitter(
+                scale_range=tuple(sonar_cfg.get('radial_scale_range', [0.9, 1.1])),
+                prob=sonar_cfg.get('radial_jitter_prob', 0.3),
+            ))
+        if sonar_cfg.get('enable_sector_occlusion', False):
+            sonar_transforms.append(SectorOcclusion(
+                min_angle=sonar_cfg.get('sector_min_angle', 10.0),
+                max_angle=sonar_cfg.get('sector_max_angle', 40.0),
+                prob=sonar_cfg.get('sector_occlusion_prob', 0.2),
+            ))
+
+        train_augmentation = SimpleAugmentation(rgb_transforms, sonar_transforms)
+        logger.info(f"Augmentation enabled: {len(rgb_transforms)} RGB transforms, {len(sonar_transforms)} Sonar transforms")
+    else:
+        logger.info("Augmentation disabled")
+
     # Wrap with TrackingDataset for template-search pair sampling
     template_search_gap = cfg.data.get('template_search_gap', 30)
     template_size = cfg.data.get('template_size', 127)
@@ -164,13 +249,15 @@ def build_dataloaders(cfg):
         base_dataset=train_base_dataset,
         template_search_gap=template_search_gap,
         template_size=template_size,
-        search_size=search_size
+        search_size=search_size,
+        augmentation=train_augmentation
     )
     val_dataset = TrackingDataset(
         base_dataset=val_base_dataset,
         template_search_gap=template_search_gap,
         template_size=template_size,
-        search_size=search_size
+        search_size=search_size,
+        augmentation=None  # No augmentation for validation
     )
 
     logger.info(f"Train dataset: {len(train_dataset)} samples")

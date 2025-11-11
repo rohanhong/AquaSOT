@@ -1,11 +1,11 @@
 # ==============================================================================
-# Sonar-Only Pretraining Configuration
+# Sonar-Only Pretraining Configuration (Stage 2)
 #
 # Pretrain the sonar branch independently to learn sonar-specific features.
 # Helps initialize the sonar encoder before multi-modal fusion training.
 #
 # Author: AquaSOT-3D Team
-# Date: 2025-11-10
+# Date: 2025-11-11
 # ==============================================================================
 
 _base_: ../base/default.yaml
@@ -28,14 +28,30 @@ data:
   train_root: data/UUV2
   val_root: data/UUV3
 
-  # Sonar-specific augmentation
+  # Augmentation for Sonar-only (acoustic-specific transforms)
   augmentation:
     enabled: true
-    brightness: 0.2  # Less aggressive for sonar
-    contrast: 0.25
-    rotation: 15.0
-    scale_range: [0.8, 1.2]
-    random_erase: 0.3  # Simulate sonar noise
+
+    # RGB disabled for Sonar-only pretraining
+    rgb:
+      enable_color_jitter: false
+      enable_blur: false
+      enable_occlusion: false
+
+    # Sonar-specific transforms (acoustic imagery with fan geometry)
+    sonar:
+      enable_speckle: true
+      speckle_level: 0.1
+      speckle_prob: 0.5
+
+      enable_radial_jitter: true
+      radial_scale_range: [0.9, 1.1]
+      radial_jitter_prob: 0.3
+
+      enable_sector_occlusion: true
+      sector_min_angle: 10.0
+      sector_max_angle: 40.0
+      sector_occlusion_prob: 0.2
 
 
 # ------------------------------------------------------------------------------
@@ -47,23 +63,17 @@ model:
     rgb:
       type: null  # Disable RGB backbone
 
-    sonar:
-      type: sonar_encoder
-      base_channels: 64
-      use_logpolar: true  # Important for sonar
-      output_dim: 768
-
   fusion:
     type: null  # Disable fusion
 
   temporal:
-    enabled: true  # Keep temporal for sonar sequences
-    num_layers: 4
+    enabled: true
+    num_layers: 8  # Increased for full training (vs. 2 in test)
 
   heads:
     # Only sonar head enabled
     rgb_box:
-      type: null  # Disable
+      type: null
 
     sonar_box:
       type: BoxHead
@@ -71,23 +81,23 @@ model:
       hidden_dim: 256
 
     fusion_box:
-      type: null  # Disable
+      type: null
 
     weak3d:
-      type: null  # Disable 3D estimation
+      type: null
 
 
 # ------------------------------------------------------------------------------
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
-  num_epochs: 40  # Shorter pretraining
+  num_epochs: 40  # Full pretraining (vs. 5 in test)
 
-  batch_size: 24  # Can use larger batch
+  batch_size: 8
   gradient_accumulation_steps: 1
 
   optimizer:
-    lr: 0.0003  # Slightly higher for pretraining
+    lr: 0.0003
     weight_decay: 0.0001
     backbone_lr_multiplier: 1.0  # No pretrained backbone
 
@@ -99,23 +109,34 @@ training:
 
   # Loss weights - Sonar only
   loss_weights:
+    rgb_box: 0.0
+    rgb_cls: 0.0
     sonar_box: 1.0
     sonar_cls: 0.5
-    temporal_smooth: 0.05
-    # All other losses disabled
-    rgb_box: 0.0
     fusion_box: 0.0
+    fusion_cls: 0.0
     weak3d_reg: 0.0
     weak3d_cycle: 0.0
     component_consistency: 0.0
     representation_consistency: 0.0
+    temporal_smooth: 0.05
 
   val_interval: 5
 
   checkpoint:
     save_interval: 5
-    metric: sonar_success_auc  # Use sonar metric
+    metric: sonar_success_auc
     mode: max
+
+  log_interval: 10
+
+
+# ------------------------------------------------------------------------------
+# Debugging Configuration
+# ------------------------------------------------------------------------------
+debug:
+  enabled: false
+  fast_dev_run: false
 
 
 # ------------------------------------------------------------------------------

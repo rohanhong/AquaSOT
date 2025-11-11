@@ -1,11 +1,11 @@
 # ==============================================================================
-# RGB-Only Pretraining Configuration
+# RGB-Only Pretraining Configuration (Stage 1)
 #
 # Pretrain the RGB branch independently before full multi-modal training.
 # Useful for transfer learning and component-wise analysis.
 #
 # Author: AquaSOT-3D Team
-# Date: 2025-11-10
+# Date: 2025-11-11
 # ==============================================================================
 
 _base_: ../base/default.yaml
@@ -28,16 +28,32 @@ data:
   train_root: data/UUV2
   val_root: data/UUV3
 
-  # Augmentation for RGB-only
+  # Augmentation for RGB-only (domain-specific transforms)
   augmentation:
     enabled: true
-    brightness: 0.3
-    contrast: 0.3
-    saturation: 0.3
-    hue: 0.2
-    rotation: 25.0
-    scale_range: [0.6, 1.4]
-    horizontal_flip: 0.5
+
+    # RGB-specific transforms (optical imagery)
+    rgb:
+      enable_color_jitter: true
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.3
+      hue: 0.2
+      color_jitter_prob: 0.5
+
+      enable_blur: true
+      blur_prob: 0.3
+
+      enable_occlusion: true
+      occlusion_prob: 0.2
+      occlusion_min_size: 0.05
+      occlusion_max_size: 0.3
+
+    # Sonar disabled for RGB-only pretraining
+    sonar:
+      enable_speckle: false
+      enable_radial_jitter: false
+      enable_sector_occlusion: false
 
 
 # ------------------------------------------------------------------------------
@@ -53,8 +69,8 @@ model:
     type: null  # Disable fusion
 
   temporal:
-    enabled: true  # Keep temporal for RGB sequences
-    history_length: 8
+    enabled: true
+    num_layers: 8  # Increased for full training (vs. 2 in test)
 
   heads:
     # Only RGB head enabled
@@ -64,32 +80,33 @@ model:
       hidden_dim: 256
 
     sonar_box:
-      type: null  # Disable
+      type: null
 
     fusion_box:
-      type: null  # Disable
+      type: null
 
     weak3d:
-      type: null  # Disable 3D estimation
+      type: null
 
 
 # ------------------------------------------------------------------------------
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
-  num_epochs: 40  # Shorter pretraining
+  num_epochs: 40  # Full pretraining (vs. 5 in test)
 
-  batch_size: 24  # Can use larger batch without sonar
+  batch_size: 8
   gradient_accumulation_steps: 1
 
   optimizer:
-    lr: 0.0003  # Slightly higher for pretraining
+    lr: 0.0003
     weight_decay: 0.0001
 
   scheduler:
-    type: cosine_warmup
+    type: cosine
     warmup_epochs: 3
     t_max: 40
+    eta_min: 1.0e-06
 
   # Loss weights - RGB only
   loss_weights:
@@ -98,7 +115,9 @@ training:
     temporal_smooth: 0.05
     # All other losses disabled
     sonar_box: 0.0
+    sonar_cls: 0.0
     fusion_box: 0.0
+    fusion_cls: 0.0
     weak3d_reg: 0.0
     weak3d_cycle: 0.0
     component_consistency: 0.0
@@ -108,8 +127,18 @@ training:
 
   checkpoint:
     save_interval: 5
-    metric: rgb_success_auc  # Use RGB metric
+    metric: rgb_success_auc
     mode: max
+
+  log_interval: 10
+
+
+# ------------------------------------------------------------------------------
+# Debugging Configuration
+# ------------------------------------------------------------------------------
+debug:
+  enabled: false
+  fast_dev_run: false
 
 
 # ------------------------------------------------------------------------------

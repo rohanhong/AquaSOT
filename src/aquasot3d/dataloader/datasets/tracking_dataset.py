@@ -43,6 +43,7 @@ class TrackingDataset(Dataset):
         search_first_prob: float = 0.2,
         template_size: int = 127,
         search_size: int = 255,
+        augmentation=None,
     ):
         self.base_dataset = base_dataset
         self.template_search_gap = template_search_gap
@@ -50,6 +51,7 @@ class TrackingDataset(Dataset):
         self.search_first_prob = search_first_prob
         self.template_size = template_size
         self.search_size = search_size
+        self.augmentation = augmentation
 
         # Get valid frame indices
         self.valid_indices = base_dataset.valid_indices
@@ -102,6 +104,37 @@ class TrackingDataset(Dataset):
         # Get frame data
         template_data = self.base_dataset[template_idx]
         search_data = self.base_dataset[search_idx]
+
+        # Apply augmentation if provided
+        if self.augmentation is not None:
+            # Prepare data for augmentation (expects dict with rgb_img, sonar_img, rgb_bbox, sonar_bbox)
+            template_aug_input = {
+                'rgb_img': template_data['rgb_img'],
+                'sonar_img': template_data['sonar_img'],
+                'rgb_bbox': template_data['rgb_bbox'],
+                'sonar_bbox': template_data['sonar_bbox'],
+            }
+            search_aug_input = {
+                'rgb_img': search_data['rgb_img'],
+                'sonar_img': search_data['sonar_img'],
+                'rgb_bbox': search_data['rgb_bbox'],
+                'sonar_bbox': search_data['sonar_bbox'],
+            }
+
+            # Apply augmentation
+            template_aug_output = self.augmentation(template_aug_input)
+            search_aug_output = self.augmentation(search_aug_input)
+
+            # Update template and search data with augmented results
+            template_data['rgb_img'] = template_aug_output.get('rgb_img', template_data['rgb_img'])
+            template_data['sonar_img'] = template_aug_output.get('sonar_img', template_data['sonar_img'])
+            template_data['rgb_bbox'] = template_aug_output.get('rgb_bbox', template_data['rgb_bbox'])
+            template_data['sonar_bbox'] = template_aug_output.get('sonar_bbox', template_data['sonar_bbox'])
+
+            search_data['rgb_img'] = search_aug_output.get('rgb_img', search_data['rgb_img'])
+            search_data['sonar_img'] = search_aug_output.get('sonar_img', search_data['sonar_img'])
+            search_data['rgb_bbox'] = search_aug_output.get('rgb_bbox', search_data['rgb_bbox'])
+            search_data['sonar_bbox'] = search_aug_output.get('sonar_bbox', search_data['sonar_bbox'])
 
         # Build tracking pair
         pair = {

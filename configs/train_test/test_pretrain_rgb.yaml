@@ -32,6 +32,33 @@ data:
   num_workers: 2
   prefetch_factor: 1
 
+  # Augmentation for RGB-only (domain-specific transforms)
+  augmentation:
+    enabled: true
+
+    # RGB-specific transforms (optical imagery)
+    rgb:
+      enable_color_jitter: true
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.3
+      hue: 0.2
+      color_jitter_prob: 0.5
+
+      enable_blur: true
+      blur_prob: 0.3
+
+      enable_occlusion: true
+      occlusion_prob: 0.2
+      occlusion_min_size: 0.05
+      occlusion_max_size: 0.3
+
+    # Sonar disabled for RGB-only pretraining
+    sonar:
+      enable_speckle: false
+      enable_radial_jitter: false
+      enable_sector_occlusion: false
+
 
 # ------------------------------------------------------------------------------
 # Model Configuration
@@ -72,7 +99,7 @@ model:
 training:
   num_epochs: 5  # Minimal epochs for testing
 
-  batch_size: 4  # Small batch for quick iteration
+  batch_size: 8
   gradient_accumulation_steps: 1
 
   optimizer:
