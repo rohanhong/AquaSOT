@@ -433,43 +433,43 @@ x,y,w,h   # Frame 2
 
 ### Training Pipeline
 
-AquaSOT-3D follows a three-stage training strategy:
+AquaSOT-3D follows a two-stage training strategy:
 
 #### Stage 1: Single-Modality Pretraining
 
-Train RGB and Sonar branches independently:
+Train RGB and Sonar branches independently to initialize backbone networks:
 
 ```bash
-# RGB-only pretraining
-python scripts/train.py --config configs/train/pretrain_rgb_only.yaml --epochs 40
+# RGB-only pretraining (40 epochs)
+python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
 
-# Sonar-only pretraining (with log-polar preprocessing)
-python scripts/train.py --config configs/train/pretrain_sonar_only.yaml --epochs 40
+# Sonar-only pretraining (40 epochs, with log-polar preprocessing)
+python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 ```
 
-This stage initializes backbone networks with single-modality tracking capabilities.
+**Quick Testing** (5 epochs for validation):
+```bash
+python scripts/train.py --config configs/train_test/test_pretrain_rgb.yaml
+python scripts/train.py --config configs/train_test/test_pretrain_sonar.yaml
+```
 
-#### Stage 2: Joint Multi-Modal Fine-Tuning
+#### Stage 2: Multi-Modal Fusion Training
 
-Train the complete system with fusion and temporal modules:
+Train the complete system with G²-DCMA fusion and temporal modules (60 epochs):
 
 ```bash
-python scripts/train.py --config configs/train/train_uuv2.yaml --epochs 60
+python scripts/train.py --config configs/train/train_uuv2.yaml
 ```
 
-**Key Settings**:
-- Freeze lower backbone layers (optional)
-- Higher learning rate for G²-DCMA, Mamba, and projector modules
-- Enable all loss components
-
-#### Stage 3: Full End-to-End Fine-Tuning
-
-Unfreeze all layers for final refinement:
-
+**Quick Testing** (5 epochs for validation):
 ```bash
-python scripts/train.py --config configs/train/train_uuv2.yaml \
-    --opts training.freeze_backbone=false training.epochs=20
+python scripts/train.py --config configs/train_test/test_fusion.yaml
 ```
+
+**Key Training Settings**:
+- Small batch size (2-8) with gradient accumulation for memory efficiency
+- Lower learning rate for pretrained backbones (0.1x multiplier)
+- All loss components enabled (RGB, Sonar, Fusion, Weak3D, Consistency)
 
 ### Loss Functions
 
@@ -496,22 +496,23 @@ AquaSOT-3D employs a multi-task loss with initial weights:
 
 ### Data Augmentation
 
-**RGB Augmentation**:
-- Color jitter (brightness, contrast, saturation)
-- Gaussian blur
-- Random horizontal flip
-- Random crop with padding
-- CutMix / CopyPaste (synthetic occlusions)
+AquaSOT-3D implements **domain-specific augmentation pipelines** tailored to optical and acoustic imaging characteristics:
 
-**Sonar Augmentation**:
-- Speckle noise injection
-- Radial scaling jitter
-- Sector occlusion (fan-shaped masks)
-- Intensity normalization
+**RGB Augmentation** (optical domain):
+- **ColorJitter**: Brightness, contrast, saturation, hue variations (prob=0.5)
+- **RandomBlur**: Gaussian blur simulation for turbidity effects (prob=0.3)
+- **RandomOcclusion**: Synthetic rectangular occlusions (prob=0.2, size 5-30%)
 
-**Joint Augmentation**:
-- Temporal jitter (random frame sampling)
-- Synchronized geometric transforms
+**Sonar Augmentation** (acoustic domain):
+- **SpeckleNoise**: Multiplicative speckle noise characteristic of sonar imagery (prob=0.5, level=0.1)
+- **SectorOcclusion**: Fan-shaped occlusion masks matching sonar geometry (prob=0.2, 10-40°)
+- **RadialScalingJitter**: DISABLED due to bbox synchronization bug (geometric transform does not update bbox coordinates, causing ~19% IoU loss)
+
+**Implementation Details**:
+- Transforms are modality-specific and applied independently
+- No shared geometric transforms (flip/rotation) to preserve sensor-specific geometry
+- Augmentation enabled only during training (disabled for validation)
+- Implemented in `src/aquasot3d/dataloader/transforms/`
 
 ### Distributed Training
 
@@ -631,9 +632,13 @@ configs/
 ├── base/
 │   └── default.yaml              # Base configuration with all defaults
 ├── train/
-│   ├── train_uuv2.yaml          # Full training configuration
-│   ├── pretrain_rgb_only.yaml   # RGB-only pretraining
-│   └── pretrain_sonar_only.yaml # Sonar-only pretraining
+│   ├── train_uuv2.yaml          # Full training (60 epochs)
+│   ├── pretrain_rgb_only.yaml   # RGB-only pretraining (40 epochs)
+│   └── pretrain_sonar_only.yaml # Sonar-only pretraining (40 epochs)
+├── train_test/
+│   ├── test_pretrain_rgb.yaml   # Quick RGB test (5 epochs)
+│   ├── test_pretrain_sonar.yaml # Quick Sonar test (5 epochs)
+│   └── test_fusion.yaml         # Quick fusion test (5 epochs)
 ├── eval/
 │   └── eval_uuv3.yaml           # Evaluation configuration
 └── ablation/
@@ -645,84 +650,14 @@ configs/
 
 ### Configuration Structure
 
-**Example Configuration** (`configs/train/train_uuv2.yaml`):
+Configuration files use YAML format with hierarchical inheritance via `_base_` directive. Key configuration sections include:
 
-```yaml
-# Dataset
-dataset:
-  name: "RGB-Sonar"
-  root: "data/"
-  sequences:
-    train: ["uuv2"]
-    val: ["uuv3"]
-  modalities: ["rgb", "sonar"]
+- **data**: Dataset paths, augmentation settings, batch size
+- **model**: Backbone, fusion, temporal, and head configurations
+- **training**: Optimizer, scheduler, loss weights, epochs
+- **system**: Device, mixed precision, distributed training
 
-# Model Architecture
-model:
-  backbone:
-    rgb:
-      type: "vit_base_patch16_224"
-      pretrained: true
-      frozen_stages: 2
-    sonar:
-      type: "vit_small_patch16_224"
-      logpolar:
-        enabled: true
-        learnable_scales: true
-        init_alpha: 1.0
-        init_beta: 1.0
-
-  fusion:
-    type: "G2-DCMA"
-    use_geometry_gating: true
-    use_deformable_attn: true
-    use_dual_consistency: true
-    num_heads: 8
-    embed_dim: 512
-
-  temporal:
-    type: "vision_mamba"
-    state_dim: 256
-    num_layers: 4
-
-  heads:
-    enable_weak3d: true
-    enable_quality_weighting: true
-
-# Training
-training:
-  batch_size: 32
-  epochs: 60
-  lr: 0.0002
-  optimizer: "adamw"
-  weight_decay: 0.0001
-  lr_scheduler: "cosine"
-  warmup_epochs: 5
-
-  # Loss weights
-  loss_weights:
-    rgb_box: 1.0
-    sonar_box: 1.0
-    component_consistency: 0.2
-    representation_consistency: 0.1
-    cycle_3d: 0.6
-    temporal_smooth: 0.1
-
-  # Data augmentation
-  augmentation:
-    rgb:
-      color_jitter: 0.4
-      blur_prob: 0.3
-      cutmix_prob: 0.2
-    sonar:
-      speckle_noise: 0.3
-      radial_jitter: 0.1
-
-# Hardware
-device: "cuda"
-num_workers: 8
-amp: true  # Automatic Mixed Precision
-```
+Refer to actual configuration files in `configs/` directory for detailed parameters.
 
 ### Command-Line Overrides
 
