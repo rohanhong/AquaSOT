@@ -172,27 +172,56 @@ class Trainer:
             # Train one epoch
             train_metrics = self.train_epoch(epoch)
 
-            # Validate
+            # Always validate every epoch to determine best checkpoint
             val_metrics = None
-            if self.val_loader is not None and (epoch + 1) % self.eval_interval == 0:
+            if self.val_loader is not None:
                 val_metrics = self.validate(epoch)
 
             # Update learning rate
             self.scheduler.step()
 
-            # Save checkpoint (respect save_interval from config)
+            # Three-tier checkpoint saving
             if self.checkpoint_manager is not None and self.is_main_process:
-                if (epoch + 1) % self.checkpoint_save_interval == 0:
-                    metrics = {**train_metrics}
-                    if val_metrics is not None:
-                        metrics.update(val_metrics)
+                metrics = {**train_metrics}
+                if val_metrics is not None:
+                    metrics.update(val_metrics)
 
+                # 1. Save "last" checkpoint every epoch (overwrite)
+                self.checkpoint_manager.save(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    scheduler=self.scheduler,
+                    epoch=epoch,
+                    metrics=metrics,
+                    filename='checkpoint_last.pth'
+                )
+
+                # 2. Save "best" checkpoint if metric improves (overwrite)
+                current_metric = metrics.get(self.checkpoint_manager.metric_name, None)
+                if current_metric is not None:
+                    if self.checkpoint_manager._is_better(current_metric, self.checkpoint_manager.best_metric):
+                        self.checkpoint_manager.best_metric = current_metric
+                        self.checkpoint_manager.best_epoch = epoch
+                        self.checkpoint_manager.save(
+                            model=self.model,
+                            optimizer=self.optimizer,
+                            scheduler=self.scheduler,
+                            epoch=epoch,
+                            metrics=metrics,
+                            is_best=True,
+                            filename='checkpoint_best.pth'
+                        )
+                        logger.info(f"Saved best checkpoint at epoch {epoch + 1} with {self.checkpoint_manager.metric_name}={current_metric:.4f}")
+
+                # 3. Save interval checkpoint every N epochs (keep multiple)
+                if (epoch + 1) % self.checkpoint_save_interval == 0:
                     self.checkpoint_manager.save(
                         model=self.model,
                         optimizer=self.optimizer,
                         scheduler=self.scheduler,
                         epoch=epoch,
-                        metrics=metrics
+                        metrics=metrics,
+                        filename=f'checkpoint_epoch_{epoch + 1}.pth'
                     )
 
             # Log epoch summary

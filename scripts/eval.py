@@ -48,40 +48,109 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(checkpoint_path, device='cuda'):
-    """Load model from checkpoint"""
-    logger.info(f"Loading model from: {checkpoint_path}")
-    
+def build_model(cfg):
+    """Build tracking model with proper config preprocessing"""
+    logger.info(f"Building model: {cfg.model.type}")
+
+    # Convert ConfigDict to plain dict for model building
+    from aquasot3d.utils.config import _config_to_dict
+
+    # Prepare backbone configs
+    rgb_backbone_cfg = _config_to_dict(cfg.model.backbone.rgb) if cfg.model.backbone.rgb.get('type') not in [None, 'null'] else None
+    sonar_backbone_cfg = _config_to_dict(cfg.model.backbone.sonar) if cfg.model.backbone.sonar.get('type') not in [None, 'null'] else None
+
+    # Prepare fusion config
+    fusion_cfg = _config_to_dict(cfg.model.fusion) if cfg.model.fusion.get('type') not in [None, 'null'] else None
+
+    # Prepare temporal config (remove control parameters)
+    temporal_cfg = None
+    if cfg.model.temporal.get('enabled', True) and cfg.model.temporal.get('type') not in [None, 'null']:
+        temporal_cfg = _config_to_dict(cfg.model.temporal)
+
+    # Prepare head configs (remove 'type' and 'in_channels' which will be provided by tracker)
+    def clean_head_config(head_cfg):
+        """Remove parameters that tracker will provide explicitly"""
+        if not head_cfg or head_cfg.get('type') in [None, 'null']:
+            return None
+        cfg_dict = _config_to_dict(head_cfg)
+        cfg_dict.pop('type', None)
+        cfg_dict.pop('in_channels', None)
+        cfg_dict.pop('rgb_channels', None)
+        cfg_dict.pop('sonar_channels', None)
+        return cfg_dict
+
+    box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
+    fusion_head_cfg = clean_head_config(cfg.model.heads.get('fusion_box', {}))
+    weak3d_cfg = clean_head_config(cfg.model.heads.get('weak3d', {}))
+
+    # Determine use_weak3d
+    use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
+
+    # Build model
+    model = AquaSOT3DTracker(
+        rgb_backbone_config=rgb_backbone_cfg,
+        sonar_backbone_config=sonar_backbone_cfg,
+        fusion_config=fusion_cfg,
+        temporal_config=temporal_cfg,
+        box_head_config=box_head_cfg,
+        fusion_head_config=fusion_head_cfg,
+        weak3d_config=weak3d_cfg,
+        use_temporal=cfg.model.temporal.get('enabled', True),
+        use_weak3d=use_weak3d
+    )
+
+    logger.info(f"Model built successfully")
+    logger.info(f"Total parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+
+    return model
+
+
+def load_model_checkpoint(model, checkpoint_path, device='cuda'):
+    """Load model weights from checkpoint"""
+    logger.info(f"Loading checkpoint from: {checkpoint_path}")
+
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-    # Build model (assume full model config in checkpoint)
-    if 'config' in checkpoint:
-        cfg = checkpoint['config']
-        model = AquaSOT3DTracker(
-            rgb_backbone_type=cfg.model.backbone.rgb.type,
-            sonar_encoder_type=cfg.model.backbone.sonar.type,
-            fusion_config=cfg.model.fusion,
-            temporal_config=cfg.model.temporal,
-            head_configs=cfg.model.heads
-        )
-    else:
-        # Build with default config if config not in checkpoint
-        logger.warning("Config not found in checkpoint, using default model")
-        model = AquaSOT3DTracker()
-    
-    # Load state dict
+
+    # Extract state dict from checkpoint
     if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        state_dict = checkpoint['model_state_dict']
     elif 'state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['state_dict'])
+        state_dict = checkpoint['state_dict']
     else:
-        model.load_state_dict(checkpoint)
-    
+        state_dict = checkpoint
+
+    # Load state dict into model
+    load_result = model.load_state_dict(state_dict, strict=False)
+
+    # Report loading statistics
+    logger.info(f"Checkpoint loading summary:")
+    logger.info(f"  Total parameters in checkpoint: {len(state_dict)}")
+    logger.info(f"  Total parameters in model: {len(model.state_dict())}")
+
+    if len(load_result.missing_keys) > 0:
+        logger.warning(f"  Missing {len(load_result.missing_keys)} parameters (using random initialization):")
+        for key in load_result.missing_keys[:5]:
+            logger.warning(f"    - {key}")
+        if len(load_result.missing_keys) > 5:
+            logger.warning(f"    ... and {len(load_result.missing_keys) - 5} more")
+
+    if len(load_result.unexpected_keys) > 0:
+        logger.warning(f"  Found {len(load_result.unexpected_keys)} unexpected keys (ignored)")
+
+    # Log checkpoint metadata
+    if 'epoch' in checkpoint:
+        logger.info(f"Checkpoint from epoch {checkpoint['epoch'] + 1}")
+    if 'best_metric' in checkpoint:
+        logger.info(f"Best metric: {checkpoint['best_metric']}")
+
     model = model.to(device)
     model.eval()
-    
-    logger.info("Model loaded successfully")
-    
+
+    if len(load_result.missing_keys) == 0 and len(load_result.unexpected_keys) == 0:
+        logger.info("All checkpoint parameters loaded successfully!")
+    else:
+        logger.warning(f"Checkpoint loading completed with {len(load_result.missing_keys)} missing, {len(load_result.unexpected_keys)} unexpected keys")
+
     return model
 
 
@@ -119,22 +188,48 @@ def main():
     # Save eval config
     save_config(cfg, Path(cfg.evaluation.output_dir) / 'eval_config.yaml')
     
-    # Load model
+    # Build model from config
     device = cfg.system.device if hasattr(cfg.system, 'device') else 'cuda'
-    model = load_model(args.checkpoint, device=device)
+    model = build_model(cfg)
+
+    # Load checkpoint weights
+    model = load_model_checkpoint(model, args.checkpoint, device=device)
     
-    # Build evaluation dataloader
-    logger.info("Building evaluation dataloader")
+    # Build evaluation dataset
+    logger.info("Building evaluation dataset")
+
+    # Create base dataset (single frames)
+    from aquasot3d.dataloader import RGBSonarDataset, TrackingDataset
+    from aquasot3d.dataloader.loader import collate_fn_template_search
+
+    eval_base_dataset = RGBSonarDataset(
+        data_root='data',
+        sequence_name=cfg.data.test_root.split('/')[-1],  # Extract sequence name (e.g., 'uuv3')
+        return_occluded=True
+    )
+
+    # Wrap with TrackingDataset for template-search pair sampling
+    eval_dataset = TrackingDataset(
+        base_dataset=eval_base_dataset,
+        template_search_gap=cfg.data.get('template_search_gap', 30),
+        template_size=cfg.data.get('template_size', 128),
+        search_size=cfg.data.get('search_size', 256),
+        augmentation=None  # No augmentation for evaluation
+    )
+
+    logger.info(f"Evaluation dataset: {len(eval_dataset)} samples")
+
+    # Create dataloader
     eval_loader = create_dataloader(
-        root=cfg.data.test_root,
-        split=cfg.data.test_split,
+        dataset=eval_dataset,
         batch_size=cfg.evaluation.batch_size,
+        shuffle=False,
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
-        shuffle=False,
-        augmentation=None
+        collate_fn=collate_fn_template_search,
+        distributed=False
     )
-    
+
     logger.info(f"Evaluation batches: {len(eval_loader)}")
     
     # Create evaluator

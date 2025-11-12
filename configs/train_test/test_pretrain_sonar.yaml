@@ -125,12 +125,12 @@ training:
     representation_consistency: 0.0
     temporal_smooth: 0.05
 
-  val_interval: 2
+  val_interval: 1  # Validate every epoch for best checkpoint tracking
 
   checkpoint:
-    save_interval: 2
-    metric: sonar_success_auc
-    mode: max
+    save_interval: 5  # Save interval checkpoint every 5 epochs
+    metric: val_total  # Use validation total loss for best tracking
+    mode: min  # Lower loss is better
 
   log_interval: 5
 

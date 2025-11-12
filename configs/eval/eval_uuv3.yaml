@@ -25,8 +25,8 @@ experiment:
 # Data Configuration
 # ------------------------------------------------------------------------------
 data:
-  # Evaluation dataset
-  test_root: data/UUV3
+  # Evaluation dataset (consistent with train config path format)
+  test_root: data/uuv3
   test_split: test
 
   # No augmentation for evaluation
@@ -36,15 +36,78 @@ data:
   # Evaluation dataloader
   num_workers: 4
   pin_memory: true
+  prefetch_factor: 2
+
+  # Image sizes (inherited from base, but explicitly set for clarity)
+  template_size: 128
+  search_size: 256
+
+  # Template-search pair sampling (same as training)
+  template_search_gap: 30
 
 
 # ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
 model:
-  # Use full model with all components
-  # Model weights will be loaded from checkpoint
+  # Full multi-modal model configuration
+  # Model weights will be loaded from checkpoint, but config defines architecture
   type: AquaSOT3DTracker
+
+  backbone:
+    rgb:
+      type: vit_rgb
+      model_name: vit_base_patch16_224
+      pretrained: false  # Weights from checkpoint
+      output_dim: 768
+
+    sonar:
+      type: sonar
+      encoder_type: vit
+      use_logpolar: true
+      output_dim: 768
+
+  fusion:
+    type: g2_dcma
+    embed_dim: 768
+    num_heads: 8
+    num_layers: 2
+
+  temporal:
+    type: mamba
+    enabled: true
+    num_layers: 2
+    d_state: 16
+    d_conv: 4
+    expand: 2
+    bidirectional: false
+    use_occlusion_gating: true
+    dropout: 0.1
+    max_spatial_size: 32
+
+  heads:
+    rgb_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+
+    sonar_box:
+      type: BoxHead
+      in_channels: 768
+      hidden_dim: 256
+
+    fusion_box:
+      type: FusionHead
+      rgb_channels: 768
+      sonar_channels: 768
+      hidden_dim: 256
+
+    weak3d:
+      type: Weak3DHead
+      in_channels: 768
+      hidden_dim: 256
+      output_dim: 3
+      use_cyclic_loss: true
 
 
 # ------------------------------------------------------------------------------

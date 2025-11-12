@@ -123,12 +123,12 @@ training:
     component_consistency: 0.0
     representation_consistency: 0.0
 
-  val_interval: 5
+  val_interval: 1  # Validate every epoch for best checkpoint tracking
 
   checkpoint:
-    save_interval: 5
-    metric: rgb_success_auc
-    mode: max
+    save_interval: 5  # Save interval checkpoint every 5 epochs
+    metric: val_total  # Use validation total loss for best tracking
+    mode: min  # Lower loss is better
 
   log_interval: 10
 

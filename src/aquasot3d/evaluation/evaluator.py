@@ -172,26 +172,28 @@ class TrackingEvaluator:
             'sonar_gt': []
         }
 
-        # Get predictions (assuming batch output)
-        if 'rgb_box' in outputs:
-            rgb_boxes = outputs['rgb_box'].cpu().numpy()
+        # Get predictions (model outputs plural keys: rgb_boxes, sonar_boxes, fusion_boxes)
+        if 'rgb_boxes' in outputs:
+            rgb_boxes = outputs['rgb_boxes'].cpu().numpy()
             predictions['rgb_pred'] = [rgb_boxes[i] for i in range(len(rgb_boxes))]
 
-        if 'sonar_box' in outputs:
-            sonar_boxes = outputs['sonar_box'].cpu().numpy()
+        if 'sonar_boxes' in outputs:
+            sonar_boxes = outputs['sonar_boxes'].cpu().numpy()
             predictions['sonar_pred'] = [sonar_boxes[i] for i in range(len(sonar_boxes))]
 
-        if 'fusion_box' in outputs:
-            fusion_boxes = outputs['fusion_box'].cpu().numpy()
+        if 'fusion_boxes' in outputs:
+            fusion_boxes = outputs['fusion_boxes'].cpu().numpy()
             predictions['fusion_pred'] = [fusion_boxes[i] for i in range(len(fusion_boxes))]
 
-        # Get ground truth
-        if 'rgb_box' in batch:
-            rgb_gt = batch['rgb_box'].cpu().numpy()
+        # Get ground truth (support both singular and plural forms)
+        rgb_gt_key = 'rgb_box' if 'rgb_box' in batch else 'rgb_boxes'
+        if rgb_gt_key in batch:
+            rgb_gt = batch[rgb_gt_key].cpu().numpy()
             predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
 
-        if 'sonar_box' in batch:
-            sonar_gt = batch['sonar_box'].cpu().numpy()
+        sonar_gt_key = 'sonar_box' if 'sonar_box' in batch else 'sonar_boxes'
+        if sonar_gt_key in batch:
+            sonar_gt = batch[sonar_gt_key].cpu().numpy()
             predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
 
         return predictions

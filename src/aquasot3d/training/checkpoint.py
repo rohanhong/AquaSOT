@@ -127,16 +127,24 @@ class CheckpointManager:
         metrics = metrics or {}
         metadata = metadata or {}
 
-        # Check if this is the best model
-        current_metric = metrics.get(self.metric_name, None)
-        if current_metric is not None:
-            if self._is_better(current_metric, self.best_metric):
-                is_best = True
-                self.best_metric = current_metric
-                self.best_epoch = epoch
+        # Check if this is the best model (if not explicitly specified)
+        if not is_best:
+            current_metric = metrics.get(self.metric_name, None)
+            if current_metric is not None:
+                if self._is_better(current_metric, self.best_metric):
+                    is_best = True
+                    self.best_metric = current_metric
+                    self.best_epoch = epoch
 
-        # Skip saving if save_best_only and not best
-        if self.save_best_only and not is_best:
+        # Determine filename
+        if filename is None:
+            filename = f'{self.prefix}_epoch_{epoch}.pth'
+
+        # Special handling for last/best checkpoints
+        is_special_checkpoint = 'last' in filename or 'best' in filename
+
+        # Skip saving if save_best_only and not best (except for special checkpoints)
+        if self.save_best_only and not is_best and not is_special_checkpoint:
             return None
 
         # Prepare checkpoint dictionary
@@ -157,27 +165,17 @@ class CheckpointManager:
         if scheduler is not None:
             checkpoint['scheduler_state_dict'] = scheduler.state_dict()
 
-        # Determine filename
-        if filename is None:
-            filename = f'{self.prefix}_epoch_{epoch}.pth'
-
         checkpoint_path = self.checkpoint_dir / filename
 
         # Save checkpoint
         torch.save(checkpoint, checkpoint_path)
         logger.info(f"Saved checkpoint: {checkpoint_path}")
 
-        # Track checkpoint
-        self.checkpoints.append(checkpoint_path)
-
-        # Save best model separately
-        if is_best:
-            best_path = self.checkpoint_dir / f'{self.prefix}_best.pth'
-            shutil.copy2(checkpoint_path, best_path)
-            logger.info(f"Saved best model: {best_path} (epoch={epoch}, {self.metric_name}={current_metric:.4f})")
-
-        # Clean up old checkpoints
-        self._cleanup_checkpoints()
+        # Only track interval checkpoints for cleanup (not last/best)
+        if not is_special_checkpoint:
+            self.checkpoints.append(checkpoint_path)
+            # Clean up old interval checkpoints only
+            self._cleanup_checkpoints()
 
         return checkpoint_path
 

@@ -128,6 +128,12 @@ class LogPolarTransform(nn.Module):
 
         rho_grid, phi_grid = torch.meshgrid(rho, phi, indexing='ij')
 
+        # IMPORTANT: Clone grids to avoid memory sharing issues
+        # torch.meshgrid returns views that share memory, which causes problems during
+        # checkpoint loading. Creating contiguous clones ensures independent memory.
+        rho_grid = rho_grid.clone().contiguous()
+        phi_grid = phi_grid.clone().contiguous()
+
         # Register as buffers (non-trainable, but move with module)
         self.register_buffer('rho_grid', rho_grid)  # (H_out, W_out)
         self.register_buffer('phi_grid', phi_grid)  # (H_out, W_out)
