@@ -216,28 +216,60 @@ outputs/eval_uuv3/
 
 ## Visualization
 
-### Enable Visualization
+### Default Behavior
 
-Set in config or via command line:
+**Visualization is enabled by default** in all evaluation configs (`eval_multiseq.yaml`, `eval_uuv3.yaml`).
+
+The evaluation script will automatically generate visualizations and save them to the output directory unless explicitly disabled.
+
+### Control Visualization
+
+Use CLI flags to override config settings:
 
 ```bash
-# Multi-sequence visualization
+# Use default (visualization enabled)
+python scripts/eval.py \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint <checkpoint>
+
+# Explicitly disable for faster evaluation
 python scripts/eval.py \
     --config configs/eval/eval_multiseq.yaml \
     --checkpoint <checkpoint> \
-    --opts evaluation.visualization.enabled=true
+    --no-visualize
+
+# Force enable (override config if disabled)
+python scripts/eval.py \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint <checkpoint> \
+    --visualize
+
+# Alternative: via config override
+python scripts/eval.py \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint <checkpoint> \
+    --opts evaluation.visualization.enabled=false
 ```
 
-### Visualization Options
+### Visualization Outputs
+
+When enabled, the following visualizations are generated:
 
 **Trajectory Plots**: Predicted vs ground truth trajectories (per-sequence)
 **Success Curves**: Success plot (overlap threshold vs success rate) (aggregated)
 **Precision Curves**: Precision plot (location error threshold vs precision) (aggregated)
-**Tracking Videos**: Frame-by-frame tracking visualization with bounding boxes (per-sequence)
+**Tracking Videos**: Frame-by-frame tracking visualization with bounding boxes (per-sequence, if configured)
+**Failure Analysis**: Best/worst sequences for debugging
 
-**Output**: `outputs/<experiment>/visualization/`
+**Output Location**: `outputs/<experiment>/visualization/`
 
 For multi-sequence evaluation, visualizations are generated for each test sequence independently, plus aggregated metric curves.
+
+### Runtime Impact
+
+- **With visualization**: ~20-30% slower (depending on visualization settings)
+- **Without visualization**: Faster, metrics-only evaluation
+- Use `--no-visualize` for quick metric computation or CI/CD pipelines
 
 ---
 
@@ -381,10 +413,14 @@ Increase dataloader workers:
 python scripts/eval.py --config <config> --opts data.num_workers=8
 ```
 
-Disable visualization:
+Disable visualization (recommended for speed):
 
 ```bash
-python scripts/eval.py --config <config> --opts evaluation.visualization.enabled=false
+# Preferred method: Use CLI flag
+python scripts/eval.py --config <config> --checkpoint <checkpoint> --no-visualize
+
+# Alternative: Config override
+python scripts/eval.py --config <config> --checkpoint <checkpoint> --opts evaluation.visualization.enabled=false
 ```
 
 Use frame subset for quick validation:

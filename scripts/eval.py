@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 def parse_args():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(description='AquaSOT-3D Evaluation Script')
-    
+
     parser.add_argument('--config', type=str, required=True,
                         help='Path to evaluation configuration file')
     parser.add_argument('--checkpoint', type=str, required=True,
@@ -44,7 +44,14 @@ def parse_args():
                         help='Override config options')
     parser.add_argument('--output', type=str, default=None,
                         help='Override output directory')
-    
+
+    # Visualization control
+    viz_group = parser.add_mutually_exclusive_group()
+    viz_group.add_argument('--visualize', action='store_true', default=None,
+                          help='Enable visualization (overrides config)')
+    viz_group.add_argument('--no-visualize', action='store_true', default=None,
+                          help='Disable visualization (overrides config)')
+
     return parser.parse_args()
 
 
@@ -167,19 +174,37 @@ def main():
     
     # Load configuration
     cfg = load_config(args.config, overrides=args.opts)
-    
+
     # Override output directory if specified
     if args.output:
         cfg.evaluation.output_dir = args.output
         cfg.paths.work_dir = args.output
-    
+
     # Override checkpoint path
     cfg.evaluation.checkpoint = args.checkpoint
+
+    # Override visualization setting if specified via CLI
+    if args.visualize:
+        cfg.evaluation.visualization.enabled = True
+    elif args.no_visualize:
+        cfg.evaluation.visualization.enabled = False
     
     logger.info(f"Configuration loaded from: {args.config}")
     logger.info(f"Checkpoint: {args.checkpoint}")
     logger.info(f"Output directory: {cfg.evaluation.output_dir}")
-    
+
+    # Log visualization status
+    if cfg.evaluation.visualization.enabled:
+        logger.info(f"Visualization: ENABLED")
+        logger.info(f"  Visualization output will be saved to: {cfg.evaluation.visualization.save_dir}")
+        logger.info(f"  Plot trajectories: {cfg.evaluation.visualization.get('plot_trajectories', False)}")
+        logger.info(f"  Plot curves: {cfg.evaluation.visualization.get('plot_curves', False)}")
+        logger.info(f"  Save failure cases: {cfg.evaluation.visualization.get('save_failure_cases', False)}")
+    else:
+        logger.info(f"Visualization: DISABLED")
+        logger.info(f"  No visualization artifacts will be generated")
+        logger.info(f"  Use --visualize flag to enable visualization")
+
     # Create output directories
     Path(cfg.evaluation.output_dir).mkdir(parents=True, exist_ok=True)
     if cfg.evaluation.visualization.enabled:

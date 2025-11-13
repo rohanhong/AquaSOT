@@ -70,7 +70,7 @@ evaluation:
 
   # Visualization
   visualization:
-    enabled: false
+    enabled: true
     save_dir: outputs/eval_multiseq/visualization
     plot_trajectories: true
     plot_curves: true

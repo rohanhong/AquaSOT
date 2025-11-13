@@ -398,12 +398,29 @@ python scripts/eval.py \
            evaluation.batch_size=1
 ```
 
+**Visualization Control**:
+
+Visualization is **enabled by default** in evaluation configs. To control it:
+
+```bash
+# Disable visualization for faster evaluation
+python scripts/eval.py \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --no-visualize
+
+# Force enable visualization (override config)
+python scripts/eval.py \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --visualize
+```
+
 **Evaluation Output**:
-- Success curves (AUC)
-- Precision curves
-- Average Center Error
-- Per-modality metrics (RGB, Sonar, Fusion)
-- Visualization videos and plots
+- **Metrics**: Success curves (AUC), Precision curves, Average Center Error, Per-modality metrics (RGB, Sonar, Fusion)
+- **Visualization** (when enabled): Trajectory plots, success/precision curves, failure case analysis
+  - Saved to: `outputs/<eval_name>/visualization/`
+  - Includes best/worst sequence visualizations
 
 ### Run Demo
 
