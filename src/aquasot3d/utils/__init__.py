@@ -29,6 +29,14 @@ from .config import (
     setup_config_logging,
 )
 
+from .bbox_utils import (
+    convert_bbox_format,
+    normalize_bbox,
+    denormalize_bbox,
+    scale_bbox,
+    convert_boxes,
+)
+
 __all__ = [
     # Coordinate Transform
     'CoordinateTransform',
@@ -38,9 +46,16 @@ __all__ = [
     'project_3d_to_2d_rgb',
     'project_3d_to_2d_sonar',
 
-    # Bbox Utilities
+    # Bbox Utilities (legacy from geometry)
     'bbox_to_center',
     'center_to_bbox',
+
+    # Bbox Format Conversion (Audit 2025111405 contract helpers)
+    'convert_bbox_format',
+    'normalize_bbox',
+    'denormalize_bbox',
+    'scale_bbox',
+    'convert_boxes',
 
     # Cyclic Consistency Loss
     'CyclicConsistencyLoss',

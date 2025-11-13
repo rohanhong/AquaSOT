@@ -589,20 +589,21 @@ class BoxHead(BaseHead):
 
         # Compute losses if targets are provided
         if target_boxes is not None:
-            # Convert target boxes from xywh to cxcywh format for loss computation
+            # Validate target boxes shape
             if target_boxes.shape[-1] != 4:
                 raise ValueError(f"Invalid target_boxes shape: {target_boxes.shape}")
 
-            # CRITICAL: Dataset provides GT in xywh format (top-left + size)
-            # But loss functions expect cxcywh format (center + size)
-            # Must convert here to ensure correct loss computation
-            target_boxes_cxcywh = box_xywh_to_cxcywh(target_boxes)
+            # CRITICAL FIX: collate_fn_template_search already converts boxes from
+            # pixel xywh to normalized cxcywh (loader.py:184-196).
+            # No further conversion needed - targets are already in cxcywh format.
+            # The previous box_xywh_to_cxcywh() call caused double conversion,
+            # offsetting centers by w/2 and h/2, breaking training.
 
-            # L1 loss
-            l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes_cxcywh)
+            # L1 loss (targets already in normalized cxcywh)
+            l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes)
 
-            # IoU loss
-            iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes_cxcywh)
+            # IoU loss (targets already in normalized cxcywh)
+            iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes)
 
             # Classification loss
             if target_labels is not None:
@@ -610,7 +611,7 @@ class BoxHead(BaseHead):
                     # Compute IoU as quality target
                     with torch.no_grad():
                         pred_xyxy = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
-                        target_xyxy = box_cxcywh_to_xyxy(target_boxes_cxcywh)  # Use converted cxcywh
+                        target_xyxy = box_cxcywh_to_xyxy(target_boxes)  # targets already in cxcywh
                         target_quality = compute_iou(pred_xyxy, target_xyxy)
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
                 else:

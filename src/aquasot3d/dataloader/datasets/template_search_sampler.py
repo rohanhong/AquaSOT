@@ -118,17 +118,23 @@ def crop_image(
 
 def normalize_bbox_to_crop(
     bbox: np.ndarray,
-    crop_bbox: np.ndarray
+    crop_bbox: np.ndarray,
+    target_size: Tuple[int, int] = None
 ) -> np.ndarray:
     """
-    Normalize bounding box coordinates to crop region.
+    Normalize bounding box coordinates to crop region and optionally scale to target size.
+
+    CRITICAL FIX (Audit 2025111405 Finding #3): After crop, images are resized but
+    bboxes were never scaled. This caused normalized coordinates to be wrong when
+    crop size != target size.
 
     Args:
         bbox: Original bounding box [x, y, w, h] in image coordinates
         crop_bbox: Crop region [x, y, w, h] in image coordinates
+        target_size: Optional (H, W) to scale bbox to after crop (for resize)
 
     Returns:
-        Normalized bounding box [x, y, w, h] in crop coordinates
+        Normalized (and optionally scaled) bounding box [x, y, w, h] in crop coordinates
     """
     crop_x, crop_y, crop_w, crop_h = crop_bbox
 
@@ -137,6 +143,17 @@ def normalize_bbox_to_crop(
     norm_y = bbox[1] - crop_y
     norm_w = bbox[2]
     norm_h = bbox[3]
+
+    # If target_size is provided, scale bbox to match resized image
+    if target_size is not None:
+        target_h, target_w = target_size
+        scale_x = target_w / crop_w
+        scale_y = target_h / crop_h
+
+        norm_x = norm_x * scale_x
+        norm_y = norm_y * scale_y
+        norm_w = norm_w * scale_x
+        norm_h = norm_h * scale_y
 
     return np.array([norm_x, norm_y, norm_w, norm_h], dtype=np.float32)
 
@@ -385,10 +402,11 @@ class TemplateSearchSampler:
         search_crop_rgb = crop_image(search_rgb, search_region_rgb)
         search_crop_sonar = crop_image(search_sonar, search_region_sonar)
 
-        # Normalize GT bboxes to search region coordinates
+        # Normalize GT bboxes to search region coordinates and scale to target size
+        # CRITICAL FIX (Audit 2025111405): Pass target_size to scale bboxes after crop+resize
         if not rgb_occluded:
             search_bbox_normalized_rgb = normalize_bbox_to_crop(
-                rgb_bbox_search, search_region_rgb
+                rgb_bbox_search, search_region_rgb, target_size=self.search_size
             )
         else:
             # Use zero bbox for occluded frames
@@ -396,7 +414,7 @@ class TemplateSearchSampler:
 
         if not sonar_occluded:
             search_bbox_normalized_sonar = normalize_bbox_to_crop(
-                sonar_bbox_search, search_region_sonar
+                sonar_bbox_search, search_region_sonar, target_size=self.search_size
             )
         else:
             search_bbox_normalized_sonar = np.zeros(4, dtype=np.float32)

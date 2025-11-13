@@ -173,23 +173,36 @@ class TrackingDataset(Dataset):
             seq_info = self.base_dataset.get_sequence_info()
             sequence_name = seq_info['sequence_name']
 
+        # Prepare images and get per-axis scale factors
+        rgb_template, rgb_template_scale_x, rgb_template_scale_y = self._prepare_image(template_data['rgb_img'], self.template_size, is_sonar=False)
+        rgb_search, rgb_search_scale_x, rgb_search_scale_y = self._prepare_image(search_data['rgb_img'], self.search_size, is_sonar=False)
+        sonar_template, sonar_template_scale_x, sonar_template_scale_y = self._prepare_image(template_data['sonar_img'], self.template_size, is_sonar=True)
+        sonar_search, sonar_search_scale_x, sonar_search_scale_y = self._prepare_image(search_data['sonar_img'], self.search_size, is_sonar=True)
+
+        # Scale bounding boxes to match resized images with per-axis scaling
+        # CRITICAL FIX (Audit 2025111405 Requirement #1): Use separate scale_x and scale_y
+        template_bbox_rgb_scaled = self._scale_bbox(template_data['rgb_bbox'], rgb_template_scale_x, rgb_template_scale_y)
+        template_bbox_sonar_scaled = self._scale_bbox(template_data['sonar_bbox'], sonar_template_scale_x, sonar_template_scale_y)
+        search_bbox_rgb_scaled = self._scale_bbox(search_data['rgb_bbox'], rgb_search_scale_x, rgb_search_scale_y)
+        search_bbox_sonar_scaled = self._scale_bbox(search_data['sonar_bbox'], sonar_search_scale_x, sonar_search_scale_y)
+
         # Build tracking pair
         pair = {
-            # Images (convert HWC to CHW if needed and resize)
-            'rgb_template': self._prepare_image(template_data['rgb_img'], self.template_size, is_sonar=False),
-            'rgb_search': self._prepare_image(search_data['rgb_img'], self.search_size, is_sonar=False),
-            'sonar_template': self._prepare_image(template_data['sonar_img'], self.template_size, is_sonar=True),
-            'sonar_search': self._prepare_image(search_data['sonar_img'], self.search_size, is_sonar=True),
+            # Images (resized tensors)
+            'rgb_template': rgb_template,
+            'rgb_search': rgb_search,
+            'sonar_template': sonar_template,
+            'sonar_search': sonar_search,
 
-            # Bounding boxes (original keys)
-            'template_bbox_rgb': template_data['rgb_bbox'],
-            'template_bbox_sonar': template_data['sonar_bbox'],
-            'search_bbox_rgb': search_data['rgb_bbox'],
-            'search_bbox_sonar': search_data['sonar_bbox'],
+            # Bounding boxes (scaled to match resized images)
+            'template_bbox_rgb': template_bbox_rgb_scaled,
+            'template_bbox_sonar': template_bbox_sonar_scaled,
+            'search_bbox_rgb': search_bbox_rgb_scaled,
+            'search_bbox_sonar': search_bbox_sonar_scaled,
 
             # Bounding boxes (trainer-expected keys for loss computation)
-            'rgb_boxes': search_data['rgb_bbox'],  # Alias for search_bbox_rgb
-            'sonar_boxes': search_data['sonar_bbox'],  # Alias for search_bbox_sonar
+            'rgb_boxes': search_bbox_rgb_scaled,  # Alias for search_bbox_rgb
+            'sonar_boxes': search_bbox_sonar_scaled,  # Alias for search_bbox_sonar
 
             # Sequence metadata (required for evaluation)
             'sequence_name': sequence_name,
@@ -308,14 +321,27 @@ class TrackingDataset(Dataset):
             is_sonar: If True, prepare as 1-channel grayscale; if False, as 3-channel RGB
 
         Returns:
-            Tensor of shape (C, target_size, target_size) where C=1 for sonar, C=3 for RGB
+            Tuple of (resized_tensor, scale_x, scale_y):
+                - resized_tensor: Tensor of shape (C, target_size, target_size) where C=1 for sonar, C=3 for RGB
+                - scale_x: float, x-axis scale factor (target_size / original_width)
+                - scale_y: float, y-axis scale factor (target_size / original_height)
+
+        Note:
+            CRITICAL FIX (Audit 2025111405 Requirement #1): Returns separate per-axis scale factors
+            instead of averaged scale_factor. This prevents geometry distortion when resizing
+            non-square images (e.g., 1920x1080 -> 255x255). Using averaged scale would cause:
+            - x-coords over-scaled by ~39% (0.1845/0.1328)
+            - y-coords under-scaled by ~22% (0.1845/0.2361)
+            leading to incorrect normalized bbox labels.
         """
         if img is None:
             # Return zeros for None images (occluded frames)
             num_channels = 1 if is_sonar else 3
-            return torch.zeros(num_channels, target_size, target_size)
+            return torch.zeros(num_channels, target_size, target_size), 1.0, 1.0
 
+        # Store original size for scale factor calculation
         if isinstance(img, np.ndarray):
+            original_h, original_w = img.shape[:2]
             # Convert HWC to CHW
             if img.ndim == 3 and img.shape[2] in [1, 3]:
                 img = img.transpose(2, 0, 1)
@@ -329,8 +355,12 @@ class TrackingDataset(Dataset):
             if img.ndim == 2:
                 # Handle 2D grayscale tensors (H, W) -> (1, H, W)
                 img = img.unsqueeze(0)
+                original_h, original_w = img.shape[1], img.shape[2]
             elif img.ndim == 3 and img.shape[0] not in [1, 3]:
+                original_h, original_w = img.shape[0], img.shape[1]
                 img = img.permute(2, 0, 1)
+            else:
+                original_h, original_w = img.shape[1], img.shape[2]
 
         # Normalize to [0, 1] if in [0, 255] range
         if img.max() > 1.0:
@@ -345,4 +375,48 @@ class TrackingDataset(Dataset):
             align_corners=False
         ).squeeze(0)
 
-        return img
+        # Calculate per-axis scale factors (CRITICAL: separate x and y scales)
+        # For non-square images resized to square (e.g., 1920x1080 -> 255x255):
+        # scale_x = 255/1920 = 0.1328, scale_y = 255/1080 = 0.2361
+        scale_x = target_size / original_w
+        scale_y = target_size / original_h
+
+        return img, scale_x, scale_y
+
+    def _scale_bbox(self, bbox, scale_x, scale_y):
+        """
+        Scale bounding box coordinates after image resize with per-axis scaling.
+
+        CRITICAL FIX (Audit 2025111405 Requirement #1): Uses separate scale factors
+        for x and y axes to maintain correct geometry when resizing non-square images
+        to square targets. Previous implementation used averaged scale_factor which
+        caused ~28% distortion in both axes.
+
+        Args:
+            bbox: Bounding box in [x, y, w, h] format (pixel coordinates)
+            scale_x: X-axis scale factor (target_width / original_width)
+            scale_y: Y-axis scale factor (target_height / original_height)
+
+        Returns:
+            Scaled bounding box in [x, y, w, h] format (resized pixel coordinates)
+
+        Example:
+            >>> # Original 1920x1080 image with bbox [1000, 500, 200, 100]
+            >>> # Resized to 255x255
+            >>> scale_x = 255 / 1920  # 0.1328
+            >>> scale_y = 255 / 1080  # 0.2361
+            >>> scaled = _scale_bbox([1000, 500, 200, 100], scale_x, scale_y)
+            >>> # Result: [132.8, 118.0, 26.6, 23.6] (correct geometry)
+            >>> # vs. averaged scale (0.1845): [184.5, 92.3, 36.9, 18.5] (distorted)
+        """
+        if bbox is None or len(bbox) != 4:
+            return bbox
+
+        # Apply per-axis scaling to maintain correct geometry
+        x, y, w, h = bbox
+        return np.array([
+            x * scale_x,  # Scale x-coordinate by x-axis factor
+            y * scale_y,  # Scale y-coordinate by y-axis factor
+            w * scale_x,  # Scale width by x-axis factor
+            h * scale_y   # Scale height by y-axis factor
+        ], dtype=np.float32)

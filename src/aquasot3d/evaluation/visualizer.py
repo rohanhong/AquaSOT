@@ -18,6 +18,8 @@ from pathlib import Path
 import cv2
 import logging
 
+from ..utils.bbox_utils import convert_bbox_format
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,23 +68,42 @@ class TrackingVisualizer:
         pred_box: Optional[np.ndarray] = None,
         gt_box: Optional[np.ndarray] = None,
         frame_id: Optional[int] = None,
-        save_name: Optional[str] = None
+        save_name: Optional[str] = None,
+        pred_format: str = 'xywh',
+        gt_format: str = 'xywh'
     ) -> np.ndarray:
         """
         Draw tracking result on a frame.
 
+        ENHANCEMENT (Audit 2025111405 Requirement #2): Added format parameters to explicitly
+        specify bbox coordinate format. Supports auto-detection of normalized coordinates.
+
         Args:
             frame: Input frame (H, W, 3) or (H, W)
-            pred_box: Predicted bounding box [x, y, w, h] or [cx, cy, w, h]
-            gt_box: Ground truth bounding box
+            pred_box: Predicted bounding box in specified format (pixel or normalized coords)
+            gt_box: Ground truth bounding box in specified format (pixel or normalized coords)
             frame_id: Frame number (for annotation)
             save_name: Filename to save (optional)
+            pred_format: Format of pred_box - 'xywh', 'cxcywh', or 'xyxy'. Default: 'xywh'.
+            gt_format: Format of gt_box - 'xywh', 'cxcywh', or 'xyxy'. Default: 'xywh'.
 
         Returns:
             Annotated frame (always RGB format)
 
         Example:
-            >>> vis_frame = visualizer.draw_tracking_result(frame, pred_box, gt_box, frame_id=0)
+            >>> # Groundtruth in pixel xywh format
+            >>> vis = visualizer.draw_tracking_result(frame, pred_box, gt_box, frame_id=0)
+            >>>
+            >>> # Model prediction in normalized cxcywh format
+            >>> vis = visualizer.draw_tracking_result(
+            ...     frame, pred_box, gt_box,
+            ...     pred_format='cxcywh'  # Will auto-detect and denormalize
+            ... )
+
+        Note:
+            - Bboxes with values in [0,1] are auto-detected as normalized and converted to pixels
+            - A warning is logged when auto-detection occurs
+            - To suppress warnings, explicitly denormalize before passing to this function
         """
         # Copy frame to avoid modifying original
         vis_frame = frame.copy()
@@ -91,13 +112,13 @@ class TrackingVisualizer:
         if len(vis_frame.shape) == 2:
             vis_frame = cv2.cvtColor(vis_frame, cv2.COLOR_GRAY2RGB)
 
-        # Draw ground truth (red)
+        # Draw ground truth (red) with explicit format
         if gt_box is not None:
-            vis_frame = self._draw_bbox(vis_frame, gt_box, self.colors['gt'], label='GT')
+            vis_frame = self._draw_bbox(vis_frame, gt_box, self.colors['gt'], label='GT', format=gt_format)
 
-        # Draw prediction (green)
+        # Draw prediction (green) with explicit format
         if pred_box is not None:
-            vis_frame = self._draw_bbox(vis_frame, pred_box, self.colors['pred'], label='Pred')
+            vis_frame = self._draw_bbox(vis_frame, pred_box, self.colors['pred'], label='Pred', format=pred_format)
 
         # Add frame ID
         if frame_id is not None:
@@ -128,10 +149,14 @@ class TrackingVisualizer:
         rgb_gt: Optional[np.ndarray] = None,
         sonar_gt: Optional[np.ndarray] = None,
         frame_id: Optional[int] = None,
-        save_name: Optional[str] = None
+        save_name: Optional[str] = None,
+        bbox_format: str = 'xywh'
     ) -> np.ndarray:
         """
         Draw multi-modal tracking results side-by-side.
+
+        ENHANCEMENT (Audit 2025111405 Requirement #2): Added bbox_format parameter
+        to explicitly specify coordinate format for all bboxes.
 
         Args:
             rgb_frame: RGB frame
@@ -143,6 +168,7 @@ class TrackingVisualizer:
             sonar_gt: Sonar ground truth
             frame_id: Frame ID
             save_name: Save filename
+            bbox_format: Format for all bboxes - 'xywh', 'cxcywh', or 'xyxy'. Default: 'xywh'.
 
         Returns:
             Combined visualization frame
@@ -152,22 +178,22 @@ class TrackingVisualizer:
         if len(rgb_vis.shape) == 2:
             rgb_vis = cv2.cvtColor(rgb_vis, cv2.COLOR_GRAY2RGB)
         if rgb_gt is not None:
-            rgb_vis = self._draw_bbox(rgb_vis, rgb_gt, self.colors['gt'], label='GT')
+            rgb_vis = self._draw_bbox(rgb_vis, rgb_gt, self.colors['gt'], label='GT', format=bbox_format)
         if rgb_pred is not None:
-            rgb_vis = self._draw_bbox(rgb_vis, rgb_pred, self.colors['rgb'], label='RGB')
+            rgb_vis = self._draw_bbox(rgb_vis, rgb_pred, self.colors['rgb'], label='RGB', format=bbox_format)
         if fusion_pred is not None:
-            rgb_vis = self._draw_bbox(rgb_vis, fusion_pred, self.colors['fusion'], label='Fusion', thickness=2)
+            rgb_vis = self._draw_bbox(rgb_vis, fusion_pred, self.colors['fusion'], label='Fusion', thickness=2, format=bbox_format)
 
         # Draw on Sonar frame
         sonar_vis = sonar_frame.copy()
         if len(sonar_vis.shape) == 2:
             sonar_vis = cv2.cvtColor(sonar_vis, cv2.COLOR_GRAY2RGB)
         if sonar_gt is not None:
-            sonar_vis = self._draw_bbox(sonar_vis, sonar_gt, self.colors['gt'], label='GT')
+            sonar_vis = self._draw_bbox(sonar_vis, sonar_gt, self.colors['gt'], label='GT', format=bbox_format)
         if sonar_pred is not None:
-            sonar_vis = self._draw_bbox(sonar_vis, sonar_pred, self.colors['sonar'], label='Sonar')
+            sonar_vis = self._draw_bbox(sonar_vis, sonar_pred, self.colors['sonar'], label='Sonar', format=bbox_format)
         if fusion_pred is not None:
-            sonar_vis = self._draw_bbox(sonar_vis, fusion_pred, self.colors['fusion'], label='Fusion', thickness=2)
+            sonar_vis = self._draw_bbox(sonar_vis, fusion_pred, self.colors['fusion'], label='Fusion', thickness=2, format=bbox_format)
 
         # Add labels
         cv2.putText(rgb_vis, 'RGB', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
@@ -350,7 +376,8 @@ class TrackingVisualizer:
         save_name: Optional[str] = None,
         alpha: float = 0.5,
         pred_box: Optional[np.ndarray] = None,
-        gt_box: Optional[np.ndarray] = None
+        gt_box: Optional[np.ndarray] = None,
+        bbox_format: str = 'xywh'
     ) -> np.ndarray:
         """
         Visualize attention map overlaid on frame.
@@ -362,6 +389,7 @@ class TrackingVisualizer:
             alpha: Transparency for attention overlay (0-1)
             pred_box: Optional prediction box to draw
             gt_box: Optional ground truth box to draw
+            bbox_format: Format for bboxes - 'xywh', 'cxcywh', or 'xyxy'. Default: 'xywh'.
 
         Returns:
             Visualization frame with attention overlay (high-generalization implementation)
@@ -387,11 +415,11 @@ class TrackingVisualizer:
         # Blend with original frame
         result = cv2.addWeighted(vis_frame, 1 - alpha, attention_colored, alpha, 0)
 
-        # Draw bounding boxes if provided
+        # Draw bounding boxes if provided with explicit format
         if gt_box is not None:
-            result = self._draw_bbox(result, gt_box, self.colors['gt'], label='GT')
+            result = self._draw_bbox(result, gt_box, self.colors['gt'], label='GT', format=bbox_format)
         if pred_box is not None:
-            result = self._draw_bbox(result, pred_box, self.colors['pred'], label='Pred')
+            result = self._draw_bbox(result, pred_box, self.colors['pred'], label='Pred', format=bbox_format)
 
         # Save if requested
         if save_name and self.save_dir:
@@ -476,35 +504,90 @@ class TrackingVisualizer:
         bbox: np.ndarray,
         color: Tuple[int, int, int],
         label: str = '',
-        thickness: int = 2
+        thickness: int = 2,
+        format: str = 'xywh',
+        auto_detect_normalized: bool = True
     ) -> np.ndarray:
         """
-        Draw bounding box on frame.
+        Draw bounding box on frame with automatic format conversion and coordinate space detection.
+
+        ENHANCEMENT (Audit 2025111405 Requirement #2): This function now auto-detects normalized
+        coordinates and logs warnings when format mismatches are detected. This prevents silent
+        failures when passing model outputs (normalized cxcywh) without specifying format.
 
         Args:
             frame: Input frame
-            bbox: Bounding box in [x, y, w, h] format (top-left corner + size)
+            bbox: Bounding box in specified format (pixel or normalized coordinates)
             color: BGR color tuple
             label: Label text
             thickness: Line thickness
+            format: Bbox format - 'xywh' (top-left + size), 'cxcywh' (center + size),
+                    or 'xyxy' (corners). Default: 'xywh' for backward compatibility.
+            auto_detect_normalized: If True, automatically detect and convert normalized
+                    coordinates [0,1] to pixel coordinates. Default: True.
 
         Returns:
             Frame with bounding box
 
+        Example:
+            >>> # Model output in normalized cxcywh format (auto-detected)
+            >>> vis = self._draw_bbox(frame, pred_norm_cxcywh, color, format='cxcywh')
+            >>> # Groundtruth in pixel xywh format
+            >>> vis = self._draw_bbox(frame, gt_xywh, color, format='xywh')
+
         Note:
-            This function expects xywh format (top-left corner + width/height),
-            which is the standard format from groundtruth.txt files.
+            When auto_detect_normalized=True and bbox values are in [0,1] range,
+            they are automatically denormalized to pixel coordinates using frame shape.
+            A warning is logged to alert about implicit coordinate space conversion.
         """
-        # Convert bbox to xyxy format
-        if len(bbox) == 4:
-            # xywh format (top-left corner + width + height)
-            x, y, w, h = bbox
-            x1 = int(x)
-            y1 = int(y)
-            x2 = int(x + w)
-            y2 = int(y + h)
-        else:
+        if len(bbox) != 4:
             return frame
+
+        # Auto-detect normalized coordinates (values in [0, 1] range)
+        bbox_copy = bbox.copy() if isinstance(bbox, np.ndarray) else np.array(bbox)
+        is_normalized = auto_detect_normalized and np.all((bbox_copy >= 0) & (bbox_copy <= 1.5))
+
+        if is_normalized:
+            # Bbox appears to be normalized - denormalize to pixel coordinates
+            img_h, img_w = frame.shape[:2]
+            logger.warning(
+                f"Auto-detected normalized bbox coordinates (values in [0,1]). "
+                f"Converting to pixel space using frame shape ({img_h}x{img_w}). "
+                f"Original bbox: {bbox_copy[:4]}, format: {format}. "
+                f"To avoid this warning, explicitly denormalize bboxes before visualization "
+                f"or pass pixel coordinates directly."
+            )
+
+            # Denormalize based on current format
+            from ..utils.bbox_utils import denormalize_bbox
+            # Reshape to 2D if needed (denormalize_bbox expects shape (N, 4))
+            is_1d = bbox_copy.ndim == 1
+            if is_1d:
+                bbox_copy = bbox_copy.reshape(1, -1)
+            bbox_copy = denormalize_bbox(bbox_copy, (img_h, img_w), format=format)
+            if is_1d:
+                bbox_copy = bbox_copy.flatten()
+
+        # Convert to xywh format if needed
+        if format != 'xywh':
+            try:
+                # Reshape to 2D if needed (convert_bbox_format expects shape (N, 4))
+                is_1d_convert = bbox_copy.ndim == 1
+                if is_1d_convert:
+                    bbox_copy = bbox_copy.reshape(1, -1)
+                bbox_copy = convert_bbox_format(bbox_copy, src_format=format, dst_format='xywh')
+                if is_1d_convert:
+                    bbox_copy = bbox_copy.flatten()
+            except Exception as e:
+                logger.warning(f"Failed to convert bbox from {format} to xywh: {e}")
+                return frame
+
+        # Extract xywh coordinates
+        x, y, w, h = bbox_copy
+        x1 = int(x)
+        y1 = int(y)
+        x2 = int(x + w)
+        y2 = int(y + h)
 
         # Draw rectangle
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
