@@ -483,23 +483,26 @@ class TrackingVisualizer:
 
         Args:
             frame: Input frame
-            bbox: Bounding box [cx, cy, w, h] or [x1, y1, x2, y2]
+            bbox: Bounding box in [x, y, w, h] format (top-left corner + size)
             color: BGR color tuple
             label: Label text
             thickness: Line thickness
 
         Returns:
             Frame with bounding box
+
+        Note:
+            This function expects xywh format (top-left corner + width/height),
+            which is the standard format from groundtruth.txt files.
         """
         # Convert bbox to xyxy format
         if len(bbox) == 4:
-            if bbox[2] > 0 and bbox[3] > 0:  # cxcywh format
-                x1 = int(bbox[0] - bbox[2] / 2)
-                y1 = int(bbox[1] - bbox[3] / 2)
-                x2 = int(bbox[0] + bbox[2] / 2)
-                y2 = int(bbox[1] + bbox[3] / 2)
-            else:  # xyxy format
-                x1, y1, x2, y2 = bbox.astype(int)
+            # xywh format (top-left corner + width + height)
+            x, y, w, h = bbox
+            x1 = int(x)
+            y1 = int(y)
+            x2 = int(x + w)
+            y2 = int(y + h)
         else:
             return frame
 

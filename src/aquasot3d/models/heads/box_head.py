@@ -58,6 +58,27 @@ def box_xyxy_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
     return torch.stack([cx, cy, w, h], dim=-1)
 
 
+def box_xywh_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
+    """
+    Convert bounding boxes from (x, y, w, h) to (cx, cy, w, h) format.
+
+    Args:
+        boxes: Boxes in (x, y, w, h) format (top-left corner + size), shape (..., 4)
+
+    Returns:
+        Boxes in (cx, cy, w, h) format (center point + size), shape (..., 4)
+
+    Example:
+        >>> boxes_xywh = torch.tensor([[100, 200, 50, 80]])  # x=100, y=200, w=50, h=80
+        >>> boxes_cxcywh = box_xywh_to_cxcywh(boxes_xywh)
+        >>> # Result: [[125, 240, 50, 80]]  # cx=125, cy=240, w=50, h=80
+    """
+    x, y, w, h = boxes.unbind(-1)
+    cx = x + w / 2
+    cy = y + h / 2
+    return torch.stack([cx, cy, w, h], dim=-1)
+
+
 def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     """
     Compute IoU between two sets of boxes.
@@ -568,15 +589,20 @@ class BoxHead(BaseHead):
 
         # Compute losses if targets are provided
         if target_boxes is not None:
-            # Ensure target boxes are in cxcywh format for loss computation
+            # Convert target boxes from xywh to cxcywh format for loss computation
             if target_boxes.shape[-1] != 4:
                 raise ValueError(f"Invalid target_boxes shape: {target_boxes.shape}")
 
+            # CRITICAL: Dataset provides GT in xywh format (top-left + size)
+            # But loss functions expect cxcywh format (center + size)
+            # Must convert here to ensure correct loss computation
+            target_boxes_cxcywh = box_xywh_to_cxcywh(target_boxes)
+
             # L1 loss
-            l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes)
+            l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes_cxcywh)
 
             # IoU loss
-            iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes)
+            iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes_cxcywh)
 
             # Classification loss
             if target_labels is not None:
@@ -584,7 +610,7 @@ class BoxHead(BaseHead):
                     # Compute IoU as quality target
                     with torch.no_grad():
                         pred_xyxy = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
-                        target_xyxy = box_cxcywh_to_xyxy(target_boxes)
+                        target_xyxy = box_cxcywh_to_xyxy(target_boxes_cxcywh)  # Use converted cxcywh
                         target_quality = compute_iou(pred_xyxy, target_xyxy)
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
                 else:

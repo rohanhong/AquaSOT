@@ -302,11 +302,15 @@ class AquaSOT3DTracker(BaseModule):
             )
 
             # Adaptive weighting module
-            adaptive_cfg = quality_config.get('adaptive_weighting', {})
+            adaptive_cfg = quality_config.get('adaptive_weighting', {}).copy()
+            # Extract parameters to avoid duplicate kwargs
+            method = adaptive_cfg.pop('method', 'softmax')
+            temporal_smoothing = adaptive_cfg.pop('temporal_smoothing', True)
+            quality_threshold = adaptive_cfg.pop('threshold', 0.3)
             self.adaptive_weighting = create_adaptive_weighting(
-                weighting_method=adaptive_cfg.get('method', 'softmax'),
-                temporal_smoothing=adaptive_cfg.get('temporal_smoothing', True),
-                quality_threshold=adaptive_cfg.get('threshold', 0.3),
+                weighting_method=method,
+                temporal_smoothing=temporal_smoothing,
+                quality_threshold=quality_threshold,
                 **adaptive_cfg
             )
 
@@ -806,10 +810,20 @@ class AquaSOT3DTracker(BaseModule):
             # Reshape if needed
             if rgb_feat_for_adaptive.dim() == 3:
                 B_rgb, N_rgb, C_rgb = rgb_feat_for_adaptive.shape
+                # Check if class token is present (ViT outputs [B, N+1, C] with cls_token)
+                if int((N_rgb - 1) ** 0.5) ** 2 == N_rgb - 1:
+                    # Remove cls_token (first token)
+                    rgb_feat_for_adaptive = rgb_feat_for_adaptive[:, 1:, :]
+                    N_rgb = N_rgb - 1
                 H_rgb = W_rgb = int(N_rgb ** 0.5)
                 rgb_feat_for_adaptive = rgb_feat_for_adaptive.permute(0, 2, 1).reshape(B_rgb, C_rgb, H_rgb, W_rgb)
             if sonar_feat_for_adaptive.dim() == 3:
                 B_sonar, N_sonar, C_sonar = sonar_feat_for_adaptive.shape
+                # Check if class token is present
+                if int((N_sonar - 1) ** 0.5) ** 2 == N_sonar - 1:
+                    # Remove cls_token (first token)
+                    sonar_feat_for_adaptive = sonar_feat_for_adaptive[:, 1:, :]
+                    N_sonar = N_sonar - 1
                 H_sonar = W_sonar = int(N_sonar ** 0.5)
                 sonar_feat_for_adaptive = sonar_feat_for_adaptive.permute(0, 2, 1).reshape(B_sonar, C_sonar, H_sonar, W_sonar)
 
@@ -826,7 +840,7 @@ class AquaSOT3DTracker(BaseModule):
                 if proj_key not in self.quality_projection_adapters:
                     self.quality_projection_adapters[proj_key] = nn.Conv2d(
                         rgb_feat_for_adaptive.shape[1], fused_features_spatial.shape[1], kernel_size=1
-                    )
+                    ).to(rgb_feat_for_adaptive.device)
                 rgb_feat_for_adaptive = self.quality_projection_adapters[proj_key](rgb_feat_for_adaptive)
 
             if sonar_feat_for_adaptive.shape[1] != fused_features_spatial.shape[1]:
@@ -835,7 +849,7 @@ class AquaSOT3DTracker(BaseModule):
                 if proj_key not in self.quality_projection_adapters:
                     self.quality_projection_adapters[proj_key] = nn.Conv2d(
                         sonar_feat_for_adaptive.shape[1], fused_features_spatial.shape[1], kernel_size=1
-                    )
+                    ).to(sonar_feat_for_adaptive.device)
                 sonar_feat_for_adaptive = self.quality_projection_adapters[proj_key](sonar_feat_for_adaptive)
 
             # Apply adaptive weighting based on physical quality

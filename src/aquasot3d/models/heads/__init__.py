@@ -23,6 +23,7 @@ from .box_head import (
     # Utility functions
     box_cxcywh_to_xyxy,
     box_xyxy_to_cxcywh,
+    box_xywh_to_cxcywh,
     compute_iou,
     compute_giou,
     compute_ciou,
@@ -64,6 +65,7 @@ __all__ = [
     # Utils
     'box_cxcywh_to_xyxy',
     'box_xyxy_to_cxcywh',
+    'box_xywh_to_cxcywh',
     'compute_iou',
     'compute_giou',
     'compute_ciou',

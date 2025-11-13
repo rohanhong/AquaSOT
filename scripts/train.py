@@ -441,10 +441,10 @@ def main():
     scheduler = build_scheduler(
         optimizer,
         scheduler_type=cfg.training.scheduler.type,
-        num_epochs=cfg.training.num_epochs,
-        steps_per_epoch=len(train_loader),
+        max_epoch=cfg.training.num_epochs,  # Fix: use max_epoch parameter name
         warmup_epochs=cfg.training.scheduler.warmup_epochs,
-        min_lr=cfg.training.scheduler.min_lr
+        warmup_start_lr=cfg.training.scheduler.get('warmup_lr', 0),  # Fix: add warmup_start_lr
+        eta_min=cfg.training.scheduler.min_lr  # Fix: use eta_min parameter name
     )
 
     # Build checkpoint manager

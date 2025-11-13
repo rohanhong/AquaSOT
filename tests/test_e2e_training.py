@@ -45,9 +45,9 @@ class MinimalRGBSonarDataset(torch.utils.data.Dataset):
             'rgb_search': torch.randn(3, 256, 256),
             'sonar_template': torch.randn(1, 376, 682),
             'sonar_search': torch.randn(1, 376, 682),
-            'rgb_box': torch.tensor([0.5, 0.5, 0.3, 0.3]),  # cxcywh - singular
-            'sonar_box': torch.tensor([0.5, 0.5, 0.3, 0.3]),
-            'fusion_box': torch.tensor([0.5, 0.5, 0.3, 0.3])
+            'rgb_boxes': torch.tensor([0.5, 0.5, 0.3, 0.3]),  # cxcywh - use plural form expected by trainer
+            'sonar_boxes': torch.tensor([0.5, 0.5, 0.3, 0.3]),
+            'fusion_boxes': torch.tensor([0.5, 0.5, 0.3, 0.3])
         }
 
 
@@ -73,9 +73,9 @@ class MinimalMultiSequenceDataset(torch.utils.data.Dataset):
             'rgb_search': torch.randn(3, 256, 256),
             'sonar_template': torch.randn(1, 376, 682),
             'sonar_search': torch.randn(1, 376, 682),
-            'rgb_box': torch.tensor([0.5, 0.5, 0.3, 0.3]),
-            'sonar_box': torch.tensor([0.5, 0.5, 0.3, 0.3]),
-            'fusion_box': torch.tensor([0.5, 0.5, 0.3, 0.3]),
+            'rgb_boxes': torch.tensor([0.5, 0.5, 0.3, 0.3]),
+            'sonar_boxes': torch.tensor([0.5, 0.5, 0.3, 0.3]),
+            'fusion_boxes': torch.tensor([0.5, 0.5, 0.3, 0.3]),
             'template_sequence': sequence_name,
             'search_sequence': sequence_name,
             'template_frame_id': (idx // self.num_sequences) * 10 + 1,
@@ -166,8 +166,7 @@ class TestEndToEndTraining:
         scheduler = build_scheduler(
             optimizer=optimizer,
             scheduler_type='cosine',
-            num_epochs=2,
-            steps_per_epoch=len(train_loader)
+            max_epoch=2
         )
 
         # Build checkpoint manager
@@ -240,8 +239,7 @@ class TestEndToEndTraining:
         scheduler = build_scheduler(
             optimizer=optimizer,
             scheduler_type='cosine',
-            num_epochs=10,
-            steps_per_epoch=len(train_loader)
+            max_epoch=10
         )
 
         # Build checkpoint manager
@@ -300,8 +298,7 @@ class TestEndToEndTraining:
         scheduler = build_scheduler(
             optimizer=optimizer,
             scheduler_type='cosine',
-            num_epochs=3,
-            steps_per_epoch=len(train_loader)
+            max_epoch=3
         )
 
         # Build checkpoint manager

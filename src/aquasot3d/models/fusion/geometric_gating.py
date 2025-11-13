@@ -258,7 +258,7 @@ class ScalePyramidExtractor(BaseModule):
                 # Create and register new adapter for this input dimension
                 self.channel_adapters[adapter_key] = nn.Conv2d(
                     actual_dim, self.feature_dim, kernel_size=1
-                )
+                ).to(pyramid_levels[0].device)
             # Use registered adapter
             projection = self.channel_adapters[adapter_key]
             # Project all pyramid levels to expected dimension
@@ -439,7 +439,7 @@ class GeometryGatedAttention(BaseModule):
             # Get or create RGB adapter for this dimension
             adapter_key = str(C_rgb)
             if adapter_key not in self.rgb_adapters:
-                self.rgb_adapters[adapter_key] = nn.Linear(C_rgb, self.embed_dim)
+                self.rgb_adapters[adapter_key] = nn.Linear(C_rgb, self.embed_dim).to(rgb_features.device)
             rgb_proj = self.rgb_adapters[adapter_key]
             rgb_flat = rgb_features.flatten(2).permute(0, 2, 1)  # [B, H_rgb*W_rgb, C_rgb]
             rgb_flat = rgb_proj(rgb_flat)  # [B, H_rgb*W_rgb, embed_dim]
@@ -452,7 +452,7 @@ class GeometryGatedAttention(BaseModule):
             # Get or create Sonar adapter for this dimension
             adapter_key = str(C_sonar)
             if adapter_key not in self.sonar_adapters:
-                self.sonar_adapters[adapter_key] = nn.Linear(C_sonar, self.embed_dim)
+                self.sonar_adapters[adapter_key] = nn.Linear(C_sonar, self.embed_dim).to(sonar_features.device)
             sonar_proj = self.sonar_adapters[adapter_key]
             sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)  # [B, H_sonar*W_sonar, C_sonar]
             sonar_flat = sonar_proj(sonar_flat)  # [B, H_sonar*W_sonar, embed_dim]
@@ -498,7 +498,7 @@ class GeometryGatedAttention(BaseModule):
             # Get or create RGB output adapter for this dimension
             adapter_key = str(C_rgb)
             if adapter_key not in self.rgb_out_adapters:
-                self.rgb_out_adapters[adapter_key] = nn.Linear(self.embed_dim, C_rgb)
+                self.rgb_out_adapters[adapter_key] = nn.Linear(self.embed_dim, C_rgb).to(attn_output.device)
             rgb_out_proj = self.rgb_out_adapters[adapter_key]
             attn_output = rgb_out_proj(attn_output)  # [B, N_rgb, C_rgb]
 
