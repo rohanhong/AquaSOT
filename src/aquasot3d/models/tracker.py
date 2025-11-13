@@ -193,9 +193,11 @@ class AquaSOT3DTracker(BaseModule):
 
             # Optional temporal aggregation
             if self.temporal_aggregation:
+                # Guard against None temporal_config
+                aggregator_config = (temporal_config or {}).get('aggregator', {})
                 self.temporal_aggregator = build_temporal_aggregator(
                     feature_dim=self.fused_feat_dim,
-                    **temporal_config.get('aggregator', {})
+                    **aggregator_config
                 )
 
         # =====================================================
@@ -760,12 +762,14 @@ class AquaSOT3DTracker(BaseModule):
 
             # Consistency losses
             if 'consistency_losses' in fusion_outputs:
-                losses['component_consistency'] = fusion_outputs['consistency_losses']['component_loss']
+                # Geometric consistency: compares geometric encodings (scale vs radial)
+                losses['geometric_consistency'] = fusion_outputs['consistency_losses']['component_loss']
                 losses['representation_consistency'] = fusion_outputs['consistency_losses']['infonce_loss']
 
             # 3D losses
             if 'X_consistency_loss' in weak3d_outputs:
-                losses['X_consistency_loss'] = weak3d_outputs['X_consistency_loss']
+                # Component consistency: true X coordinate agreement between RGB and Sonar
+                losses['component_consistency'] = weak3d_outputs['X_consistency_loss']
             if 'rgb_cyclic_loss' in weak3d_outputs:
                 losses['rgb_cyclic_loss'] = weak3d_outputs['rgb_cyclic_loss']
             if 'sonar_cyclic_loss' in weak3d_outputs:

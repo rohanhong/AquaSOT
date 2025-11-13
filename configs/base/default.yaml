@@ -38,9 +38,9 @@ system:
 # ------------------------------------------------------------------------------
 data:
   # Dataset paths
-  train_root: data/UUV2
-  val_root: data/UUV3
-  test_root: data/UUV3
+  train_root: data/uuv2
+  val_root: data/uuv3
+  test_root: data/uuv3
 
   # Dataset splits
   train_split: train
@@ -124,6 +124,7 @@ model:
         angular_bins: 360
         min_radius: 1.0
         max_radius: 100.0
+        align_corners: true  # True for backward compatibility, False recommended for new training
       output_dim: 768  # Match RGB embedding dim
 
   # Fusion configuration (G²-DCMA)
@@ -266,7 +267,10 @@ training:
     weak3d_reg: 1.0
     weak3d_cycle: 0.5
 
-    # Consistency losses
+    # Consistency losses (renamed for clarity)
+    # geometric_consistency: compares geometric encodings (fusion layer, scale vs radial)
+    # component_consistency: compares X coordinate predictions (weak3d head, X_rgb vs X_sonar)
+    geometric_consistency: 0.1
     component_consistency: 0.1
     representation_consistency: 0.1
 
@@ -294,8 +298,8 @@ training:
     save_best: true
     save_last: true
     max_keep: 5
-    metric: fusion_success_auc  # Metric for best model selection
-    mode: max  # max or min
+    metric: val_total  # Metric for best model selection (validation loss)
+    mode: min  # min for loss, max for accuracy/AUC
 
   # Logging
   log_interval: 10  # Log every N iterations

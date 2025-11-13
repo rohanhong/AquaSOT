@@ -388,10 +388,14 @@ def compute_multi_modal_metrics(
     sonar_pred: List[np.ndarray],
     fusion_pred: List[np.ndarray],
     rgb_gt: List[np.ndarray],
-    sonar_gt: List[np.ndarray]
+    sonar_gt: List[np.ndarray],
+    aggregation_strategy: str = 'mean'
 ) -> Dict[str, Dict[str, float]]:
     """
     Compute metrics for all three modalities (RGB, Sonar, Fusion).
+
+    Enhanced with detailed fusion→RGB and fusion→Sonar breakdowns to avoid
+    hiding systematic biases between modalities.
 
     Args:
         rgb_pred: RGB predictions
@@ -399,16 +403,24 @@ def compute_multi_modal_metrics(
         fusion_pred: Fusion predictions
         rgb_gt: RGB ground truth
         sonar_gt: Sonar ground truth
+        aggregation_strategy: How to aggregate fusion metrics
+            - 'mean': Simple average (default, preserves backward compatibility)
+            - 'weighted': Weighted by IoU (prefer more reliable GT)
+            - 'max': Take best per-metric (optimistic)
+            - 'min': Take worst per-metric (conservative)
 
     Returns:
-        Dictionary with metrics for each modality
+        Dictionary with metrics for each modality, including detailed fusion breakdown
 
     Example:
         >>> metrics = compute_multi_modal_metrics(
         ...     rgb_pred, sonar_pred, fusion_pred,
-        ...     rgb_gt, sonar_gt
+        ...     rgb_gt, sonar_gt,
+        ...     aggregation_strategy='weighted'
         ... )
-        >>> print(f"Fusion AUC: {metrics['fusion']['success_auc']:.4f}")
+        >>> print(f"Fusion (aggregated) AUC: {metrics['fusion']['success_auc']:.4f}")
+        >>> print(f"Fusion→RGB AUC: {metrics['fusion_vs_rgb']['success_auc']:.4f}")
+        >>> print(f"Fusion→Sonar AUC: {metrics['fusion_vs_sonar']['success_auc']:.4f}")
     """
     metrics = {}
 
@@ -418,19 +430,65 @@ def compute_multi_modal_metrics(
     # Sonar metrics
     metrics['sonar'] = compute_sequence_metrics(sonar_pred, sonar_gt, 'sonar')
 
-    # Fusion metrics (compare against both RGB and Sonar GT, take average)
-    fusion_rgb_metrics = compute_sequence_metrics(fusion_pred, rgb_gt, 'fusion')
-    fusion_sonar_metrics = compute_sequence_metrics(fusion_pred, sonar_gt, 'fusion')
+    # Fusion metrics: separate evaluation against each GT for transparency
+    fusion_rgb_metrics = compute_sequence_metrics(fusion_pred, rgb_gt, 'fusion_vs_rgb')
+    fusion_sonar_metrics = compute_sequence_metrics(fusion_pred, sonar_gt, 'fusion_vs_sonar')
 
-    # Average fusion metrics
+    # Store detailed breakdowns
+    metrics['fusion_vs_rgb'] = fusion_rgb_metrics
+    metrics['fusion_vs_sonar'] = fusion_sonar_metrics
+
+    # Aggregate fusion metrics using specified strategy
     metrics['fusion'] = {
         'modality': 'fusion',
         'num_frames': fusion_rgb_metrics['num_frames'],
-        'num_valid_predictions': fusion_rgb_metrics['num_valid_predictions']
+        'num_valid_predictions': fusion_rgb_metrics['num_valid_predictions'],
+        'aggregation_strategy': aggregation_strategy
     }
 
-    for key in ['success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5']:
-        metrics['fusion'][key] = (fusion_rgb_metrics[key] + fusion_sonar_metrics[key]) / 2.0
+    metric_keys = ['success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5']
+
+    if aggregation_strategy == 'mean':
+        # Simple average (backward compatible)
+        for key in metric_keys:
+            metrics['fusion'][key] = (fusion_rgb_metrics[key] + fusion_sonar_metrics[key]) / 2.0
+
+    elif aggregation_strategy == 'weighted':
+        # Weight by mean IoU (prefer more reliable GT)
+        rgb_weight = fusion_rgb_metrics['mean_iou']
+        sonar_weight = fusion_sonar_metrics['mean_iou']
+        total_weight = rgb_weight + sonar_weight + 1e-7
+
+        for key in metric_keys:
+            metrics['fusion'][key] = (
+                fusion_rgb_metrics[key] * rgb_weight +
+                fusion_sonar_metrics[key] * sonar_weight
+            ) / total_weight
+
+        metrics['fusion']['rgb_weight'] = rgb_weight / total_weight
+        metrics['fusion']['sonar_weight'] = sonar_weight / total_weight
+
+    elif aggregation_strategy == 'max':
+        # Optimistic: take best per metric
+        for key in metric_keys:
+            if key == 'avg_center_error':  # Lower is better
+                metrics['fusion'][key] = min(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
+            else:  # Higher is better
+                metrics['fusion'][key] = max(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
+
+    elif aggregation_strategy == 'min':
+        # Conservative: take worst per metric
+        for key in metric_keys:
+            if key == 'avg_center_error':  # Lower is better
+                metrics['fusion'][key] = max(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
+            else:  # Higher is better
+                metrics['fusion'][key] = min(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
+
+    else:
+        raise ValueError(
+            f"Unknown aggregation_strategy: {aggregation_strategy}. "
+            f"Choose from: 'mean', 'weighted', 'max', 'min'"
+        )
 
     return metrics
 

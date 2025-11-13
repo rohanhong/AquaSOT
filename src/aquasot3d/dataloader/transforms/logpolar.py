@@ -51,6 +51,8 @@ class LogPolarTransform(nn.Module):
         learnable_scales: If True, α and β are learnable parameters
         init_alpha: Initial value for radial scale α (default 1.0)
         init_beta: Initial value for angular scale β (default 1.0)
+        align_corners: If True, align corners of grid to boundaries (default True for backward compatibility)
+                       Recommended: False for modern practice (pixel-center alignment)
 
     Learnable Parameters:
         alpha: Logarithmic radial scaling factor (if learnable_scales=True)
@@ -80,6 +82,7 @@ class LogPolarTransform(nn.Module):
         learnable_scales: bool = True,
         init_alpha: float = 1.0,
         init_beta: float = 1.0,
+        align_corners: bool = True,
     ):
         super().__init__()
 
@@ -89,6 +92,7 @@ class LogPolarTransform(nn.Module):
         self.output_width = output_width
         self.fov_angle = fov_angle
         self.learnable_scales = learnable_scales
+        self.align_corners = align_corners
 
         # Determine sensor position (bottom-center for upward-facing)
         if sensor_pos is None:
@@ -152,11 +156,14 @@ class LogPolarTransform(nn.Module):
         # ρ = α * log(r + 1) => r = exp(ρ / α) - 1
         # φ = β * θ => θ = φ / β
 
-        # Denormalize rho and phi
-        rho_denorm = self.rho_grid * self.alpha * np.log(self.max_range + 1)
-        phi_denorm = self.phi_grid * self.beta * (fov_angle_rad / 2)
+        # Denormalize rho and phi (WITHOUT multiplying by alpha/beta)
+        # rho_grid is normalized [0,1], denormalize to actual ρ values
+        rho_denorm = self.rho_grid * np.log(self.max_range + 1)
+        # phi_grid is normalized [-1,1], denormalize to actual φ values
+        phi_denorm = self.phi_grid * (fov_angle_rad / 2)
 
-        # Compute radial distance
+        # Apply inverse transformation with learnable scales
+        # This ensures alpha and beta affect the sampling grid
         r = torch.exp(rho_denorm / (self.alpha + 1e-6)) - 1
 
         # Compute angle
@@ -229,11 +236,12 @@ class LogPolarTransform(nn.Module):
         )
 
         # Use base log-polar grids (output size remains constant)
-        # Denormalize rho and phi using scaled max_range
-        rho_denorm = self.rho_grid * self.alpha * np.log(max_range_scaled + 1)
-        phi_denorm = self.phi_grid * self.beta * (fov_angle_rad / 2)
+        # Denormalize rho and phi using scaled max_range (WITHOUT multiplying by alpha/beta)
+        rho_denorm = self.rho_grid * np.log(max_range_scaled + 1)
+        phi_denorm = self.phi_grid * (fov_angle_rad / 2)
 
-        # Compute radial distance (inverse log transform)
+        # Apply inverse transformation with learnable scales
+        # This ensures alpha and beta affect the sampling grid
         r = torch.exp(rho_denorm / (self.alpha + 1e-6)) - 1
 
         # Compute angle
@@ -309,7 +317,7 @@ class LogPolarTransform(nn.Module):
             grid_batch,
             mode='bilinear',
             padding_mode='zeros',
-            align_corners=True
+            align_corners=self.align_corners
         )
 
         return logpolar_img
@@ -360,7 +368,7 @@ class LogPolarTransform(nn.Module):
             grid_batch,
             mode='bilinear',
             padding_mode='zeros',
-            align_corners=True
+            align_corners=self.align_corners
         )
 
         return cartesian_img

@@ -25,8 +25,8 @@ experiment:
 # Data Configuration
 # ------------------------------------------------------------------------------
 data:
-  train_root: data/UUV2
-  val_root: data/UUV3
+  train_root: data/uuv2
+  val_root: data/uuv3
 
   # Augmentation for RGB-only (domain-specific transforms)
   augmentation:
@@ -120,6 +120,7 @@ training:
     fusion_cls: 0.0
     weak3d_reg: 0.0
     weak3d_cycle: 0.0
+    geometric_consistency: 0.0
     component_consistency: 0.0
     representation_consistency: 0.0
 

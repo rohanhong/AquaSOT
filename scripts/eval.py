@@ -239,7 +239,8 @@ def main():
         device=device,
         output_dir=cfg.evaluation.output_dir,
         save_predictions=cfg.evaluation.save_predictions,
-        verbose=True
+        verbose=True,
+        search_size=cfg.data.get('search_size', 256)
     )
     
     # Run evaluation

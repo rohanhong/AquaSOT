@@ -61,7 +61,8 @@ class TrackingEvaluator:
         device: str = 'cuda',
         output_dir: Optional[str] = None,
         save_predictions: bool = False,
-        verbose: bool = True
+        verbose: bool = True,
+        search_size: int = 256
     ):
         self.model = model
         self.dataloader = dataloader
@@ -69,6 +70,7 @@ class TrackingEvaluator:
         self.output_dir = Path(output_dir) if output_dir else None
         self.save_predictions = save_predictions
         self.verbose = verbose
+        self.search_size = search_size
 
         # Create output directory
         if self.output_dir:
@@ -144,15 +146,40 @@ class TrackingEvaluator:
             'sequences': self.sequence_results
         }
 
+    def _denormalize_bbox(self, bbox: np.ndarray, image_size: int) -> np.ndarray:
+        """
+        Convert normalized bbox [0, 1] to pixel coordinates.
+
+        Args:
+            bbox: Bounding box in normalized coordinates [cx, cy, w, h]
+            image_size: Image size in pixels
+
+        Returns:
+            Bounding box in pixel coordinates
+        """
+        if bbox is None:
+            return None
+
+        # Check if bbox needs denormalization (max value < 2 suggests normalized coords)
+        if np.max(np.abs(bbox)) < 2.0:
+            # Denormalize: multiply by image_size
+            return bbox * image_size
+        else:
+            # Already in pixel coordinates
+            return bbox
+
     def track_sequence(self, batch: Dict[str, torch.Tensor]) -> Dict[str, List[np.ndarray]]:
         """
-        Track a single sequence and return predictions.
+        Track a single sequence and return predictions in pixel coordinates.
+
+        IMPORTANT: This method now returns boxes in pixel coordinates (not normalized),
+        which is required for correct evaluation metrics (precision@20, center error).
 
         Args:
             batch: Batch data containing sequence information
 
         Returns:
-            Dictionary with predictions and ground truth
+            Dictionary with predictions and ground truth (in pixel coordinates)
         """
         # Move batch to device
         rgb_template = batch['rgb_template'].to(self.device)
@@ -173,28 +200,45 @@ class TrackingEvaluator:
         }
 
         # Get predictions (model outputs plural keys: rgb_boxes, sonar_boxes, fusion_boxes)
+        # Denormalize boxes from [0,1] to pixel coordinates
         if 'rgb_boxes' in outputs:
             rgb_boxes = outputs['rgb_boxes'].cpu().numpy()
-            predictions['rgb_pred'] = [rgb_boxes[i] for i in range(len(rgb_boxes))]
+            predictions['rgb_pred'] = [
+                self._denormalize_bbox(rgb_boxes[i], self.search_size)
+                for i in range(len(rgb_boxes))
+            ]
 
         if 'sonar_boxes' in outputs:
             sonar_boxes = outputs['sonar_boxes'].cpu().numpy()
-            predictions['sonar_pred'] = [sonar_boxes[i] for i in range(len(sonar_boxes))]
+            predictions['sonar_pred'] = [
+                self._denormalize_bbox(sonar_boxes[i], self.search_size)
+                for i in range(len(sonar_boxes))
+            ]
 
         if 'fusion_boxes' in outputs:
             fusion_boxes = outputs['fusion_boxes'].cpu().numpy()
-            predictions['fusion_pred'] = [fusion_boxes[i] for i in range(len(fusion_boxes))]
+            predictions['fusion_pred'] = [
+                self._denormalize_bbox(fusion_boxes[i], self.search_size)
+                for i in range(len(fusion_boxes))
+            ]
 
         # Get ground truth (support both singular and plural forms)
+        # Also denormalize ground truth boxes
         rgb_gt_key = 'rgb_box' if 'rgb_box' in batch else 'rgb_boxes'
         if rgb_gt_key in batch:
             rgb_gt = batch[rgb_gt_key].cpu().numpy()
-            predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
+            predictions['rgb_gt'] = [
+                self._denormalize_bbox(rgb_gt[i], self.search_size)
+                for i in range(len(rgb_gt))
+            ]
 
         sonar_gt_key = 'sonar_box' if 'sonar_box' in batch else 'sonar_boxes'
         if sonar_gt_key in batch:
             sonar_gt = batch[sonar_gt_key].cpu().numpy()
-            predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
+            predictions['sonar_gt'] = [
+                self._denormalize_bbox(sonar_gt[i], self.search_size)
+                for i in range(len(sonar_gt))
+            ]
 
         return predictions
 

@@ -121,6 +121,7 @@ training:
     fusion_cls: 0.0
     weak3d_reg: 0.0
     weak3d_cycle: 0.0
+    geometric_consistency: 0.0
     component_consistency: 0.0
     representation_consistency: 0.0
     temporal_smooth: 0.05

@@ -276,13 +276,15 @@ class LossManager(nn.Module):
         weights = self._get_current_weights()
 
         # Define loss name mapping from model internal names to config keys
+        # Note: renamed for clarity (fusion geometric vs weak3d component consistency)
         loss_name_map = {
             'rgb_box_loss': 'rgb_box',
             'sonar_box_loss': 'sonar_box',
             'fusion_box_loss': 'fusion_box',
-            'component_consistency': 'component_consistency',
+            'geometric_consistency': 'geometric_consistency',  # Fusion: scale vs radial encodings
+            'component_consistency': 'component_consistency',  # Weak3D: X_rgb vs X_sonar agreement
             'representation_consistency': 'representation_consistency',
-            'X_consistency_loss': 'weak3d_reg',
+            'X_consistency_loss': 'component_consistency',  # Legacy: map old key to new name
         }
 
         # Process individual losses with name mapping
