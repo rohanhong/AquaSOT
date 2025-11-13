@@ -1,13 +1,21 @@
 # AquaSOT-3D Training Guide
 
-**Version:** 1.1
-**Date:** 2025-11-13
+**Version:** 2.0
+**Date:** 2025-11-14
+**Multi-Sequence Architecture**
 
 ---
 
 ## Overview
 
-AquaSOT-3D uses a **three-stage training strategy**:
+AquaSOT-3D supports **multi-sequence training** across the full AquaSOT-3D dataset (12 sequences):
+
+- **Training set**: `uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12` (9 sequences)
+- **Validation set**: `uuv3, uuv6, uuv10` (3 sequences)
+
+### Training Strategy
+
+AquaSOT-3D uses a **three-stage training approach**:
 
 1. **Stage 1:** RGB-only pretraining (40 epochs)
 2. **Stage 2:** Sonar-only pretraining (40 epochs)
@@ -17,19 +25,24 @@ AquaSOT-3D uses a **three-stage training strategy**:
 
 ## Quick Start
 
-### Stage 1: RGB Pretraining
+### Multi-Sequence Training (Recommended)
+
+Train on all 9 training sequences:
 
 ```bash
+# Stage 1: RGB Pretraining (multi-sequence)
 python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
-```
 
-### Stage 2: Sonar Pretraining
-
-```bash
+# Stage 2: Sonar Pretraining (multi-sequence)
 python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
+
+# Stage 3: Fusion Training (multi-sequence)
+python scripts/train.py --config configs/train/train_multiseq.yaml
 ```
 
-### Stage 3: Fusion Training
+### Single-Sequence Training (For Debugging)
+
+Train on UUV2 only:
 
 ```bash
 python scripts/train.py --config configs/train/train_uuv2.yaml
@@ -39,22 +52,42 @@ python scripts/train.py --config configs/train/train_uuv2.yaml
 
 ## Configuration Files
 
-All configurations are in `configs/` directory:
+All configurations use the **multi-sequence format**:
+
+```yaml
+data:
+  data_root: data
+  train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
+  val_sequences: [uuv3, uuv6, uuv10]
+```
+
+Available configs in `configs/` directory:
 
 ```
 configs/
-├── base/default.yaml              # Base configuration
+├── base/default.yaml              # Base configuration (multi-sequence defaults)
 ├── train/
 │   ├── pretrain_rgb_only.yaml     # Stage 1: RGB pretraining
 │   ├── pretrain_sonar_only.yaml   # Stage 2: Sonar pretraining
-│   └── train_uuv2.yaml            # Stage 3: Fusion training
+│   ├── train_multiseq.yaml        # Stage 3: All 9 sequences
+│   └── train_uuv2.yaml            # Stage 3: Single sequence (debugging)
 └── train_test/
     ├── test_pretrain_rgb.yaml     # Stage 1: Quick test (5 epochs)
     ├── test_pretrain_sonar.yaml   # Stage 2: Quick test (5 epochs)
     └── test_fusion.yaml           # Stage 3: Quick test (5 epochs)
 ```
 
-Configuration files use YAML inheritance via `_base_` directive.
+### Per-Sequence Resolution Detection
+
+The system automatically detects RGB and Sonar resolutions for each sequence:
+
+```bash
+[INFO] Multi-sequence mode: data_root=data
+[INFO] Train sequences: ['uuv1', 'uuv2', ...]
+[INFO]   Train sequence 'uuv1': 2518 valid frames, RGB (1920, 1080), Sonar (682, 376)
+[INFO]   Train sequence 'uuv2': 2740 valid frames, RGB (1920, 1080), Sonar (682, 376)
+...
+```
 
 ---
 

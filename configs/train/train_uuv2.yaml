@@ -26,8 +26,11 @@ experiment:
 # Data Configuration
 # ------------------------------------------------------------------------------
 data:
-  train_root: data/uuv2
-  val_root: data/uuv3
+  # Multi-sequence format (single training sequence for UUV2-specific workflow)
+  data_root: data
+  train_sequences: [uuv2]
+  val_sequences: [uuv3]
+
   num_workers: 4  # Higher performance: 12 (Xeon W9-3475X 36C/72T)
   prefetch_factor: 2  # Higher performance: 3
 

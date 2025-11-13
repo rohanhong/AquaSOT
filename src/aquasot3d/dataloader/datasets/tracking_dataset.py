@@ -15,7 +15,7 @@ import numpy as np
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from .rgb_sonar_dataset import RGBSonarDataset
+from .rgb_sonar_dataset import RGBSonarDataset, MultiSequenceRGBSonarDataset
 
 
 class TrackingDataset(Dataset):
@@ -26,8 +26,13 @@ class TrackingDataset(Dataset):
     - Template: Initial target appearance (frame t)
     - Search: Frame to find target in (frame t+Δt)
 
+    This dataset supports both single-sequence (RGBSonarDataset) and multi-sequence
+    (MultiSequenceRGBSonarDataset) base datasets. For multi-sequence datasets, it
+    enforces intra-sequence temporal constraints to prevent template/search pairs
+    from crossing sequence boundaries.
+
     Args:
-        base_dataset: RGBSonarDataset instance
+        base_dataset: RGBSonarDataset or MultiSequenceRGBSonarDataset instance
         template_search_gap: Maximum frame gap between template and search (default: 30)
         min_gap: Minimum frame gap (default: 1)
         search_first_prob: Probability of using first frame as template (default: 0.2)
@@ -37,7 +42,7 @@ class TrackingDataset(Dataset):
 
     def __init__(
         self,
-        base_dataset: RGBSonarDataset,
+        base_dataset,
         template_search_gap: int = 30,
         min_gap: int = 1,
         search_first_prob: float = 0.2,
@@ -53,9 +58,35 @@ class TrackingDataset(Dataset):
         self.search_size = search_size
         self.augmentation = augmentation
 
-        # Get valid frame indices
-        self.valid_indices = base_dataset.valid_indices
-        self.num_frames = len(self.valid_indices)
+        # Check if base_dataset is multi-sequence
+        self.is_multi_sequence = isinstance(base_dataset, MultiSequenceRGBSonarDataset)
+
+        # Build sequence-aware index mapping
+        if self.is_multi_sequence:
+            self._build_sequence_index_mapping()
+        else:
+            # Single sequence case
+            self.valid_indices = base_dataset.valid_indices
+            self.num_frames = len(self.valid_indices)
+            self.sequence_ranges = None
+
+    def _build_sequence_index_mapping(self):
+        """
+        Build mapping for multi-sequence dataset to ensure temporal constraints.
+
+        Creates a mapping of global indices to their sequence boundaries,
+        preventing template/search pairs from crossing sequence boundaries.
+        """
+        self.sequence_ranges = {}
+        self.num_frames = len(self.base_dataset)
+
+        for seq_metadata in self.base_dataset.sequences:
+            seq_name = seq_metadata.sequence_name
+            self.sequence_ranges[seq_name] = {
+                'start': seq_metadata.start_idx,
+                'end': seq_metadata.end_idx,
+                'num_frames': seq_metadata.end_idx - seq_metadata.start_idx,
+            }
 
     def __len__(self):
         return self.num_frames
@@ -63,6 +94,9 @@ class TrackingDataset(Dataset):
     def __getitem__(self, index: int) -> Dict:
         """
         Sample a template-search pair.
+
+        For multi-sequence datasets, ensures template and search frames
+        come from the same sequence to maintain temporal consistency.
 
         Returns:
             Dictionary with keys:
@@ -76,34 +110,30 @@ class TrackingDataset(Dataset):
                 - search_bbox_sonar: Search sonar bbox [x, y, w, h]
                 - template_idx: Template frame index
                 - search_idx: Search frame index
+                - sequence_name: Name of the sequence
+                - template_frame_id: 1-based template frame ID
+                - search_frame_id: 1-based search frame ID
         """
-        # Decide template frame
-        if random.random() < self.search_first_prob:
-            # Use first valid frame as template
-            template_idx = 0
+        if self.is_multi_sequence:
+            # Multi-sequence case: enforce intra-sequence temporal constraints
+            template_idx, search_idx = self._sample_intra_sequence_pair(index)
         else:
-            # Random template from current index vicinity
-            template_idx = index
-
-        # Sample search frame with gap
-        max_search_idx = min(
-            template_idx + self.template_search_gap,
-            self.num_frames - 1
-        )
-        min_search_idx = min(
-            template_idx + self.min_gap,
-            self.num_frames - 1
-        )
-
-        # Ensure valid range
-        if min_search_idx > max_search_idx:
-            search_idx = template_idx
-        else:
-            search_idx = random.randint(min_search_idx, max_search_idx)
+            # Single-sequence case: use original logic
+            template_idx, search_idx = self._sample_single_sequence_pair(index)
 
         # Get frame data
         template_data = self.base_dataset[template_idx]
         search_data = self.base_dataset[search_idx]
+
+        # Verify sequence consistency for multi-sequence
+        if self.is_multi_sequence:
+            template_seq = template_data.get('sequence_name')
+            search_seq = search_data.get('sequence_name')
+            if template_seq != search_seq:
+                raise RuntimeError(
+                    f"Template-search sequence mismatch: {template_seq} != {search_seq}. "
+                    "This indicates a bug in _sample_intra_sequence_pair."
+                )
 
         # Apply augmentation if provided
         if self.augmentation is not None:
@@ -137,8 +167,11 @@ class TrackingDataset(Dataset):
             search_data['sonar_bbox'] = search_aug_output.get('sonar_bbox', search_data['sonar_bbox'])
 
         # Get sequence metadata from base dataset
-        seq_info = self.base_dataset.get_sequence_info()
-        sequence_name = seq_info['sequence_name']
+        if self.is_multi_sequence:
+            sequence_name = template_data.get('sequence_name')
+        else:
+            seq_info = self.base_dataset.get_sequence_info()
+            sequence_name = seq_info['sequence_name']
 
         # Build tracking pair
         pair = {
@@ -171,6 +204,97 @@ class TrackingDataset(Dataset):
         }
 
         return pair
+
+    def _sample_single_sequence_pair(self, index: int):
+        """
+        Sample template-search pair for single-sequence dataset.
+
+        Args:
+            index: Current sample index
+
+        Returns:
+            Tuple of (template_idx, search_idx)
+        """
+        # Decide template frame
+        if random.random() < self.search_first_prob:
+            # Use first valid frame as template
+            template_idx = 0
+        else:
+            # Random template from current index vicinity
+            template_idx = index
+
+        # Sample search frame with gap
+        max_search_idx = min(
+            template_idx + self.template_search_gap,
+            self.num_frames - 1
+        )
+        min_search_idx = min(
+            template_idx + self.min_gap,
+            self.num_frames - 1
+        )
+
+        # Ensure valid range
+        if min_search_idx > max_search_idx:
+            search_idx = template_idx
+        else:
+            search_idx = random.randint(min_search_idx, max_search_idx)
+
+        return template_idx, search_idx
+
+    def _sample_intra_sequence_pair(self, index: int):
+        """
+        Sample template-search pair for multi-sequence dataset with intra-sequence constraints.
+
+        Ensures both template and search frames come from the same sequence.
+
+        Args:
+            index: Global frame index
+
+        Returns:
+            Tuple of (template_idx, search_idx) where both are in the same sequence
+        """
+        # Get sequence name for this index
+        sequence_name = self.base_dataset.get_frame_sequence(index)
+        seq_range = self.sequence_ranges[sequence_name]
+
+        # Convert to local index within sequence
+        local_index = index - seq_range['start']
+
+        # Decide template frame (local)
+        if random.random() < self.search_first_prob:
+            # Use first frame of this sequence as template
+            local_template_idx = 0
+        else:
+            # Use current frame as template
+            local_template_idx = local_index
+
+        # Sample search frame with gap (ensuring it stays within sequence)
+        local_max_search_idx = min(
+            local_template_idx + self.template_search_gap,
+            seq_range['num_frames'] - 1
+        )
+        local_min_search_idx = min(
+            local_template_idx + self.min_gap,
+            seq_range['num_frames'] - 1
+        )
+
+        # Ensure valid range
+        if local_min_search_idx > local_max_search_idx:
+            local_search_idx = local_template_idx
+        else:
+            local_search_idx = random.randint(local_min_search_idx, local_max_search_idx)
+
+        # Convert back to global indices
+        template_idx = seq_range['start'] + local_template_idx
+        search_idx = seq_range['start'] + local_search_idx
+
+        # Sanity check: ensure indices are within sequence boundaries
+        assert seq_range['start'] <= template_idx < seq_range['end'], \
+            f"Template index {template_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+        assert seq_range['start'] <= search_idx < seq_range['end'], \
+            f"Search index {search_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+
+        return template_idx, search_idx
 
     def _prepare_image(self, img, target_size, is_sonar=False):
         """

@@ -297,31 +297,45 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 
 ### Prepare Dataset
 
-AquaSOT-3D expects paired RGB and Sonar sequences in the following structure:
+AquaSOT-3D supports **multi-sequence training** across 12 sequences. Each sequence follows the same structure:
 
 ```
 data/
-├── uuv2/                    # Training set
+├── uuv1/                    # Training sequence 1
 │   ├── light/               # RGB modality
-│   │   ├── img/             # 1.jpg - 2740.jpg
+│   │   ├── img/             # Frame images (1.jpg, 2.jpg, ...)
 │   │   └── groundtruth.txt  # Bounding box annotations
 │   └── sonar/               # Sonar modality
-│       ├── img/             # 1.jpg - 2740.jpg
-│       └── groundtruth.txt  # Bounding box annotations
-└── uuv3/                    # Validation/Test set
-    ├── light/
-    │   ├── img/             # 1.jpg - 751.jpg
-    │   └── groundtruth.txt
-    └── sonar/
-        ├── img/             # 1.jpg - 751.jpg
-        └── groundtruth.txt
+│       ├── img/             # Frame images (1.jpg, 2.jpg, ...)
+│       └── groundtruth.txt
+├── uuv2/                    # Training sequence 2 (2,740 frames)
+│   ├── light/
+│   └── sonar/
+├── uuv3/                    # Validation sequence 1 (751 frames)
+│   ├── light/
+│   └── sonar/
+... (uuv4-12 follow the same pattern)
 ```
+
+**Dataset Split**:
+- **Training**: `uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12` (9 sequences)
+- **Validation/Test**: `uuv3, uuv6, uuv10` (3 sequences)
 
 **Groundtruth Format**: Each line contains `x,y,w,h` (top-left coordinates and size). Use `0,0,0,0` for occluded frames.
 
 ### Run Training
 
-Train on UUV2 dataset:
+**Multi-Sequence Training** (Recommended):
+
+Train on all 9 training sequences:
+
+```bash
+python scripts/train.py --config configs/train/train_multiseq.yaml
+```
+
+**Single-Sequence Training** (Legacy):
+
+Train on UUV2 only (for compatibility or debugging):
 
 ```bash
 python scripts/train.py --config configs/train/train_uuv2.yaml
@@ -336,22 +350,52 @@ python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
 python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 
 # Resume training from checkpoint
-python scripts/train.py --config configs/train/train_uuv2.yaml \
-    --resume outputs/train_uuv2/checkpoints/checkpoint_epoch_20.pth
+python scripts/train.py --config configs/train/train_multiseq.yaml \
+    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
+
+# Override sequences dynamically
+python scripts/train.py --config configs/base/default.yaml \
+    --opts data.data_root=data \
+           data.train_sequences="[uuv1,uuv2,uuv4]" \
+           data.val_sequences="[uuv3]" \
+           training.batch_size=4
 
 # Override configuration parameters
-python scripts/train.py --config configs/train/train_uuv2.yaml \
-    --opts training.lr=0.001 training.batch_size=16
+python scripts/train.py --config configs/train/train_multiseq.yaml \
+    --opts training.lr=0.001 training.batch_size=8
 ```
 
 ### Run Evaluation
 
-Evaluate trained model on UUV3 test set:
+**Multi-Sequence Evaluation** (Recommended):
+
+Evaluate on all 3 validation sequences:
+
+```bash
+python scripts/eval.py \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+```
+
+**Single-Sequence Evaluation** (Legacy):
+
+Evaluate on UUV3 only:
 
 ```bash
 python scripts/eval.py \
     --config configs/eval/eval_uuv3.yaml \
-    --checkpoint outputs/train_uuv2/checkpoints/best_model.pth
+    --checkpoint outputs/train_uuv2/checkpoints/checkpoint_best.pth
+```
+
+**Custom Evaluation**:
+```bash
+# Evaluate specific sequences
+python scripts/eval.py \
+    --config configs/base/default.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --opts data.data_root=data \
+           data.test_sequences="[uuv6,uuv10]" \
+           evaluation.batch_size=1
 ```
 
 **Evaluation Output**:

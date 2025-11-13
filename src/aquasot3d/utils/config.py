@@ -265,6 +265,88 @@ def save_config(config: Dict, save_path: str):
     logger.info(f"Configuration saved to: {save_path}")
 
 
+def resolve_sequence_paths(data_root: str, sequence_names: List[str]) -> List[str]:
+    """
+    Resolve sequence names to full paths.
+
+    Args:
+        data_root: Root directory containing sequence directories
+        sequence_names: List of sequence names (e.g., ['uuv1', 'uuv2'])
+
+    Returns:
+        List of full paths to sequence directories
+
+    Example:
+        >>> resolve_sequence_paths('data', ['uuv1', 'uuv2'])
+        ['data/uuv1', 'data/uuv2']
+    """
+    data_root_path = Path(data_root)
+    return [str(data_root_path / seq_name) for seq_name in sequence_names]
+
+
+def _handle_legacy_data_config(config: Dict) -> Dict:
+    """
+    Handle backward compatibility for legacy single-sequence data config.
+
+    Converts train_root/val_root/test_root to data_root + sequences format
+    with deprecation warning.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Updated configuration with multi-sequence format
+    """
+    data_config = config.get('data', {})
+
+    # Check if using legacy format
+    has_legacy = any([
+        data_config.get('train_root') not in [None, 'null'],
+        data_config.get('val_root') not in [None, 'null'],
+        data_config.get('test_root') not in [None, 'null']
+    ])
+
+    if not has_legacy:
+        return config
+
+    # Emit deprecation warning
+    logger.warning(
+        "DEPRECATION WARNING: Using legacy single-sequence data config "
+        "(train_root/val_root/test_root) is deprecated. "
+        "Please update your config to use data_root + train_sequences/val_sequences/test_sequences. "
+        "The legacy format will be automatically converted."
+    )
+
+    # Extract data_root from first available legacy path
+    train_root = data_config.get('train_root')
+    val_root = data_config.get('val_root')
+    test_root = data_config.get('test_root')
+
+    # Determine data_root and sequences from legacy paths
+    if train_root and train_root not in [None, 'null']:
+        train_path = Path(train_root)
+        data_root = str(train_path.parent)
+        train_seq = train_path.name
+        data_config['data_root'] = data_root
+        data_config['train_sequences'] = [train_seq]
+
+    if val_root and val_root not in [None, 'null']:
+        val_path = Path(val_root)
+        if 'data_root' not in data_config:
+            data_config['data_root'] = str(val_path.parent)
+        val_seq = val_path.name
+        data_config['val_sequences'] = [val_seq]
+
+    if test_root and test_root not in [None, 'null']:
+        test_path = Path(test_root)
+        if 'data_root' not in data_config:
+            data_config['data_root'] = str(test_path.parent)
+        test_seq = test_path.name
+        data_config['test_sequences'] = [test_seq]
+
+    return config
+
+
 def validate_config(config: Dict) -> bool:
     """
     Validate configuration has required fields.
@@ -285,9 +367,32 @@ def validate_config(config: Dict) -> bool:
     if 'type' not in config['model']:
         raise ValueError("model.type not specified in config")
 
-    # Validate data config
-    if 'train_root' not in config['data'] and 'test_root' not in config['data']:
-        raise ValueError("Neither data.train_root nor data.test_root specified")
+    # Handle legacy data config format
+    config = _handle_legacy_data_config(config)
+
+    # Validate data config - support both new and legacy formats
+    data_config = config['data']
+
+    has_new_format = (
+        'data_root' in data_config and
+        any([
+            'train_sequences' in data_config,
+            'val_sequences' in data_config,
+            'test_sequences' in data_config
+        ])
+    )
+
+    has_legacy_format = any([
+        'train_root' in data_config and data_config['train_root'] not in [None, 'null'],
+        'test_root' in data_config and data_config['test_root'] not in [None, 'null']
+    ])
+
+    if not has_new_format and not has_legacy_format:
+        raise ValueError(
+            "Data config must specify either:\n"
+            "  - New format: data_root + train_sequences/val_sequences/test_sequences\n"
+            "  - Legacy format: train_root and/or test_root"
+        )
 
     logger.info("Configuration validation passed")
     return True

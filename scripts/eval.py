@@ -202,45 +202,101 @@ def main():
     from pathlib import Path as PathLib
     from aquasot3d.dataloader import RGBSonarDataset, EvaluationSequenceDataset
     from aquasot3d.dataloader.loader import collate_fn_template_search
+    from torch.utils.data import ConcatDataset
 
-    test_path = PathLib(cfg.data.test_root)
-    if test_path.is_absolute():
-        # Absolute path: split into root and sequence name
-        data_root = str(test_path.parent)
-        sequence_name = test_path.name
+    # Check if using multi-sequence format or legacy single-sequence format
+    use_multi_sequence = (
+        hasattr(cfg.data, 'test_sequences') and
+        cfg.data.test_sequences is not None and
+        len(cfg.data.test_sequences) > 0
+    )
+
+    if use_multi_sequence:
+        # Multi-sequence evaluation mode
+        data_root = cfg.data.get('data_root', 'data')
+        test_sequences = cfg.data.test_sequences
+
+        logger.info(f"Multi-sequence evaluation mode: data_root={data_root}")
+        logger.info(f"Test sequences: {test_sequences}")
+
+        # Build evaluation dataset for each sequence
+        eval_datasets = []
+        total_frames = 0
+
+        for seq_name in test_sequences:
+            # Create base dataset for this sequence
+            seq_base_dataset = RGBSonarDataset(
+                data_root=data_root,
+                sequence_name=seq_name,
+                return_occluded=True
+            )
+
+            # Create evaluation dataset for this sequence
+            seq_eval_dataset = EvaluationSequenceDataset(
+                base_dataset=seq_base_dataset,
+                template_size=cfg.data.get('template_size', 128),
+                search_size=cfg.data.get('search_size', 256),
+                template_frame='first',
+                enable_update=False,
+            )
+
+            eval_datasets.append(seq_eval_dataset)
+            seq_info = seq_base_dataset.get_sequence_info()
+            total_frames += len(seq_eval_dataset)
+
+            logger.info(
+                f"  Sequence '{seq_name}': {len(seq_eval_dataset)} frames, "
+                f"RGB {seq_info['rgb_resolution']}, Sonar {seq_info['sonar_resolution']}"
+            )
+
+        # Concatenate all sequence datasets
+        eval_dataset = ConcatDataset(eval_datasets)
+
+        logger.info(f"Total evaluation frames across {len(test_sequences)} sequences: {total_frames}")
+        logger.info(f"Using sequential evaluation (template=first frame per sequence)")
+
     else:
-        # Relative path: assume format is "data/sequence_name"
-        parts = test_path.parts
-        if len(parts) >= 2:
-            data_root = str(PathLib(*parts[:-1]))
-            sequence_name = parts[-1]
+        # Legacy single-sequence evaluation mode (backward compatibility)
+        logger.info("Single-sequence evaluation mode (legacy)")
+
+        test_path = PathLib(cfg.data.test_root)
+        if test_path.is_absolute():
+            # Absolute path: split into root and sequence name
+            data_root = str(test_path.parent)
+            sequence_name = test_path.name
         else:
-            # Single directory name, assume it's in 'data/'
-            data_root = 'data'
-            sequence_name = str(test_path)
+            # Relative path: assume format is "data/sequence_name"
+            parts = test_path.parts
+            if len(parts) >= 2:
+                data_root = str(PathLib(*parts[:-1]))
+                sequence_name = parts[-1]
+            else:
+                # Single directory name, assume it's in 'data/'
+                data_root = 'data'
+                sequence_name = str(test_path)
 
-    logger.info(f"Data root: {data_root}")
-    logger.info(f"Sequence name: {sequence_name}")
+        logger.info(f"Data root: {data_root}")
+        logger.info(f"Sequence name: {sequence_name}")
 
-    # Create base dataset (single frames)
-    eval_base_dataset = RGBSonarDataset(
-        data_root=data_root,
-        sequence_name=sequence_name,
-        return_occluded=True
-    )
+        # Create base dataset (single frames)
+        eval_base_dataset = RGBSonarDataset(
+            data_root=data_root,
+            sequence_name=sequence_name,
+            return_occluded=True
+        )
 
-    # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
-    # This ensures reproducible, protocol-compliant evaluation
-    eval_dataset = EvaluationSequenceDataset(
-        base_dataset=eval_base_dataset,
-        template_size=cfg.data.get('template_size', 128),
-        search_size=cfg.data.get('search_size', 256),
-        template_frame='first',  # Use first frame as template (RGBS50 protocol)
-        enable_update=False,     # No template update during evaluation
-    )
+        # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
+        # This ensures reproducible, protocol-compliant evaluation
+        eval_dataset = EvaluationSequenceDataset(
+            base_dataset=eval_base_dataset,
+            template_size=cfg.data.get('template_size', 128),
+            search_size=cfg.data.get('search_size', 256),
+            template_frame='first',  # Use first frame as template (RGBS50 protocol)
+            enable_update=False,     # No template update during evaluation
+        )
 
-    logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")
-    logger.info(f"Using sequential evaluation (template=first frame)")
+        logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")
+        logger.info(f"Using sequential evaluation (template=first frame)")
 
     # Create dataloader
     eval_loader = create_dataloader(

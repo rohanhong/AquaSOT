@@ -3,12 +3,13 @@ Unit Tests for DataLoader Utilities
 
 Tests the data loading infrastructure including:
 - Collate functions for tracking and template-search
+- Multi-sequence collation
 - DataLoader creation and configuration
 - Distributed sampling
 - Batch processing
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-14
 """
 
 import pytest
@@ -295,6 +296,164 @@ class TestInfiniteDataLoader:
         infinite_loader = InfiniteDataLoader(loader)
 
         assert len(infinite_loader) == len(loader)
+
+
+class TestMultiSequenceCollation:
+    """Test multi-sequence collation functions."""
+
+    def test_collate_multi_sequence_tracking(self):
+        """Test collating multi-sequence tracking batch."""
+        batch = [
+            {
+                'rgb_img': torch.randn(3, 256, 256),
+                'sonar_img': torch.randn(3, 256, 256),
+                'rgb_bbox': np.array([10, 20, 100, 200], dtype=np.float32),
+                'sonar_bbox': np.array([5, 10, 50, 100], dtype=np.float32),
+                'frame_id': 1,
+                'sequence_name': 'uuv2',
+                'is_valid': True,
+                'is_rgb_valid': True,
+                'is_sonar_valid': True,
+            },
+            {
+                'rgb_img': torch.randn(3, 256, 256),
+                'sonar_img': torch.randn(3, 256, 256),
+                'rgb_bbox': np.array([20, 30, 110, 210], dtype=np.float32),
+                'sonar_bbox': np.array([10, 15, 55, 105], dtype=np.float32),
+                'frame_id': 15,
+                'sequence_name': 'uuv3',
+                'is_valid': True,
+                'is_rgb_valid': True,
+                'is_sonar_valid': True,
+            },
+            {
+                'rgb_img': torch.randn(3, 256, 256),
+                'sonar_img': torch.randn(3, 256, 256),
+                'rgb_bbox': np.array([30, 40, 120, 220], dtype=np.float32),
+                'sonar_bbox': np.array([15, 20, 60, 110], dtype=np.float32),
+                'frame_id': 42,
+                'sequence_name': 'uuv2',
+                'is_valid': True,
+                'is_rgb_valid': True,
+                'is_sonar_valid': True,
+            },
+        ]
+
+        batched = collate_fn_tracking(batch)
+
+        assert batched is not None
+        assert batched['rgb_img'].shape == (3, 3, 256, 256)
+        assert batched['sonar_img'].shape == (3, 3, 256, 256)
+        assert batched['rgb_bbox'].shape == (3, 4)
+        assert batched['sonar_bbox'].shape == (3, 4)
+        assert batched['frame_id'].shape == (3,)
+
+        # Verify sequence names are preserved
+        assert 'sequence_name' in batched
+        assert len(batched['sequence_name']) == 3
+        assert batched['sequence_name'][0] == 'uuv2'
+        assert batched['sequence_name'][1] == 'uuv3'
+        assert batched['sequence_name'][2] == 'uuv2'
+
+    def test_collate_multi_sequence_template_search(self):
+        """Test collating multi-sequence template-search batch."""
+        batch = [
+            {
+                'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
+                'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
+                'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
+                'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+                'template_bbox_rgb': np.array([10, 20, 100, 200], dtype=np.float32),
+                'template_bbox_sonar': np.array([5, 10, 50, 100], dtype=np.float32),
+                'search_bbox_rgb': np.array([15, 25, 110, 210], dtype=np.float32),
+                'search_bbox_sonar': np.array([8, 12, 55, 105], dtype=np.float32),
+                'template_idx': 0,
+                'search_idx': 1,
+                'template_sequence': 'uuv2',
+                'search_sequence': 'uuv2',
+                'template_frame_id': 1,
+                'search_frame_id': 2,
+                'is_valid': True,
+            },
+            {
+                'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
+                'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
+                'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
+                'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+                'template_bbox_rgb': np.array([20, 30, 110, 210], dtype=np.float32),
+                'template_bbox_sonar': np.array([10, 15, 55, 105], dtype=np.float32),
+                'search_bbox_rgb': np.array([25, 35, 120, 220], dtype=np.float32),
+                'search_bbox_sonar': np.array([12, 18, 60, 110], dtype=np.float32),
+                'template_idx': 0,
+                'search_idx': 10,
+                'template_sequence': 'uuv3',
+                'search_sequence': 'uuv3',
+                'template_frame_id': 1,
+                'search_frame_id': 11,
+                'is_valid': True,
+            },
+        ]
+
+        batched = collate_fn_template_search(batch)
+
+        assert batched is not None
+        assert batched['template_rgb'].shape == (2, 3, 128, 128)
+        assert batched['search_rgb'].shape == (2, 3, 256, 256)
+
+        # Verify sequence names are preserved
+        assert 'template_sequence' in batched
+        assert 'search_sequence' in batched
+        assert len(batched['template_sequence']) == 2
+        assert len(batched['search_sequence']) == 2
+        assert batched['template_sequence'][0] == 'uuv2'
+        assert batched['template_sequence'][1] == 'uuv3'
+        assert batched['search_sequence'][0] == 'uuv2'
+        assert batched['search_sequence'][1] == 'uuv3'
+
+        # Verify frame IDs are preserved
+        assert 'template_frame_id' in batched
+        assert 'search_frame_id' in batched
+        assert batched['template_frame_id'].shape == (2,)
+        assert batched['search_frame_id'].shape == (2,)
+
+    def test_collate_mixed_sequences_with_occlusions(self):
+        """Test collating multi-sequence batch with mixed occlusions."""
+        batch = [
+            {
+                'rgb_img': torch.randn(3, 256, 256),
+                'sonar_img': None,  # Sonar occluded
+                'rgb_bbox': np.array([10, 20, 100, 200], dtype=np.float32),
+                'sonar_bbox': np.array([0, 0, 0, 0], dtype=np.float32),
+                'frame_id': 5,
+                'sequence_name': 'uuv2',
+                'is_valid': False,
+                'is_rgb_valid': True,
+                'is_sonar_valid': False,
+            },
+            {
+                'rgb_img': torch.randn(3, 256, 256),
+                'sonar_img': torch.randn(3, 256, 256),
+                'rgb_bbox': np.array([20, 30, 110, 210], dtype=np.float32),
+                'sonar_bbox': np.array([10, 15, 55, 105], dtype=np.float32),
+                'frame_id': 12,
+                'sequence_name': 'uuv3',
+                'is_valid': True,
+                'is_rgb_valid': True,
+                'is_sonar_valid': True,
+            },
+        ]
+
+        batched = collate_fn_tracking(batch)
+
+        assert batched is not None
+        # RGB should have 2 samples
+        assert batched['rgb_img'].shape == (2, 3, 256, 256)
+        # Sonar should have only 1 sample (second one)
+        assert batched['sonar_img'].shape == (1, 3, 256, 256)
+
+        # Verify sequence names present
+        assert 'sequence_name' in batched
+        assert len(batched['sequence_name']) == 2
 
 
 if __name__ == '__main__':

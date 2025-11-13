@@ -7,7 +7,12 @@ loading paired RGB-Sonar tracking sequences.
 
 from . import datasets
 from . import transforms
-from .datasets import RGBSonarDataset, TrackingDataset, EvaluationSequenceDataset
+from .datasets import (
+    RGBSonarDataset,
+    MultiSequenceRGBSonarDataset,
+    TrackingDataset,
+    EvaluationSequenceDataset,
+)
 from .loader import (
     collate_fn_tracking,
     collate_fn_template_search,
@@ -21,6 +26,7 @@ __all__ = [
     'datasets',
     'transforms',
     'RGBSonarDataset',
+    'MultiSequenceRGBSonarDataset',
     'TrackingDataset',
     'EvaluationSequenceDataset',
     'collate_fn_tracking',

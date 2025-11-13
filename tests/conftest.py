@@ -44,7 +44,43 @@ def dummy_bbox():
 
 @pytest.fixture
 def dummy_config():
-    """Create dummy configuration dictionary."""
+    """Create dummy configuration dictionary with multi-sequence support."""
+    return {
+        'model': {
+            'backbone': {
+                'type': 'ViT',
+                'depth': 12,
+                'embed_dim': 768
+            },
+            'fusion': {
+                'type': 'G2DCMA',
+                'hidden_dim': 256
+            },
+            'temporal': {
+                'type': 'Mamba',
+                'num_layers': 4
+            }
+        },
+        'training': {
+            'batch_size': 32,
+            'lr': 2e-4,
+            'epochs': 60
+        },
+        'data': {
+            # New multi-sequence format
+            'data_root': 'data',
+            'train_sequences': ['uuv1', 'uuv2'],
+            'val_sequences': ['uuv3'],
+            # Legacy paths (deprecated but still supported)
+            'train_path': 'data/uuv2',
+            'val_path': 'data/uuv3'
+        }
+    }
+
+
+@pytest.fixture
+def dummy_config_legacy():
+    """Create dummy configuration dictionary with legacy single-sequence format."""
     return {
         'model': {
             'backbone': {

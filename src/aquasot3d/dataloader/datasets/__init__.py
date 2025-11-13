@@ -4,7 +4,13 @@ Dataset loaders for AquaSOT-3D.
 This module contains dataset classes for loading RGB-Sonar tracking sequences.
 """
 
-from .rgb_sonar_dataset import RGBSonarDataset, is_occluded, parse_groundtruth
+from .rgb_sonar_dataset import (
+    RGBSonarDataset,
+    MultiSequenceRGBSonarDataset,
+    SequenceMetadata,
+    is_occluded,
+    parse_groundtruth,
+)
 from .tracking_dataset import TrackingDataset
 from .evaluation_dataset import EvaluationSequenceDataset
 from .sequence_sampler import (
@@ -26,6 +32,8 @@ from .augmentation import (
 
 __all__ = [
     'RGBSonarDataset',
+    'MultiSequenceRGBSonarDataset',
+    'SequenceMetadata',
     'TrackingDataset',
     'EvaluationSequenceDataset',
     'is_occluded',

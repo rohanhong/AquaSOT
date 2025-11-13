@@ -1,0 +1,102 @@
+# ==============================================================================
+# Multi-Sequence Evaluation Configuration
+#
+# Evaluation configuration for testing across all validation sequences.
+# Uses 3 validation sequences: uuv3, uuv6, uuv10
+#
+# Usage:
+#   python scripts/eval.py \
+#     --config configs/eval/eval_multiseq.yaml \
+#     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-14
+# ==============================================================================
+
+_base_: ../base/default.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: aquasot3d_eval_multiseq
+  tags: [evaluation, multimodal, multiseq]
+  notes: "Multi-sequence evaluation on uuv3, uuv6, uuv10"
+  group: multiseq_evaluation
+
+
+# ------------------------------------------------------------------------------
+# Data Configuration (Multi-Sequence)
+# ------------------------------------------------------------------------------
+data:
+  # Multi-sequence evaluation
+  data_root: data
+  test_sequences: [uuv3, uuv6, uuv10]
+
+  # Legacy paths set to null (not used)
+  test_root: null
+
+  num_workers: 4
+  prefetch_factor: 2
+
+  # Template and search sizes
+  template_size: 128
+  search_size: 256
+
+
+# ------------------------------------------------------------------------------
+# Evaluation Configuration
+# ------------------------------------------------------------------------------
+evaluation:
+  mode: test
+  batch_size: 1  # Sequential evaluation uses batch_size=1
+
+  # Standard metrics
+  metrics:
+    - success_auc
+    - precision_20
+    - precision_10
+    - precision_5
+    - avg_center_error
+    - mean_iou
+    - success_0.5
+    - success_0.7
+
+  # Per-modality evaluation
+  evaluate_rgb: true
+  evaluate_sonar: true
+  evaluate_fusion: true
+
+  # Visualization
+  visualization:
+    enabled: false
+    save_dir: outputs/eval_multiseq/visualization
+    plot_trajectories: true
+    plot_curves: true
+    plot_attention: false
+    create_videos: false
+    save_failure_cases: true
+    num_best: 5
+    num_worst: 5
+
+  # Result saving
+  save_predictions: true
+  save_metrics: true
+  save_report: true
+  output_dir: outputs/eval_multiseq
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration
+# ------------------------------------------------------------------------------
+# Model config is inherited from base, should match training config
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/eval_multiseq
+  checkpoint_dir: outputs/eval_multiseq/checkpoints
+  log_dir: outputs/eval_multiseq/logs

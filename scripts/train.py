@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader
 import logging
 
 from aquasot3d.utils.config import load_config, save_config, setup_config_logging
-from aquasot3d.dataloader import RGBSonarDataset, TrackingDataset, create_dataloader
+from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, TrackingDataset, create_dataloader
 from aquasot3d.dataloader.loader import collate_fn_template_search
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.training import Trainer, LossManager, CheckpointManager, build_optimizer, build_scheduler
@@ -139,35 +139,87 @@ def build_model(cfg):
 
 
 def build_dataloaders(cfg):
-    """Build training and validation dataloaders"""
+    """Build training and validation dataloaders with multi-sequence support"""
     logger.info("Building dataloaders")
 
-    # Priority 3: Use config-driven data paths instead of hardcoded values
-    # Parse train_root and val_root from config (e.g., 'data/UUV2' -> data_root='data', sequence_name='UUV2')
-    train_path = Path(cfg.data.train_root)
-    val_path = Path(cfg.data.val_root)
-
-    # Extract data_root (parent) and sequence_name (name)
-    train_data_root = str(train_path.parent)
-    train_sequence_name = train_path.name
-    val_data_root = str(val_path.parent)
-    val_sequence_name = val_path.name
-
-    logger.info(f"Train data: {train_data_root}/{train_sequence_name}")
-    logger.info(f"Val data: {val_data_root}/{val_sequence_name}")
-
-    # Create base datasets (single frames)
-    train_base_dataset = RGBSonarDataset(
-        data_root=train_data_root,
-        sequence_name=train_sequence_name,
-        return_occluded=True
+    # Check if using new multi-sequence format or legacy single-sequence format
+    use_multi_sequence = (
+        hasattr(cfg.data, 'train_sequences') and
+        cfg.data.train_sequences is not None and
+        len(cfg.data.train_sequences) > 0
     )
 
-    val_base_dataset = RGBSonarDataset(
-        data_root=val_data_root,
-        sequence_name=val_sequence_name,
-        return_occluded=True
-    )
+    if use_multi_sequence:
+        # Multi-sequence mode
+        data_root = cfg.data.get('data_root', 'data')
+        train_sequences = cfg.data.train_sequences
+        val_sequences = cfg.data.get('val_sequences', [])
+
+        logger.info(f"Multi-sequence mode: data_root={data_root}")
+        logger.info(f"Train sequences: {train_sequences}")
+        logger.info(f"Val sequences: {val_sequences}")
+
+        # Create multi-sequence base datasets
+        train_base_dataset = MultiSequenceRGBSonarDataset(
+            data_root=data_root,
+            sequence_names=train_sequences,
+            return_occluded=True,
+            sampling_policy='frame_balanced'
+        )
+
+        # Log per-sequence information
+        for seq_info in train_base_dataset.get_sequence_info():
+            logger.info(
+                f"  Train sequence '{seq_info['sequence_name']}': "
+                f"{seq_info['num_valid_frames']} valid frames, "
+                f"RGB {seq_info['rgb_resolution']}, "
+                f"Sonar {seq_info['sonar_resolution']}"
+            )
+
+        if val_sequences:
+            val_base_dataset = MultiSequenceRGBSonarDataset(
+                data_root=data_root,
+                sequence_names=val_sequences,
+                return_occluded=True,
+                sampling_policy='frame_balanced'
+            )
+
+            for seq_info in val_base_dataset.get_sequence_info():
+                logger.info(
+                    f"  Val sequence '{seq_info['sequence_name']}': "
+                    f"{seq_info['num_valid_frames']} valid frames"
+                )
+        else:
+            logger.warning("No validation sequences specified")
+            val_base_dataset = None
+
+    else:
+        # Legacy single-sequence mode (backward compatibility)
+        logger.info("Single-sequence mode (legacy)")
+
+        train_path = Path(cfg.data.train_root)
+        val_path = Path(cfg.data.val_root)
+
+        train_data_root = str(train_path.parent)
+        train_sequence_name = train_path.name
+        val_data_root = str(val_path.parent)
+        val_sequence_name = val_path.name
+
+        logger.info(f"Train data: {train_data_root}/{train_sequence_name}")
+        logger.info(f"Val data: {val_data_root}/{val_sequence_name}")
+
+        # Create single-sequence base datasets
+        train_base_dataset = RGBSonarDataset(
+            data_root=train_data_root,
+            sequence_name=train_sequence_name,
+            return_occluded=True
+        )
+
+        val_base_dataset = RGBSonarDataset(
+            data_root=val_data_root,
+            sequence_name=val_sequence_name,
+            return_occluded=True
+        )
 
     # Build augmentation pipeline for training
     train_augmentation = None

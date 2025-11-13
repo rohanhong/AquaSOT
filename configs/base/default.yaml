@@ -37,10 +37,17 @@ system:
 # Data Configuration
 # ------------------------------------------------------------------------------
 data:
-  # Dataset paths
-  train_root: data/uuv2
-  val_root: data/uuv3
-  test_root: data/uuv3
+  # Multi-sequence dataset configuration (recommended)
+  data_root: data
+  train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
+  val_sequences: [uuv3, uuv6, uuv10]
+  test_sequences: [uuv3, uuv6, uuv10]
+
+  # Legacy single-sequence paths (deprecated, maintained for backward compatibility)
+  # If train_root is specified, it will be parsed into data_root + [sequence] with a deprecation warning
+  train_root: null
+  val_root: null
+  test_root: null
 
   # Dataset splits
   train_split: train

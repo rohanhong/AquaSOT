@@ -2,13 +2,13 @@
 AquaSOT-3D DataLoader Usage Example
 
 This script demonstrates how to use the data loading pipeline for
-multi-modal RGB-Sonar tracking.
+multi-modal RGB-Sonar tracking with multi-sequence support.
 
 Usage:
     python examples/dataloader_usage_example.py
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-14
 """
 
 import sys
@@ -17,35 +17,51 @@ sys.path.insert(0, 'src')
 import yaml
 from pathlib import Path
 import torch
+import numpy as np
 
 from aquasot3d.dataloader.datasets import (
     RGBSonarDataset,
-    TemplateSearchSampler,
+    MultiSequenceRGBSonarDataset,
+    TrackingDataset,
     build_augmentation,
 )
-from aquasot3d.dataloader import create_dataloader, collate_fn_template_search
+from aquasot3d.dataloader import create_dataloader
 
 
-def example_1_basic_dataset_loading():
-    """Example 1: Basic dataset loading."""
+def example_1_multi_sequence_dataset_loading():
+    """Example 1: Multi-sequence dataset loading (recommended)."""
     print("\n" + "="*60)
-    print("Example 1: Basic Dataset Loading")
+    print("Example 1: Multi-Sequence Dataset Loading")
     print("="*60)
 
-    # Create dataset
-    dataset = RGBSonarDataset(
-        data_root='data/',
-        sequence_name='uuv2',
+    # Create multi-sequence dataset
+    dataset = MultiSequenceRGBSonarDataset(
+        data_root='data',
+        sequence_names=['uuv2', 'uuv3'],
+        sampling_policy='frame_balanced',
         return_occluded=True,
     )
 
-    print(f"Dataset: {dataset.sequence_name}")
-    print(f"Total frames: {dataset.num_frames}")
-    print(f"Valid frames: {len(dataset)}")
+    print(f"Multi-sequence dataset:")
+    print(f"  Total sequences: {len(dataset.sequence_metadata)}")
+    print(f"  Total valid frames: {len(dataset)}")
+    print(f"  Sampling policy: {dataset.sampling_policy}")
+
+    # Display per-sequence metadata
+    print(f"\nPer-sequence metadata:")
+    for seq_name, metadata in dataset.sequence_metadata.items():
+        print(f"  {seq_name}:")
+        print(f"    Frames: {metadata.num_frames}")
+        print(f"    Valid indices: {len(metadata.valid_indices)}")
+        print(f"    RGB resolution: {metadata.rgb_resolution}")
+        print(f"    Sonar resolution: {metadata.sonar_resolution}")
+        print(f"    Global index range: [{metadata.start_idx}, {metadata.end_idx})")
 
     # Get first frame
     sample = dataset[0]
-    print(f"\nFirst frame (ID={sample['frame_id']}):")
+    print(f"\nFirst frame:")
+    print(f"  Sequence: {sample['sequence_name']}")
+    print(f"  Frame ID: {sample['frame_id']}")
     print(f"  RGB image shape: {sample['rgb_img'].shape if sample['rgb_img'] is not None else None}")
     print(f"  Sonar image shape: {sample['sonar_img'].shape if sample['sonar_img'] is not None else None}")
     print(f"  RGB bbox: {sample['rgb_bbox']}")
@@ -53,42 +69,62 @@ def example_1_basic_dataset_loading():
     print(f"  Is valid: {sample['is_valid']}")
 
 
-def example_2_template_search_sampling():
-    """Example 2: Template-search pair generation."""
+def example_2_intra_sequence_tracking():
+    """Example 2: Multi-sequence tracking with intra-sequence constraint."""
     print("\n" + "="*60)
-    print("Example 2: Template-Search Sampling")
+    print("Example 2: Intra-Sequence Tracking Dataset")
     print("="*60)
 
-    # Create dataset
-    dataset = RGBSonarDataset(
-        data_root='data/',
-        sequence_name='uuv2',
+    # Create multi-sequence base dataset
+    base_dataset = MultiSequenceRGBSonarDataset(
+        data_root='data',
+        sequence_names=['uuv2', 'uuv3'],
+        sampling_policy='frame_balanced',
         return_occluded=False,
     )
 
-    # Create template-search sampler
-    sampler = TemplateSearchSampler(
-        dataset=dataset,
+    # Create tracking dataset with intra-sequence temporal constraint
+    tracking_dataset = TrackingDataset(
+        base_dataset=base_dataset,
         template_mode='first',
+        max_gap=50,
         search_scale=2.0,
         search_size=(256, 256),
         template_size=(128, 128),
+        return_search_only=False,
     )
 
-    # Sample a pair
-    search_idx = 10
-    pair = sampler.sample(search_idx)
+    print(f"Tracking dataset:")
+    print(f"  Base dataset size: {len(base_dataset)}")
+    print(f"  Tracking pairs: {len(tracking_dataset)}")
+    print(f"  Template mode: {tracking_dataset.template_mode}")
+    print(f"  Max gap: {tracking_dataset.max_gap}")
 
-    if pair is not None:
+    # Sample a pair
+    sample = tracking_dataset[10]
+
+    if sample is not None:
         print(f"\nTemplate-Search Pair:")
-        print(f"  Template frame: {pair['template_idx'] + 1}")
-        print(f"  Search frame: {pair['search_idx'] + 1}")
-        print(f"  Template RGB shape: {pair['template_rgb'].shape}")
-        print(f"  Search RGB shape: {pair['search_rgb'].shape}")
-        print(f"  Search bbox (normalized): {pair['search_bbox_rgb']}")
-        print(f"  Is valid: {pair['is_valid']}")
+        print(f"  Template sequence: {sample['template_sequence']}")
+        print(f"  Search sequence: {sample['search_sequence']}")
+        print(f"  Template frame ID: {sample['template_frame_id']}")
+        print(f"  Search frame ID: {sample['search_frame_id']}")
+        print(f"  Template RGB shape: {sample['template_rgb'].shape}")
+        print(f"  Search RGB shape: {sample['search_rgb'].shape}")
+        print(f"  Intra-sequence pair: {sample['template_sequence'] == sample['search_sequence']}")
     else:
         print("Failed to generate pair (frame occluded)")
+
+    # Verify intra-sequence constraint
+    print(f"\nVerifying intra-sequence constraint (sampling 50 pairs):")
+    violations = 0
+    for i in range(min(50, len(tracking_dataset))):
+        sample = tracking_dataset[i]
+        if sample is not None:
+            if sample['template_sequence'] != sample['search_sequence']:
+                violations += 1
+    print(f"  Cross-sequence violations: {violations}/50")
+    print(f"  Constraint satisfied: {violations == 0}")
 
 
 def example_3_augmentation():
@@ -140,66 +176,41 @@ def example_3_augmentation():
     print(f"  Template RGB range: [{augmented['template_rgb'].min():.2f}, {augmented['template_rgb'].max():.2f}]")
 
 
-def example_4_dataloader():
-    """Example 4: Creating DataLoader with batching."""
+def example_4_multi_sequence_dataloader():
+    """Example 4: Multi-sequence DataLoader with batching."""
     print("\n" + "="*60)
-    print("Example 4: DataLoader with Batching")
+    print("Example 4: Multi-Sequence DataLoader")
     print("="*60)
 
-    # For this example, we'll create a wrapper dataset
-    class TemplateSearchDataset(torch.utils.data.Dataset):
-        def __init__(self, base_dataset, sampler, augmentation=None):
-            self.base_dataset = base_dataset
-            self.sampler = sampler
-            self.augmentation = augmentation
-
-        def __len__(self):
-            return len(self.base_dataset)
-
-        def __getitem__(self, idx):
-            # Get search frame index from valid indices
-            search_idx = self.base_dataset.valid_indices[idx]
-
-            # Sample template-search pair
-            pair = self.sampler.sample(search_idx)
-
-            if pair is None:
-                return None
-
-            # Apply augmentation
-            if self.augmentation is not None:
-                pair = self.augmentation(pair)
-
-            return pair
-
-    # Create dataset
-    base_dataset = RGBSonarDataset(
-        data_root='data/',
-        sequence_name='uuv2',
+    # Create multi-sequence base dataset
+    base_dataset = MultiSequenceRGBSonarDataset(
+        data_root='data',
+        sequence_names=['uuv2', 'uuv3'],
+        sampling_policy='frame_balanced',
         return_occluded=False,
     )
 
-    sampler = TemplateSearchSampler(
-        dataset=base_dataset,
+    # Create tracking dataset
+    tracking_dataset = TrackingDataset(
+        base_dataset=base_dataset,
         template_mode='first',
+        max_gap=50,
+        search_scale=2.0,
+        search_size=(256, 256),
+        template_size=(128, 128),
     )
-
-    aug_config = {'type': 'NoAugmentation'}
-    aug = build_augmentation(aug_config, is_train=False)
-
-    ts_dataset = TemplateSearchDataset(base_dataset, sampler, aug)
 
     # Create DataLoader
     loader = create_dataloader(
-        ts_dataset,
+        tracking_dataset,
         batch_size=4,
         shuffle=False,
         num_workers=0,
-        collate_fn=collate_fn_template_search,
     )
 
-    print(f"DataLoader created:")
-    print(f"  Dataset size: {len(ts_dataset)}")
+    print(f"Multi-sequence DataLoader:")
+    print(f"  Total sequences: {len(base_dataset.sequence_metadata)}")
+    print(f"  Dataset size: {len(tracking_dataset)}")
     print(f"  Batch size: 4")
     print(f"  Number of batches: {len(loader)}")
 
@@ -213,69 +224,92 @@ def example_4_dataloader():
         print(f"  Template bbox RGB shape: {batch['template_bbox_rgb'].shape}")
         print(f"  Batch size: {batch['template_rgb'].shape[0]}")
 
+        # Show sequence distribution in batch
+        template_seqs = batch['template_sequence']
+        search_seqs = batch['search_sequence']
+        print(f"\nSequence distribution in batch:")
+        for i in range(len(template_seqs)):
+            print(f"    Sample {i}: template={template_seqs[i]}, search={search_seqs[i]}")
 
-def example_5_sequence_info():
-    """Example 5: Dataset statistics and metadata."""
+
+def example_5_multi_sequence_statistics():
+    """Example 5: Multi-sequence dataset statistics and metadata."""
     print("\n" + "="*60)
-    print("Example 5: Dataset Statistics")
+    print("Example 5: Multi-Sequence Statistics")
     print("="*60)
 
-    dataset = RGBSonarDataset(
-        data_root='data/',
-        sequence_name='uuv2',
+    dataset = MultiSequenceRGBSonarDataset(
+        data_root='data',
+        sequence_names=['uuv2', 'uuv3'],
+        sampling_policy='frame_balanced',
         return_occluded=True,
     )
 
-    info = dataset.get_sequence_info()
+    print(f"Multi-sequence dataset overview:")
+    print(f"  Total sequences: {len(dataset.sequence_metadata)}")
+    print(f"  Total frames: {sum(m.num_frames for m in dataset.sequence_metadata.values())}")
+    print(f"  Total valid frames: {len(dataset)}")
+    print(f"  Sampling policy: {dataset.sampling_policy}")
 
-    print("Sequence Information:")
-    for key, value in info.items():
-        print(f"  {key}: {value}")
+    # Per-sequence statistics
+    print(f"\nPer-sequence statistics:")
+    for seq_name, metadata in dataset.sequence_metadata.items():
+        print(f"\n  {seq_name}:")
+        print(f"    Total frames: {metadata.num_frames}")
+        print(f"    Valid frames: {len(metadata.valid_indices)}")
+        print(f"    Validity rate: {len(metadata.valid_indices)/metadata.num_frames*100:.1f}%")
+        print(f"    RGB resolution: {metadata.rgb_resolution}")
+        print(f"    Sonar resolution: {metadata.sonar_resolution}")
+        print(f"    Global index range: [{metadata.start_idx}, {metadata.end_idx})")
 
-    # Analyze occlusions
-    num_rgb_occluded = 0
-    num_sonar_occluded = 0
-    num_both_occluded = 0
+        # Analyze occlusions for this sequence
+        seq_dataset = dataset.sequence_datasets[seq_name]
+        num_rgb_occluded = 0
+        num_sonar_occluded = 0
+        num_both_occluded = 0
 
-    for idx in range(dataset.num_frames):
-        rgb_occ = (dataset.rgb_bboxes[idx] == 0).all()
-        sonar_occ = (dataset.sonar_bboxes[idx] == 0).all()
+        for idx in range(seq_dataset.num_frames):
+            rgb_occ = (seq_dataset.rgb_bboxes[idx] == 0).all()
+            sonar_occ = (seq_dataset.sonar_bboxes[idx] == 0).all()
 
-        if rgb_occ:
-            num_rgb_occluded += 1
-        if sonar_occ:
-            num_sonar_occluded += 1
-        if rgb_occ and sonar_occ:
-            num_both_occluded += 1
+            if rgb_occ:
+                num_rgb_occluded += 1
+            if sonar_occ:
+                num_sonar_occluded += 1
+            if rgb_occ and sonar_occ:
+                num_both_occluded += 1
 
-    print(f"\nOcclusion Statistics:")
-    print(f"  RGB occluded frames: {num_rgb_occluded} ({num_rgb_occluded/dataset.num_frames*100:.1f}%)")
-    print(f"  Sonar occluded frames: {num_sonar_occluded} ({num_sonar_occluded/dataset.num_frames*100:.1f}%)")
-    print(f"  Both occluded frames: {num_both_occluded} ({num_both_occluded/dataset.num_frames*100:.1f}%)")
+        print(f"    Occlusions:")
+        print(f"      RGB occluded: {num_rgb_occluded} ({num_rgb_occluded/seq_dataset.num_frames*100:.1f}%)")
+        print(f"      Sonar occluded: {num_sonar_occluded} ({num_sonar_occluded/seq_dataset.num_frames*100:.1f}%)")
+        print(f"      Both occluded: {num_both_occluded} ({num_both_occluded/seq_dataset.num_frames*100:.1f}%)")
 
 
 def main():
     """Run all examples."""
     print("\n" + "="*80)
-    print(" AquaSOT-3D DataLoader Usage Examples")
+    print(" AquaSOT-3D Multi-Sequence DataLoader Usage Examples")
     print("="*80)
 
     # Check if data exists
-    if not Path('data/uuv2').exists():
-        print("\n⚠️  Warning: Data directory 'data/uuv2' not found.")
+    data_exists = Path('data/uuv2').exists() and Path('data/uuv3').exists()
+
+    if not data_exists:
+        print("\n⚠️  Warning: Data directories 'data/uuv2' and/or 'data/uuv3' not found.")
         print("   Please download the dataset first or update the data_root path.")
-        print("\n   Running with dummy explanations...\n")
+        print("\n   Running with augmentation example only (uses dummy data)...\n")
 
         # Run only augmentation example with dummy data
         example_3_augmentation()
 
     else:
         # Run all examples
-        example_1_basic_dataset_loading()
-        example_2_template_search_sampling()
+        print("\n📊 Running multi-sequence examples with UUV2 and UUV3 sequences...")
+        example_1_multi_sequence_dataset_loading()
+        example_2_intra_sequence_tracking()
         example_3_augmentation()
-        example_4_dataloader()
-        example_5_sequence_info()
+        example_4_multi_sequence_dataloader()
+        example_5_multi_sequence_statistics()
 
     print("\n" + "="*80)
     print(" Examples completed!")

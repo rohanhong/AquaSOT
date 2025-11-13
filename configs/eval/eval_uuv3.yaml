@@ -25,8 +25,9 @@ experiment:
 # Data Configuration
 # ------------------------------------------------------------------------------
 data:
-  # Evaluation dataset (consistent with train config path format)
-  test_root: data/uuv3
+  # Multi-sequence format (single test sequence for UUV3-specific evaluation)
+  data_root: data
+  test_sequences: [uuv3]
   test_split: test
 
   # No augmentation for evaluation

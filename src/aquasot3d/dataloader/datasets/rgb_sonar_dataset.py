@@ -35,6 +35,50 @@ from torch.utils.data import Dataset
 from ...core.registry import DATASET_REGISTRY
 
 
+class SequenceMetadata:
+    """
+    Metadata for a single sequence in multi-sequence dataset.
+
+    Attributes:
+        sequence_name: Name of the sequence (e.g., 'uuv2')
+        sequence_path: Full path to sequence directory
+        num_frames: Total number of frames in sequence
+        valid_indices: List of valid frame indices (0-based within sequence)
+        start_idx: Starting index in global dataset
+        end_idx: Ending index in global dataset (exclusive)
+        rgb_resolution: RGB image resolution (width, height)
+        sonar_resolution: Sonar image resolution (width, height)
+    """
+
+    def __init__(
+        self,
+        sequence_name: str,
+        sequence_path: Path,
+        num_frames: int,
+        valid_indices: List[int],
+        start_idx: int,
+        end_idx: int,
+        rgb_resolution: Tuple[int, int],
+        sonar_resolution: Tuple[int, int],
+    ):
+        self.sequence_name = sequence_name
+        self.sequence_path = sequence_path
+        self.num_frames = num_frames
+        self.valid_indices = valid_indices
+        self.start_idx = start_idx
+        self.end_idx = end_idx
+        self.rgb_resolution = rgb_resolution
+        self.sonar_resolution = sonar_resolution
+
+    def __repr__(self):
+        return (
+            f"SequenceMetadata(name={self.sequence_name}, "
+            f"frames={self.num_frames}, valid={len(self.valid_indices)}, "
+            f"global_idx=[{self.start_idx}:{self.end_idx}], "
+            f"rgb_res={self.rgb_resolution}, sonar_res={self.sonar_resolution})"
+        )
+
+
 def is_occluded(bbox: np.ndarray) -> bool:
     """
     Check if bounding box indicates occlusion.
@@ -372,19 +416,53 @@ class RGBSonarDataset(Dataset):
 
     def get_sequence_info(self) -> Dict:
         """
-        Get sequence metadata.
+        Get sequence metadata with actual resolution detection.
 
         Returns:
-            Dictionary with sequence information
+            Dictionary with sequence information including detected resolutions
         """
+        # Detect actual resolutions by reading first valid frame
+        rgb_resolution = (1920, 1080)  # Default fallback
+        sonar_resolution = (682, 376)   # Default fallback
+
+        if len(self.valid_indices) > 0:
+            try:
+                # Get first valid frame
+                first_valid_idx = self.valid_indices[0]
+                first_frame_id = first_valid_idx + 1
+
+                # Try to read RGB resolution
+                rgb_img_path = self.rgb_img_dir / f"{first_frame_id}.jpg"
+                if rgb_img_path.exists():
+                    rgb_img = cv2.imread(str(rgb_img_path))
+                    if rgb_img is not None:
+                        h, w = rgb_img.shape[:2]
+                        rgb_resolution = (w, h)
+
+                # Try to read Sonar resolution
+                sonar_img_path = self.sonar_img_dir / f"{first_frame_id}.jpg"
+                if sonar_img_path.exists():
+                    sonar_img = cv2.imread(str(sonar_img_path), cv2.IMREAD_GRAYSCALE)
+                    if sonar_img is not None:
+                        h, w = sonar_img.shape[:2]
+                        sonar_resolution = (w, h)
+            except Exception as e:
+                # Fall back to defaults if detection fails
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Failed to detect resolution for {self.sequence_name}: {e}. "
+                    f"Using defaults: RGB {rgb_resolution}, Sonar {sonar_resolution}"
+                )
+
         return {
             "sequence_name": self.sequence_name,
             "num_frames": self.num_frames,
             "num_valid_frames": len(self.valid_indices),
             "start_frame": self.start_frame,
             "end_frame": self.end_frame,
-            "rgb_resolution": (1920, 1080),  # Standard RGB resolution
-            "sonar_resolution": (682, 376),   # Standard Sonar resolution
+            "rgb_resolution": rgb_resolution,
+            "sonar_resolution": sonar_resolution,
         }
 
     def find_last_valid_bbox(self, frame_idx: int, modality: str = "both") -> Optional[np.ndarray]:
@@ -423,3 +501,272 @@ class RGBSonarDataset(Dataset):
                     }
 
         return None
+
+
+@DATASET_REGISTRY.register("MultiSequenceRGBSonarDataset")
+class MultiSequenceRGBSonarDataset(Dataset):
+    """
+    Multi-sequence RGB-Sonar dataset for underwater object tracking.
+
+    This dataset loads multiple sequences with per-sequence metadata and resolution,
+    providing a unified interface for training across all sequences while preserving
+    temporal structure within each sequence.
+
+    Args:
+        data_root: Root directory containing sequence folders (e.g., 'data/')
+        sequence_names: List of sequence names (e.g., ['uuv1', 'uuv2', 'uuv4'])
+        rgb_transform: Optional transform for RGB images
+        sonar_transform: Optional transform for Sonar images
+        return_occluded: If False, skip occluded frames during iteration
+        sampling_policy: Sampling strategy ('frame_balanced', 'sequence_balanced', 'weighted')
+        sequence_weights: Optional weights for weighted sampling (must match sequence count)
+
+    Attributes:
+        sequences: List of SequenceMetadata objects
+        sequence_datasets: Dict mapping sequence_name to RGBSonarDataset
+        total_frames: Total number of valid frames across all sequences
+
+    Example:
+        >>> dataset = MultiSequenceRGBSonarDataset(
+        ...     data_root='data/',
+        ...     sequence_names=['uuv1', 'uuv2', 'uuv4'],
+        ...     return_occluded=False,
+        ...     sampling_policy='frame_balanced'
+        ... )
+        >>> sample = dataset[0]
+        >>> print(sample['sequence_name'])
+        'uuv1'
+    """
+
+    def __init__(
+        self,
+        data_root: Union[str, Path],
+        sequence_names: List[str],
+        rgb_transform: Optional[callable] = None,
+        sonar_transform: Optional[callable] = None,
+        return_occluded: bool = True,
+        sampling_policy: str = "frame_balanced",
+        sequence_weights: Optional[List[float]] = None,
+    ):
+        super().__init__()
+
+        self.data_root = Path(data_root)
+        self.sequence_names = sequence_names
+        self.rgb_transform = rgb_transform
+        self.sonar_transform = sonar_transform
+        self.return_occluded = return_occluded
+        self.sampling_policy = sampling_policy
+
+        if sampling_policy not in ["frame_balanced", "sequence_balanced", "weighted"]:
+            raise ValueError(
+                f"Invalid sampling_policy: {sampling_policy}. "
+                "Must be one of: frame_balanced, sequence_balanced, weighted"
+            )
+
+        if sampling_policy == "weighted":
+            if sequence_weights is None:
+                raise ValueError("sequence_weights must be provided for weighted sampling")
+            if len(sequence_weights) != len(sequence_names):
+                raise ValueError(
+                    f"sequence_weights length ({len(sequence_weights)}) must match "
+                    f"sequence_names length ({len(sequence_names)})"
+                )
+            self.sequence_weights = sequence_weights
+        else:
+            self.sequence_weights = None
+
+        # Initialize sequence datasets and metadata
+        self.sequence_datasets = {}
+        self.sequences = []
+        self._build_sequence_metadata()
+
+        # Build global index mapping
+        self._build_global_index()
+
+        self.total_frames = sum(len(seq.valid_indices) for seq in self.sequences)
+
+    def _detect_resolution(self, sequence_name: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """
+        Detect resolution by reading the first valid frame from a sequence.
+
+        Args:
+            sequence_name: Name of the sequence
+
+        Returns:
+            Tuple of (rgb_resolution, sonar_resolution) where each is (width, height)
+        """
+        sequence_dir = self.data_root / sequence_name
+        rgb_img_dir = sequence_dir / "light" / "img"
+        sonar_img_dir = sequence_dir / "sonar" / "img"
+
+        # Try to find first valid image
+        for frame_id in range(1, 100):  # Check first 100 frames
+            rgb_img_path = rgb_img_dir / f"{frame_id}.jpg"
+            sonar_img_path = sonar_img_dir / f"{frame_id}.jpg"
+
+            if rgb_img_path.exists() and sonar_img_path.exists():
+                # Read RGB resolution
+                rgb_img = cv2.imread(str(rgb_img_path))
+                if rgb_img is not None:
+                    rgb_h, rgb_w = rgb_img.shape[:2]
+                    rgb_resolution = (rgb_w, rgb_h)
+                else:
+                    rgb_resolution = (1920, 1080)  # Default fallback
+
+                # Read Sonar resolution
+                sonar_img = cv2.imread(str(sonar_img_path), cv2.IMREAD_GRAYSCALE)
+                if sonar_img is not None:
+                    sonar_h, sonar_w = sonar_img.shape[:2]
+                    sonar_resolution = (sonar_w, sonar_h)
+                else:
+                    sonar_resolution = (682, 376)  # Default fallback
+
+                return rgb_resolution, sonar_resolution
+
+        # Fallback to standard resolutions if no valid frame found
+        return (1920, 1080), (682, 376)
+
+    def _build_sequence_metadata(self):
+        """Build metadata for all sequences."""
+        global_idx = 0
+
+        for seq_name in self.sequence_names:
+            # Create single-sequence dataset
+            seq_dataset = RGBSonarDataset(
+                data_root=self.data_root,
+                sequence_name=seq_name,
+                rgb_transform=self.rgb_transform,
+                sonar_transform=self.sonar_transform,
+                return_occluded=self.return_occluded,
+            )
+
+            # Detect actual resolution
+            rgb_res, sonar_res = self._detect_resolution(seq_name)
+
+            # Store dataset
+            self.sequence_datasets[seq_name] = seq_dataset
+
+            # Create metadata
+            num_valid = len(seq_dataset.valid_indices)
+            metadata = SequenceMetadata(
+                sequence_name=seq_name,
+                sequence_path=self.data_root / seq_name,
+                num_frames=seq_dataset.num_frames,
+                valid_indices=seq_dataset.valid_indices,
+                start_idx=global_idx,
+                end_idx=global_idx + num_valid,
+                rgb_resolution=rgb_res,
+                sonar_resolution=sonar_res,
+            )
+
+            self.sequences.append(metadata)
+            global_idx += num_valid
+
+    def _build_global_index(self):
+        """Build global index to sequence mapping."""
+        self.index_to_sequence = []
+
+        for seq_metadata in self.sequences:
+            for local_idx in range(len(seq_metadata.valid_indices)):
+                self.index_to_sequence.append((seq_metadata.sequence_name, local_idx))
+
+    def __len__(self) -> int:
+        """Return total number of valid samples across all sequences."""
+        return self.total_frames
+
+    def __getitem__(self, index: int) -> Dict:
+        """
+        Get sample by global index.
+
+        Args:
+            index: Global index across all sequences (0-based)
+
+        Returns:
+            Dictionary containing frame data with additional 'sequence_name' field
+
+        Raises:
+            IndexError: If index is out of range
+        """
+        if index < 0 or index >= self.total_frames:
+            raise IndexError(
+                f"Index {index} out of range [0, {self.total_frames})"
+            )
+
+        # Map global index to sequence and local index
+        sequence_name, local_idx = self.index_to_sequence[index]
+
+        # Get sample from sequence dataset
+        seq_dataset = self.sequence_datasets[sequence_name]
+        sample = seq_dataset[local_idx]
+
+        # Add sequence name to sample
+        sample["sequence_name"] = sequence_name
+
+        return sample
+
+    def get_sequence_info(self, sequence_name: Optional[str] = None) -> Union[Dict, List[Dict]]:
+        """
+        Get sequence metadata.
+
+        Args:
+            sequence_name: If provided, return info for that sequence only.
+                          If None, return info for all sequences.
+
+        Returns:
+            Dictionary with sequence information, or list of dictionaries for all sequences
+        """
+        if sequence_name is not None:
+            # Return info for specific sequence
+            for seq_metadata in self.sequences:
+                if seq_metadata.sequence_name == sequence_name:
+                    return {
+                        "sequence_name": seq_metadata.sequence_name,
+                        "num_frames": seq_metadata.num_frames,
+                        "num_valid_frames": len(seq_metadata.valid_indices),
+                        "rgb_resolution": seq_metadata.rgb_resolution,
+                        "sonar_resolution": seq_metadata.sonar_resolution,
+                        "global_range": (seq_metadata.start_idx, seq_metadata.end_idx),
+                    }
+            raise ValueError(f"Sequence not found: {sequence_name}")
+        else:
+            # Return info for all sequences
+            return [
+                {
+                    "sequence_name": seq.sequence_name,
+                    "num_frames": seq.num_frames,
+                    "num_valid_frames": len(seq.valid_indices),
+                    "rgb_resolution": seq.rgb_resolution,
+                    "sonar_resolution": seq.sonar_resolution,
+                    "global_range": (seq.start_idx, seq.end_idx),
+                }
+                for seq in self.sequences
+            ]
+
+    def get_frame_sequence(self, frame_index: int) -> str:
+        """
+        Get sequence name for a given global frame index.
+
+        Args:
+            frame_index: Global frame index
+
+        Returns:
+            Sequence name
+        """
+        sequence_name, _ = self.index_to_sequence[frame_index]
+        return sequence_name
+
+    def get_sequence_frames(self, sequence_name: str) -> List[int]:
+        """
+        Get global indices of all frames in a specific sequence.
+
+        Args:
+            sequence_name: Name of the sequence
+
+        Returns:
+            List of global frame indices belonging to that sequence
+        """
+        for seq_metadata in self.sequences:
+            if seq_metadata.sequence_name == sequence_name:
+                return list(range(seq_metadata.start_idx, seq_metadata.end_idx))
+
+        raise ValueError(f"Sequence not found: {sequence_name}")
