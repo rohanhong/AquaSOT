@@ -62,7 +62,8 @@ class TrackingEvaluator:
         output_dir: Optional[str] = None,
         save_predictions: bool = False,
         verbose: bool = True,
-        search_size: int = 256
+        search_size: int = 256,
+        additional_metrics: Optional[List[str]] = None
     ):
         self.model = model
         self.dataloader = dataloader
@@ -71,6 +72,7 @@ class TrackingEvaluator:
         self.save_predictions = save_predictions
         self.verbose = verbose
         self.search_size = search_size
+        self.additional_metrics = additional_metrics or []
 
         # Create output directory
         if self.output_dir:
@@ -81,6 +83,8 @@ class TrackingEvaluator:
         self.overall_metrics = {}
 
         logger.info(f"TrackingEvaluator initialized: device={device}, output_dir={output_dir}")
+        if self.additional_metrics:
+            logger.info(f"Additional metrics: {self.additional_metrics}")
 
     def evaluate(self) -> Dict[str, Any]:
         """
@@ -98,8 +102,14 @@ class TrackingEvaluator:
 
         logger.info("Starting evaluation...")
 
-        # Evaluate each sequence
-        sequence_metrics = []
+        # Accumulate predictions by sequence
+        sequence_predictions = defaultdict(lambda: {
+            'rgb_pred': [],
+            'sonar_pred': [],
+            'fusion_pred': [],
+            'rgb_gt': [],
+            'sonar_gt': []
+        })
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(
@@ -107,26 +117,51 @@ class TrackingEvaluator:
                 desc="Evaluating",
                 disable=not self.verbose
             )):
-                # Get sequence info
-                sequence_name = batch.get('sequence_name', f'seq_{batch_idx}')
+                # Get sequence name (extract from list if batch contains multiple samples)
+                sequence_name_raw = batch.get('sequence_name', f'seq_{batch_idx}')
 
-                # Track sequence
-                seq_results = self.track_sequence(batch)
+                # Handle both list and string formats
+                if isinstance(sequence_name_raw, list):
+                    # Extract first element and verify all elements are the same
+                    if len(sequence_name_raw) > 0:
+                        sequence_name = sequence_name_raw[0]
+                        # Sanity check: all samples in batch should be from same sequence
+                        if not all(s == sequence_name for s in sequence_name_raw):
+                            logger.warning(
+                                f"Batch {batch_idx} contains samples from multiple sequences: "
+                                f"{set(sequence_name_raw)}. Using first: {sequence_name}"
+                            )
+                    else:
+                        sequence_name = f'seq_{batch_idx}'
+                else:
+                    sequence_name = sequence_name_raw
 
-                # Compute metrics
-                seq_metrics = self.compute_sequence_metrics(seq_results)
+                # Track batch (returns per-frame predictions)
+                batch_results = self.track_sequence(batch)
 
-                # Store results
-                self.sequence_results[sequence_name] = {
-                    'predictions': seq_results,
-                    'metrics': seq_metrics
-                }
+                # Accumulate predictions for this sequence
+                for key in ['rgb_pred', 'sonar_pred', 'fusion_pred', 'rgb_gt', 'sonar_gt']:
+                    if key in batch_results:
+                        sequence_predictions[sequence_name][key].extend(batch_results[key])
 
-                sequence_metrics.append(seq_metrics)
+        # Compute metrics for each sequence
+        sequence_metrics = []
 
-                # Save per-sequence results if requested
-                if self.save_predictions and self.output_dir:
-                    self.save_sequence_results(sequence_name, seq_results, seq_metrics)
+        for sequence_name, predictions in sequence_predictions.items():
+            # Compute metrics for this sequence
+            seq_metrics = self.compute_sequence_metrics(predictions)
+
+            # Store results
+            self.sequence_results[sequence_name] = {
+                'predictions': predictions,
+                'metrics': seq_metrics
+            }
+
+            sequence_metrics.append(seq_metrics)
+
+            # Save per-sequence results if requested
+            if self.save_predictions and self.output_dir:
+                self.save_sequence_results(sequence_name, predictions, seq_metrics)
 
         # Aggregate metrics across all sequences
         self.overall_metrics = self.aggregate_all_metrics(sequence_metrics)
@@ -255,13 +290,14 @@ class TrackingEvaluator:
         Returns:
             Metrics dictionary for all modalities
         """
-        # Compute metrics for each modality
+        # Compute metrics for each modality (pass additional_metrics)
         metrics = compute_multi_modal_metrics(
             predictions.get('rgb_pred', []),
             predictions.get('sonar_pred', []),
             predictions.get('fusion_pred', []),
             predictions.get('rgb_gt', []),
-            predictions.get('sonar_gt', [])
+            predictions.get('sonar_gt', []),
+            additional_metrics=self.additional_metrics
         )
 
         return metrics

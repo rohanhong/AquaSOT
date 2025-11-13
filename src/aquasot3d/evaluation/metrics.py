@@ -289,10 +289,45 @@ def compute_average_center_error(
     return float(np.mean(errors))
 
 
+def compute_success_at_threshold(
+    pred_bboxes: List[np.ndarray],
+    gt_bboxes: List[np.ndarray],
+    threshold: float = 0.5
+) -> float:
+    """
+    Compute success rate at a specific IoU threshold.
+
+    Args:
+        pred_bboxes: List of predicted bounding boxes
+        gt_bboxes: List of ground truth bounding boxes
+        threshold: IoU threshold (default: 0.5)
+
+    Returns:
+        Success rate (proportion of frames with IoU > threshold)
+
+    Example:
+        >>> success = compute_success_at_threshold(pred_boxes, gt_boxes, threshold=0.7)
+    """
+    if len(pred_bboxes) == 0 or len(gt_bboxes) == 0:
+        return 0.0
+
+    ious = []
+    for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
+        if pred_box is not None and gt_box is not None:
+            iou = compute_iou(pred_box, gt_box)
+            ious.append(iou)
+
+    if len(ious) == 0:
+        return 0.0
+
+    return float(np.mean([iou > threshold for iou in ious]))
+
+
 def compute_sequence_metrics(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    modality: str = 'fusion'
+    modality: str = 'fusion',
+    additional_metrics: Optional[List[str]] = None
 ) -> Dict[str, float]:
     """
     Compute all standard tracking metrics for a sequence.
@@ -301,13 +336,21 @@ def compute_sequence_metrics(
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
         modality: Modality name ('rgb', 'sonar', or 'fusion')
+        additional_metrics: Optional list of additional metrics to compute.
+            Supported values:
+                - 'precision_N': Precision at N pixels (e.g., 'precision_10', 'precision_5')
+                - 'success_X': Success at IoU threshold X (e.g., 'success_0.7', 'success_0.6')
 
     Returns:
         Dictionary containing all metrics
 
     Example:
-        >>> metrics = compute_sequence_metrics(pred_boxes, gt_boxes, 'fusion')
+        >>> metrics = compute_sequence_metrics(
+        ...     pred_boxes, gt_boxes, 'fusion',
+        ...     additional_metrics=['precision_10', 'precision_5', 'success_0.7']
+        ... )
         >>> print(f"AUC: {metrics['success_auc']:.4f}")
+        >>> print(f"Precision@10: {metrics['precision_10']:.4f}")
     """
     metrics = {
         'modality': modality,
@@ -318,13 +361,13 @@ def compute_sequence_metrics(
     # Success (AUC)
     metrics['success_auc'] = compute_success_auc(pred_bboxes, gt_bboxes)
 
-    # Precision at 20 pixels
+    # Precision at 20 pixels (standard metric)
     metrics['precision_20'] = compute_precision_at_threshold(pred_bboxes, gt_bboxes, threshold=20.0)
 
     # Average center error
     metrics['avg_center_error'] = compute_average_center_error(pred_bboxes, gt_bboxes)
 
-    # Additional metrics
+    # Additional standard metrics
     # Mean IoU
     ious = [compute_iou(pred, gt) for pred, gt in zip(pred_bboxes, gt_bboxes)
             if pred is not None and gt is not None]
@@ -332,6 +375,29 @@ def compute_sequence_metrics(
 
     # Success rate at 0.5 IoU threshold (PASCAL VOC metric)
     metrics['success_0.5'] = float(np.mean([iou > 0.5 for iou in ious])) if len(ious) > 0 else 0.0
+
+    # Compute additional metrics if requested
+    if additional_metrics:
+        for metric_name in additional_metrics:
+            # Parse precision metrics (e.g., 'precision_10' -> threshold=10)
+            if metric_name.startswith('precision_'):
+                try:
+                    threshold = float(metric_name.split('_')[1])
+                    metrics[metric_name] = compute_precision_at_threshold(
+                        pred_bboxes, gt_bboxes, threshold=threshold
+                    )
+                except (IndexError, ValueError):
+                    logger.warning(f"Invalid metric name: {metric_name}, skipping")
+
+            # Parse success metrics (e.g., 'success_0.7' -> threshold=0.7)
+            elif metric_name.startswith('success_'):
+                try:
+                    threshold = float(metric_name.split('_')[1].replace('_', '.'))
+                    metrics[metric_name] = compute_success_at_threshold(
+                        pred_bboxes, gt_bboxes, threshold=threshold
+                    )
+                except (IndexError, ValueError):
+                    logger.warning(f"Invalid metric name: {metric_name}, skipping")
 
     return metrics
 
@@ -362,8 +428,21 @@ def aggregate_metrics(
         'num_sequences': len(sequence_metrics)
     }
 
-    # Aggregate each metric
+    # Collect all metric names (standard + any additional metrics)
     metric_names = ['success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5']
+
+    # Keys to exclude from aggregation (non-numeric metadata)
+    exclude_keys = {'modality', 'num_frames', 'num_valid_predictions', 'aggregation_strategy',
+                    'rgb_weight', 'sonar_weight'}
+
+    # Discover additional metrics from the sequence metrics
+    if len(sequence_metrics) > 0:
+        for key in sequence_metrics[0].keys():
+            if key not in metric_names and key not in exclude_keys:
+                # Only include numeric values
+                sample_value = sequence_metrics[0][key]
+                if isinstance(sample_value, (int, float, np.number)):
+                    metric_names.append(key)
 
     for metric_name in metric_names:
         values = [m[metric_name] for m in sequence_metrics if metric_name in m]
@@ -389,7 +468,8 @@ def compute_multi_modal_metrics(
     fusion_pred: List[np.ndarray],
     rgb_gt: List[np.ndarray],
     sonar_gt: List[np.ndarray],
-    aggregation_strategy: str = 'mean'
+    aggregation_strategy: str = 'mean',
+    additional_metrics: Optional[List[str]] = None
 ) -> Dict[str, Dict[str, float]]:
     """
     Compute metrics for all three modalities (RGB, Sonar, Fusion).
@@ -408,6 +488,8 @@ def compute_multi_modal_metrics(
             - 'weighted': Weighted by IoU (prefer more reliable GT)
             - 'max': Take best per-metric (optimistic)
             - 'min': Take worst per-metric (conservative)
+        additional_metrics: Optional list of additional metrics to compute
+            (e.g., ['precision_10', 'precision_5', 'success_0.7'])
 
     Returns:
         Dictionary with metrics for each modality, including detailed fusion breakdown
@@ -416,7 +498,8 @@ def compute_multi_modal_metrics(
         >>> metrics = compute_multi_modal_metrics(
         ...     rgb_pred, sonar_pred, fusion_pred,
         ...     rgb_gt, sonar_gt,
-        ...     aggregation_strategy='weighted'
+        ...     aggregation_strategy='weighted',
+        ...     additional_metrics=['precision_10', 'success_0.7']
         ... )
         >>> print(f"Fusion (aggregated) AUC: {metrics['fusion']['success_auc']:.4f}")
         >>> print(f"Fusion→RGB AUC: {metrics['fusion_vs_rgb']['success_auc']:.4f}")
@@ -425,14 +508,14 @@ def compute_multi_modal_metrics(
     metrics = {}
 
     # RGB metrics
-    metrics['rgb'] = compute_sequence_metrics(rgb_pred, rgb_gt, 'rgb')
+    metrics['rgb'] = compute_sequence_metrics(rgb_pred, rgb_gt, 'rgb', additional_metrics)
 
     # Sonar metrics
-    metrics['sonar'] = compute_sequence_metrics(sonar_pred, sonar_gt, 'sonar')
+    metrics['sonar'] = compute_sequence_metrics(sonar_pred, sonar_gt, 'sonar', additional_metrics)
 
     # Fusion metrics: separate evaluation against each GT for transparency
-    fusion_rgb_metrics = compute_sequence_metrics(fusion_pred, rgb_gt, 'fusion_vs_rgb')
-    fusion_sonar_metrics = compute_sequence_metrics(fusion_pred, sonar_gt, 'fusion_vs_sonar')
+    fusion_rgb_metrics = compute_sequence_metrics(fusion_pred, rgb_gt, 'fusion_vs_rgb', additional_metrics)
+    fusion_sonar_metrics = compute_sequence_metrics(fusion_pred, sonar_gt, 'fusion_vs_sonar', additional_metrics)
 
     # Store detailed breakdowns
     metrics['fusion_vs_rgb'] = fusion_rgb_metrics
@@ -446,7 +529,14 @@ def compute_multi_modal_metrics(
         'aggregation_strategy': aggregation_strategy
     }
 
+    # Collect all metric keys (standard + additional)
     metric_keys = ['success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5']
+
+    # Add additional metrics if present in fusion results
+    if additional_metrics:
+        for metric_name in additional_metrics:
+            if metric_name in fusion_rgb_metrics and metric_name not in metric_keys:
+                metric_keys.append(metric_name)
 
     if aggregation_strategy == 'mean':
         # Simple average (backward compatible)

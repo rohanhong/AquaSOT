@@ -199,11 +199,19 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             batched[key] = torch.clamp(batched[key], min=0.0, max=1.0)
 
     # Handle scalar values
-    scalar_keys = ['template_idx', 'search_idx', 'is_valid', 'is_rgb_valid', 'is_sonar_valid']
+    scalar_keys = ['template_idx', 'search_idx', 'is_valid', 'is_rgb_valid', 'is_sonar_valid',
+                   'template_frame_id', 'search_frame_id', 'frame_id']
     for key in scalar_keys:
         if key in batch[0]:
             values = [sample[key] for sample in batch]
             batched[key] = torch.tensor(values)
+
+    # Handle string values (sequence names, etc.)
+    string_keys = ['sequence_name']
+    for key in string_keys:
+        if key in batch[0]:
+            # Keep as list of strings (cannot convert to tensor)
+            batched[key] = [sample[key] for sample in batch]
 
     return batched
 

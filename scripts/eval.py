@@ -198,32 +198,55 @@ def main():
     # Build evaluation dataset
     logger.info("Building evaluation dataset")
 
-    # Create base dataset (single frames)
-    from aquasot3d.dataloader import RGBSonarDataset, TrackingDataset
+    # Parse test data path correctly (fix for hardcoded path issue)
+    from pathlib import Path as PathLib
+    from aquasot3d.dataloader import RGBSonarDataset, EvaluationSequenceDataset
     from aquasot3d.dataloader.loader import collate_fn_template_search
 
+    test_path = PathLib(cfg.data.test_root)
+    if test_path.is_absolute():
+        # Absolute path: split into root and sequence name
+        data_root = str(test_path.parent)
+        sequence_name = test_path.name
+    else:
+        # Relative path: assume format is "data/sequence_name"
+        parts = test_path.parts
+        if len(parts) >= 2:
+            data_root = str(PathLib(*parts[:-1]))
+            sequence_name = parts[-1]
+        else:
+            # Single directory name, assume it's in 'data/'
+            data_root = 'data'
+            sequence_name = str(test_path)
+
+    logger.info(f"Data root: {data_root}")
+    logger.info(f"Sequence name: {sequence_name}")
+
+    # Create base dataset (single frames)
     eval_base_dataset = RGBSonarDataset(
-        data_root='data',
-        sequence_name=cfg.data.test_root.split('/')[-1],  # Extract sequence name (e.g., 'uuv3')
+        data_root=data_root,
+        sequence_name=sequence_name,
         return_occluded=True
     )
 
-    # Wrap with TrackingDataset for template-search pair sampling
-    eval_dataset = TrackingDataset(
+    # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
+    # This ensures reproducible, protocol-compliant evaluation
+    eval_dataset = EvaluationSequenceDataset(
         base_dataset=eval_base_dataset,
-        template_search_gap=cfg.data.get('template_search_gap', 30),
         template_size=cfg.data.get('template_size', 128),
         search_size=cfg.data.get('search_size', 256),
-        augmentation=None  # No augmentation for evaluation
+        template_frame='first',  # Use first frame as template (RGBS50 protocol)
+        enable_update=False,     # No template update during evaluation
     )
 
-    logger.info(f"Evaluation dataset: {len(eval_dataset)} samples")
+    logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")
+    logger.info(f"Using sequential evaluation (template=first frame)")
 
     # Create dataloader
     eval_loader = create_dataloader(
         dataset=eval_dataset,
         batch_size=cfg.evaluation.batch_size,
-        shuffle=False,
+        shuffle=False,  # CRITICAL: No shuffle for evaluation
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
         collate_fn=collate_fn_template_search,
@@ -231,7 +254,20 @@ def main():
     )
 
     logger.info(f"Evaluation batches: {len(eval_loader)}")
-    
+
+    # Parse additional metrics from config
+    additional_metrics = []
+    if hasattr(cfg.evaluation, 'metrics') and cfg.evaluation.metrics:
+        # Extract non-standard metrics from config
+        standard_metrics = {'success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5'}
+        for metric_name in cfg.evaluation.metrics:
+            if metric_name not in standard_metrics:
+                additional_metrics.append(metric_name)
+
+    logger.info(f"Standard metrics will be computed")
+    if additional_metrics:
+        logger.info(f"Additional metrics: {additional_metrics}")
+
     # Create evaluator
     evaluator = TrackingEvaluator(
         model=model,
@@ -240,7 +276,8 @@ def main():
         output_dir=cfg.evaluation.output_dir,
         save_predictions=cfg.evaluation.save_predictions,
         verbose=True,
-        search_size=cfg.data.get('search_size', 256)
+        search_size=cfg.data.get('search_size', 256),
+        additional_metrics=additional_metrics
     )
     
     # Run evaluation

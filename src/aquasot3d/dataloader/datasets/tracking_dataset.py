@@ -136,6 +136,10 @@ class TrackingDataset(Dataset):
             search_data['rgb_bbox'] = search_aug_output.get('rgb_bbox', search_data['rgb_bbox'])
             search_data['sonar_bbox'] = search_aug_output.get('sonar_bbox', search_data['sonar_bbox'])
 
+        # Get sequence metadata from base dataset
+        seq_info = self.base_dataset.get_sequence_info()
+        sequence_name = seq_info['sequence_name']
+
         # Build tracking pair
         pair = {
             # Images (convert HWC to CHW if needed and resize)
@@ -153,6 +157,12 @@ class TrackingDataset(Dataset):
             # Bounding boxes (trainer-expected keys for loss computation)
             'rgb_boxes': search_data['rgb_bbox'],  # Alias for search_bbox_rgb
             'sonar_boxes': search_data['sonar_bbox'],  # Alias for search_bbox_sonar
+
+            # Sequence metadata (required for evaluation)
+            'sequence_name': sequence_name,
+            'template_frame_id': template_data['frame_id'],
+            'search_frame_id': search_data['frame_id'],
+            'frame_id': search_data['frame_id'],  # Alias for search_frame_id
 
             # Metadata
             'template_idx': template_idx,
