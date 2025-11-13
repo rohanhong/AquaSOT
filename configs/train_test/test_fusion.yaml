@@ -26,8 +26,8 @@ experiment:
 data:
   train_root: data/uuv2
   val_root: data/uuv3
-  num_workers: 2
-  prefetch_factor: 1
+  num_workers: 2  # Higher performance: 12 (Xeon W9-3475X 36C/72T)
+  prefetch_factor: 1  # Higher performance: 3
 
   # Multi-modal augmentation (combine Stage 1 RGB + Stage 2 Sonar)
   augmentation:
@@ -136,18 +136,18 @@ model:
 training:
   num_epochs: 5
 
-  batch_size: 2  # Smaller batch for full model
-  gradient_accumulation_steps: 2  # Effective batch = 4
+  batch_size: 2  # Higher performance: 16 (A4000 16GB capable)
+  gradient_accumulation_steps: 2  # Higher performance: 2 (effective batch = 32)
 
   optimizer:
-    lr: 0.0002
+    lr: 0.0002  # Higher performance: 0.0005 (scaled for batch=32)
     weight_decay: 0.0001
     backbone_lr_multiplier: 0.1
 
   scheduler:
     type: cosine
-    warmup_epochs: 1
-    warmup_lr: 0.00001
+    warmup_epochs: 1  # Higher performance: 2 (scaled for 5 epochs, 10 for 60 epochs)
+    warmup_lr: 0.00001  # Higher performance: 0.00003
     min_lr: 0.000001
     t_max: 5
     eta_min: 0.000001
