@@ -1563,25 +1563,26 @@ from aquasot3d.training import CheckpointManager
 
 checkpoint_manager = CheckpointManager(
     checkpoint_dir='outputs/checkpoints',
-    keep_last_n=5,
-    save_best=True,
-    monitor_metric='success_auc',
-    mode='max'
+    max_to_keep=5,
+    save_best_only=False,
+    metric_name='val_total',
+    mode='min'
 )
 
-# Save checkpoint
+# Save checkpoint (called automatically by Trainer during training)
 checkpoint_manager.save(
     epoch=10,
     model=tracker,
     optimizer=optimizer,
     scheduler=scheduler,
-    metrics={'success_auc': 0.75},
-    is_best=True
+    metrics={'val_total': 1.25, 'total': 1.30},
+    is_best=False,
+    filename='checkpoint_epoch_10.pth'
 )
 
 # Load checkpoint
 checkpoint = checkpoint_manager.load(
-    checkpoint_path='outputs/checkpoints/best_model.pth',
+    filename='checkpoint_best.pth',
     model=tracker,
     optimizer=optimizer,
     scheduler=scheduler,
@@ -1593,10 +1594,10 @@ epoch = checkpoint['epoch']
 **Constructor Parameters:**
 
 - `checkpoint_dir: str` - Directory for checkpoints
-- `keep_last_n: int = 5` - Keep last N checkpoints
-- `save_best: bool = True` - Save best model separately
-- `monitor_metric: str = 'success_auc'` - Metric to monitor for best model
-- `mode: str = 'max'` - 'max' or 'min'
+- `max_to_keep: int = None` - Maximum checkpoints to keep (None = keep all)
+- `save_best_only: bool = False` - Only save when metric improves
+- `metric_name: str = 'val_total'` - Metric to monitor for best model (default: validation loss)
+- `mode: str = 'min'` - 'min' for loss metrics, 'max' for accuracy/AUC metrics
 
 **Methods:**
 

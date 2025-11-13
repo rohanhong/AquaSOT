@@ -47,8 +47,8 @@ class CheckpointManager:
         ...     checkpoint_dir='outputs/checkpoints',
         ...     max_to_keep=5,
         ...     save_best_only=False,
-        ...     metric_name='fusion_auc',
-        ...     mode='max'
+        ...     metric_name='val_total',
+        ...     mode='min'
         ... )
         >>> # Save checkpoint
         >>> manager.save(
@@ -56,7 +56,7 @@ class CheckpointManager:
         ...     optimizer=optimizer,
         ...     scheduler=scheduler,
         ...     epoch=10,
-        ...     metrics={'fusion_auc': 0.75}
+        ...     metrics={'val_total': 1.25, 'total': 1.30}
         ... )
         >>> # Load checkpoint
         >>> checkpoint = manager.load('checkpoint_epoch_10.pth')
@@ -67,8 +67,8 @@ class CheckpointManager:
         checkpoint_dir: Union[str, Path],
         max_to_keep: Optional[int] = None,
         save_best_only: bool = False,
-        metric_name: str = 'fusion_auc',
-        mode: str = 'max',
+        metric_name: str = 'val_total',
+        mode: str = 'min',
         prefix: str = 'checkpoint'
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -203,7 +203,7 @@ class CheckpointManager:
             Checkpoint dictionary
 
         Example:
-            >>> # Load checkpoint
+            >>> # Load checkpoint (after training completes)
             >>> checkpoint = manager.load('checkpoint_best.pth', model=model, optimizer=optimizer)
             >>> start_epoch = checkpoint['epoch'] + 1
         """

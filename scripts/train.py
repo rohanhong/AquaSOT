@@ -399,7 +399,7 @@ def main():
     checkpoint_manager = CheckpointManager(
         checkpoint_dir=cfg.paths.checkpoint_dir,
         max_to_keep=cfg.training.checkpoint.get('max_keep', 5),
-        save_best_only=cfg.training.checkpoint.get('save_best_only', False),
+        save_best_only=False,  # We'll handle save_best and save_last separately in Trainer
         metric_name=cfg.training.checkpoint.get('metric', 'val_total'),
         mode=cfg.training.checkpoint.get('mode', 'min')
     )
@@ -421,7 +421,9 @@ def main():
         tensorboard_dir=cfg.paths.log_dir if cfg.training.get('tensorboard', True) else None,
         log_interval=cfg.training.log_interval,
         eval_interval=cfg.training.val_interval,
-        checkpoint_save_interval=cfg.training.checkpoint.get('save_interval', 1)
+        checkpoint_save_interval=cfg.training.checkpoint.get('save_interval', 1),
+        save_best=cfg.training.checkpoint.get('save_best', True),
+        save_last=cfg.training.checkpoint.get('save_last', True)
     )
     
     # Resume from checkpoint if specified

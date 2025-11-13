@@ -66,6 +66,8 @@ class Trainer:
         log_interval: Logging interval in iterations
         eval_interval: Evaluation interval in epochs
         checkpoint_save_interval: Checkpoint save interval in epochs (default: 1)
+        save_best: Whether to save best checkpoint when metric improves (default: True)
+        save_last: Whether to save last checkpoint every epoch (default: True)
         tensorboard_dir: TensorBoard log directory
         distributed: Whether using distributed training
 
@@ -100,6 +102,8 @@ class Trainer:
         log_interval: int = 10,
         eval_interval: int = 1,
         checkpoint_save_interval: int = 1,
+        save_best: bool = True,
+        save_last: bool = True,
         tensorboard_dir: Optional[Union[str, Path]] = None,
         distributed: bool = False,
         rank: int = 0,
@@ -121,6 +125,8 @@ class Trainer:
         self.log_interval = log_interval
         self.eval_interval = eval_interval
         self.checkpoint_save_interval = checkpoint_save_interval
+        self.save_best = save_best
+        self.save_last = save_last
 
         self.distributed = distributed
         self.rank = rank
@@ -146,6 +152,9 @@ class Trainer:
         # Metrics tracking
         self.train_metrics = defaultdict(list)
         self.val_metrics = defaultdict(list)
+
+        # Metric fallback tracking
+        self._metric_fallback_applied = False
 
         logger.info(f"Trainer initialized: epochs={max_epochs}, amp={use_amp}, distributed={distributed}")
 
@@ -186,32 +195,59 @@ class Trainer:
                 if val_metrics is not None:
                     metrics.update(val_metrics)
 
-                # 1. Save "last" checkpoint every epoch (overwrite)
-                self.checkpoint_manager.save(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    scheduler=self.scheduler,
-                    epoch=epoch,
-                    metrics=metrics,
-                    filename='checkpoint_last.pth'
-                )
+                # 1. Save "last" checkpoint every epoch (overwrite) - only if save_last is enabled
+                if self.save_last:
+                    self.checkpoint_manager.save(
+                        model=self.model,
+                        optimizer=self.optimizer,
+                        scheduler=self.scheduler,
+                        epoch=epoch,
+                        metrics=metrics,
+                        filename='checkpoint_last.pth'
+                    )
 
-                # 2. Save "best" checkpoint if metric improves (overwrite)
-                current_metric = metrics.get(self.checkpoint_manager.metric_name, None)
-                if current_metric is not None:
-                    if self.checkpoint_manager._is_better(current_metric, self.checkpoint_manager.best_metric):
-                        self.checkpoint_manager.best_metric = current_metric
-                        self.checkpoint_manager.best_epoch = epoch
-                        self.checkpoint_manager.save(
-                            model=self.model,
-                            optimizer=self.optimizer,
-                            scheduler=self.scheduler,
-                            epoch=epoch,
-                            metrics=metrics,
-                            is_best=True,
-                            filename='checkpoint_best.pth'
-                        )
-                        logger.info(f"Saved best checkpoint at epoch {epoch + 1} with {self.checkpoint_manager.metric_name}={current_metric:.4f}")
+                # 2. Save "best" checkpoint if metric improves (overwrite) - only if save_best is enabled
+                if self.save_best:
+                    current_metric = metrics.get(self.checkpoint_manager.metric_name, None)
+
+                    # Metric fallback logic: if monitor metric not found, try val_total
+                    if current_metric is None and not self._metric_fallback_applied:
+                        original_metric = self.checkpoint_manager.metric_name
+
+                        # Try fallback to val_total
+                        if 'val_total' in metrics and original_metric != 'val_total':
+                            logger.warning(
+                                f"Metric '{original_metric}' not found in metrics. "
+                                f"Available metrics: {list(metrics.keys())}. "
+                                f"Falling back to 'val_total' for best checkpoint tracking."
+                            )
+                            self.checkpoint_manager.metric_name = 'val_total'
+                            self.checkpoint_manager.mode = 'min'
+                            self.checkpoint_manager.best_metric = float('inf')  # Reset for min mode
+                            self._metric_fallback_applied = True
+                            current_metric = metrics.get('val_total')
+                        else:
+                            # Neither original metric nor val_total found - critical error
+                            logger.error(
+                                f"CRITICAL: Monitor metric '{original_metric}' not found and fallback 'val_total' "
+                                f"is also unavailable. Available metrics: {list(metrics.keys())}. "
+                                f"Best checkpoint WILL NOT be saved. Please fix metric configuration."
+                            )
+
+                    if current_metric is not None:
+                        if self.checkpoint_manager._is_better(current_metric, self.checkpoint_manager.best_metric):
+                            self.checkpoint_manager.best_metric = current_metric
+                            self.checkpoint_manager.best_epoch = epoch
+                            self.checkpoint_manager.save(
+                                model=self.model,
+                                optimizer=self.optimizer,
+                                scheduler=self.scheduler,
+                                epoch=epoch,
+                                metrics=metrics,
+                                is_best=True,
+                                filename='checkpoint_best.pth'
+                            )
+                            logger.info(f"Saved best checkpoint at epoch {epoch + 1} with {self.checkpoint_manager.metric_name}={current_metric:.4f}")
 
                 # 3. Save interval checkpoint every N epochs (keep multiple)
                 if (epoch + 1) % self.checkpoint_save_interval == 0:
@@ -612,6 +648,112 @@ class Trainer:
 
         logger.info(summary)
 
+    def save_checkpoint(
+        self,
+        epoch: int = -1,
+        is_best: bool = False,
+        filename: Optional[str] = None,
+        metrics: Optional[Dict[str, float]] = None
+    ) -> Optional[Path]:
+        """
+        Save a checkpoint (typically called during exception handling).
+
+        Args:
+            epoch: Current epoch (-1 for emergency save)
+            is_best: Whether this is the best checkpoint
+            filename: Custom filename (optional)
+            metrics: Optional metrics to save
+
+        Returns:
+            Path to saved checkpoint or None
+
+        Example:
+            >>> # Emergency save on exception
+            >>> trainer.save_checkpoint(epoch=-1, is_best=False)
+        """
+        if self.checkpoint_manager is None:
+            logger.warning("No checkpoint manager available, cannot save checkpoint")
+            return None
+
+        if not self.is_main_process:
+            return None
+
+        # Use empty metrics if not provided
+        if metrics is None:
+            metrics = {}
+
+        # Generate default filename if not provided
+        if filename is None:
+            if epoch == -1:
+                filename = 'checkpoint_emergency.pth'
+            elif is_best:
+                filename = 'checkpoint_best.pth'
+            else:
+                filename = f'checkpoint_epoch_{epoch + 1}.pth'
+
+        logger.info(f"Saving checkpoint: {filename}")
+
+        return self.checkpoint_manager.save(
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            epoch=epoch,
+            metrics=metrics,
+            is_best=is_best,
+            filename=filename
+        )
+
+    def load_checkpoint(
+        self,
+        checkpoint_path: Union[str, Path],
+        load_optimizer: bool = True,
+        load_scheduler: bool = True,
+        strict: bool = True
+    ) -> int:
+        """
+        Load a checkpoint and return the starting epoch.
+
+        Args:
+            checkpoint_path: Path to checkpoint file
+            load_optimizer: Whether to load optimizer state
+            load_scheduler: Whether to load scheduler state
+            strict: Strict mode for model loading
+
+        Returns:
+            Starting epoch for resuming training
+
+        Example:
+            >>> start_epoch = trainer.load_checkpoint('outputs/checkpoints/checkpoint_epoch_10.pth')
+            >>> trainer.train(start_epoch=start_epoch)
+        """
+        if self.checkpoint_manager is None:
+            raise RuntimeError("No checkpoint manager available, cannot load checkpoint")
+
+        logger.info(f"Loading checkpoint from: {checkpoint_path}")
+
+        checkpoint = self.checkpoint_manager.load(
+            filename=checkpoint_path,
+            model=self.model,
+            optimizer=self.optimizer if load_optimizer else None,
+            scheduler=self.scheduler if load_scheduler else None,
+            strict=strict
+        )
+
+        # Update trainer state
+        epoch = checkpoint.get('epoch', 0)
+        self.current_epoch = epoch
+
+        if 'global_step' in checkpoint:
+            self.global_step = checkpoint['global_step']
+
+        if 'best_metric' in checkpoint:
+            self.best_metric = checkpoint['best_metric']
+
+        logger.info(f"Resumed from epoch {epoch + 1}")
+
+        # Return next epoch to start from
+        return epoch + 1
+
     def state_dict(self) -> Dict[str, Any]:
         """Get trainer state for checkpointing."""
         return {
@@ -674,8 +816,8 @@ def build_trainer(
         checkpoint_manager = CheckpointManager(
             checkpoint_dir=config['checkpoint_dir'],
             max_to_keep=config.get('max_checkpoints_to_keep', 5),
-            save_best_only=config.get('save_best_only', False),
-            metric_name=config.get('best_metric_name', 'val_fusion_box'),
+            save_best_only=False,  # Handle save_best/save_last in Trainer instead
+            metric_name=config.get('best_metric_name', 'val_total'),
             mode=config.get('best_metric_mode', 'min')
         )
 
@@ -695,6 +837,9 @@ def build_trainer(
         grad_clip_norm=config.get('grad_clip_norm', 1.0),
         log_interval=config.get('log_interval', 10),
         eval_interval=config.get('eval_interval', 1),
+        checkpoint_save_interval=config.get('checkpoint_save_interval', 1),
+        save_best=config.get('save_best', True),
+        save_last=config.get('save_last', True),
         tensorboard_dir=config.get('tensorboard_dir'),
         distributed=config.get('distributed', False),
         rank=config.get('rank', 0)
