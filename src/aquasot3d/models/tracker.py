@@ -42,6 +42,11 @@ from aquasot3d.models.heads import (
     extract_radial_activation
 )
 from aquasot3d.models.projector import build_geometric_projector
+from aquasot3d.models.quality import (
+    create_rgb_quality_estimator,
+    create_sonar_quality_estimator,
+    create_adaptive_weighting
+)
 
 
 logger = logging.getLogger(__name__)
@@ -90,8 +95,10 @@ class AquaSOT3DTracker(BaseModule):
         fusion_head_config: Optional[Dict[str, Any]] = None,
         weak3d_config: Optional[Dict[str, Any]] = None,
         projector_config: Optional[Dict[str, Any]] = None,
+        quality_config: Optional[Dict[str, Any]] = None,
         use_temporal: bool = True,
         use_weak3d: bool = True,
+        use_quality_gating: bool = True,
         temporal_aggregation: bool = False,
         **kwargs
     ):
@@ -99,6 +106,7 @@ class AquaSOT3DTracker(BaseModule):
 
         self.use_temporal = use_temporal
         self.use_weak3d = use_weak3d
+        self.use_quality_gating = use_quality_gating
         self.temporal_aggregation = temporal_aggregation
 
         # =====================================================
@@ -265,7 +273,56 @@ class AquaSOT3DTracker(BaseModule):
             self.sonar_projector = None
 
         # =====================================================
-        # 5. Temporal State Management
+        # 5. Quality Estimation (SNR/Sharpness-based)
+        # =====================================================
+        if self.use_quality_gating:
+            if quality_config is None:
+                quality_config = {}
+
+            # RGB quality estimator (sharpness/blur detection)
+            rgb_quality_cfg = quality_config.get('rgb', {}).copy()
+            # Extract method/learnable to avoid duplicate kwargs
+            rgb_method = rgb_quality_cfg.pop('method', 'combined')
+            rgb_learnable = rgb_quality_cfg.pop('learnable', True)
+            self.rgb_quality_estimator = create_rgb_quality_estimator(
+                method=rgb_method,
+                learnable=rgb_learnable,
+                **rgb_quality_cfg
+            )
+
+            # Sonar quality estimator (SNR/speckle noise)
+            sonar_quality_cfg = quality_config.get('sonar', {}).copy()
+            # Extract method/learnable to avoid duplicate kwargs
+            sonar_method = sonar_quality_cfg.pop('method', 'combined')
+            sonar_learnable = sonar_quality_cfg.pop('learnable', True)
+            self.sonar_quality_estimator = create_sonar_quality_estimator(
+                method=sonar_method,
+                learnable=sonar_learnable,
+                **sonar_quality_cfg
+            )
+
+            # Adaptive weighting module
+            adaptive_cfg = quality_config.get('adaptive_weighting', {})
+            self.adaptive_weighting = create_adaptive_weighting(
+                weighting_method=adaptive_cfg.get('method', 'softmax'),
+                temporal_smoothing=adaptive_cfg.get('temporal_smoothing', True),
+                quality_threshold=adaptive_cfg.get('threshold', 0.3),
+                **adaptive_cfg
+            )
+
+            # Projection layers for adaptive weighting (registered for state dict)
+            self.quality_projection_adapters = nn.ModuleDict()
+
+            logger.info("Initialized quality-adaptive gating: RGB + Sonar estimators + Adaptive weighting")
+        else:
+            self.rgb_quality_estimator = None
+            self.sonar_quality_estimator = None
+            self.adaptive_weighting = None
+            self.quality_projection_adapters = None
+            logger.info("Quality-adaptive gating disabled")
+
+        # =====================================================
+        # 6. Temporal State Management
         # =====================================================
         self.temporal_state = None
         self.reset_temporal_state()
@@ -274,7 +331,7 @@ class AquaSOT3DTracker(BaseModule):
             f"Initialized AquaSOT3DTracker: "
             f"rgb_dim={self.rgb_feat_dim}, sonar_dim={self.sonar_feat_dim}, "
             f"fused_dim={self.fused_feat_dim}, use_temporal={use_temporal}, "
-            f"use_weak3d={use_weak3d}"
+            f"use_weak3d={use_weak3d}, use_quality_gating={use_quality_gating}"
         )
 
     def reset_temporal_state(self) -> None:
@@ -652,9 +709,30 @@ class AquaSOT3DTracker(BaseModule):
         fused_features = fusion_outputs['fused_features']  # (B, C_fused, H, W)
 
         # =====================================================
-        # Stage 3: Quality Estimation
+        # Stage 3: Quality Estimation (Physical + Learned)
         # =====================================================
-        # Ensure features are tensors for fusion_head
+        B = fused_features.shape[0]
+
+        # 3.1 Physical quality estimation (SNR/Sharpness)
+        if self.use_quality_gating and self.rgb_quality_estimator is not None:
+            # Estimate RGB quality based on sharpness/blur
+            rgb_quality = self.rgb_quality_estimator(
+                rgb_frame=rgb_search,
+                bbox=gt_boxes.get('rgb') if gt_boxes is not None else None
+            )  # (B, 1)
+
+            # Estimate Sonar quality based on SNR/speckle
+            sonar_quality = self.sonar_quality_estimator(
+                sonar_frame=sonar_search,
+                bbox=gt_boxes.get('sonar') if gt_boxes is not None else None
+            )  # (B, 1)
+        else:
+            # No quality gating: use default high quality scores
+            rgb_quality = torch.ones(B, 1, device=fused_features.device)
+            sonar_quality = torch.ones(B, 1, device=fused_features.device)
+
+        # 3.2 Learned quality estimation (from fusion_head)
+        quality_fusion_loss = None
         if self.fusion_head is not None:
             rgb_features_for_quality = rgb_features
             sonar_features_for_quality = sonar_features
@@ -666,11 +744,119 @@ class AquaSOT3DTracker(BaseModule):
             quality_outputs = self.fusion_head(
                 rgb_features_for_quality, sonar_features_for_quality
             )
-            fusion_quality = quality_outputs['quality_score']  # (B,)
+            fusion_quality_learned = quality_outputs['quality_score']  # (B,)
+
+            # Combine physical and learned quality scores
+            # Use learned quality as primary, physical quality as regularization
+            fusion_quality = fusion_quality_learned
+
+            # Compute quality-consistency loss during training
+            # Aligns learned quality with physical quality (SNR/sharpness)
+            if return_losses and self.use_quality_gating:
+                # FusionHead returns fusion_weights directly (already normalized)
+                # It also optionally returns rgb_confidence/sonar_confidence
+                fusion_weights_learned = quality_outputs.get('fusion_weights')  # (B, 2)
+
+                if fusion_weights_learned is not None:
+                    # Use fusion_weights as proxy for learned quality
+                    # fusion_weights[:, 0] = RGB weight (higher when RGB is better)
+                    # fusion_weights[:, 1] = Sonar weight (higher when Sonar is better)
+
+                    # Compute quality-consistency loss
+                    # Supervises learned fusion weights with physical quality (SNR/sharpness)
+                    quality_fusion_loss = self.fusion_head.compute_fusion_loss(
+                        rgb_quality=rgb_quality.squeeze(1),     # Physical quality (sharpness)
+                        sonar_quality=sonar_quality.squeeze(1), # Physical quality (SNR)
+                        fusion_weights=fusion_weights_learned,   # Learned weights from FusionHead
+                        target_quality=None  # Use agreement-based loss (no ground-truth quality)
+                    )
         else:
-            # Single-modal training: use default quality score
-            B = fused_features.shape[0]
-            fusion_quality = torch.ones(B, device=fused_features.device)
+            # Single-modal training: use physical quality or default
+            if self.use_quality_gating:
+                # Average RGB and Sonar quality
+                fusion_quality = (rgb_quality.squeeze(1) + sonar_quality.squeeze(1)) / 2.0
+            else:
+                fusion_quality = torch.ones(B, device=fused_features.device)
+
+        # 3.3 Apply adaptive quality-based reweighting to fused features
+        # This modulates the fused output based on physical quality cues (SNR/sharpness)
+        quality_weights_dict = None
+        if self.use_quality_gating and self.adaptive_weighting is not None:
+            # Reshape features if needed for adaptive weighting
+            # AdaptiveWeighting expects (B, C, H, W) spatial features
+            if fused_features.dim() == 3:
+                # Sequence format (B, N, C) -> (B, C, H, W)
+                B_seq, N_seq, C_seq = fused_features.shape
+                H_seq = W_seq = int(N_seq ** 0.5)
+                fused_features_spatial = fused_features.permute(0, 2, 1).reshape(B_seq, C_seq, H_seq, W_seq)
+            else:
+                fused_features_spatial = fused_features
+
+            # Prepare modality-specific features for reweighting
+            # Use raw backbone features (before G2-DCMA fusion) for quality-based modulation
+            rgb_feat_for_adaptive = rgb_features if rgb_features is not None else fused_features_spatial
+            sonar_feat_for_adaptive = sonar_features if sonar_features is not None else fused_features_spatial
+
+            # Handle list format
+            if isinstance(rgb_feat_for_adaptive, list):
+                rgb_feat_for_adaptive = rgb_feat_for_adaptive[0]
+            if isinstance(sonar_feat_for_adaptive, list):
+                sonar_feat_for_adaptive = sonar_feat_for_adaptive[0]
+
+            # Reshape if needed
+            if rgb_feat_for_adaptive.dim() == 3:
+                B_rgb, N_rgb, C_rgb = rgb_feat_for_adaptive.shape
+                H_rgb = W_rgb = int(N_rgb ** 0.5)
+                rgb_feat_for_adaptive = rgb_feat_for_adaptive.permute(0, 2, 1).reshape(B_rgb, C_rgb, H_rgb, W_rgb)
+            if sonar_feat_for_adaptive.dim() == 3:
+                B_sonar, N_sonar, C_sonar = sonar_feat_for_adaptive.shape
+                H_sonar = W_sonar = int(N_sonar ** 0.5)
+                sonar_feat_for_adaptive = sonar_feat_for_adaptive.permute(0, 2, 1).reshape(B_sonar, C_sonar, H_sonar, W_sonar)
+
+            # Resize features to match if needed (for quality-based fusion)
+            if rgb_feat_for_adaptive.shape[2:] != sonar_feat_for_adaptive.shape[2:]:
+                target_size = fused_features_spatial.shape[2:]
+                rgb_feat_for_adaptive = F.interpolate(rgb_feat_for_adaptive, size=target_size, mode='bilinear', align_corners=False)
+                sonar_feat_for_adaptive = F.interpolate(sonar_feat_for_adaptive, size=target_size, mode='bilinear', align_corners=False)
+
+            # Match channel dimensions to fused_features using registered adapters
+            if rgb_feat_for_adaptive.shape[1] != fused_features_spatial.shape[1]:
+                # Get or create RGB projection adapter
+                proj_key = f'rgb_{rgb_feat_for_adaptive.shape[1]}_to_{fused_features_spatial.shape[1]}'
+                if proj_key not in self.quality_projection_adapters:
+                    self.quality_projection_adapters[proj_key] = nn.Conv2d(
+                        rgb_feat_for_adaptive.shape[1], fused_features_spatial.shape[1], kernel_size=1
+                    )
+                rgb_feat_for_adaptive = self.quality_projection_adapters[proj_key](rgb_feat_for_adaptive)
+
+            if sonar_feat_for_adaptive.shape[1] != fused_features_spatial.shape[1]:
+                # Get or create Sonar projection adapter
+                proj_key = f'sonar_{sonar_feat_for_adaptive.shape[1]}_to_{fused_features_spatial.shape[1]}'
+                if proj_key not in self.quality_projection_adapters:
+                    self.quality_projection_adapters[proj_key] = nn.Conv2d(
+                        sonar_feat_for_adaptive.shape[1], fused_features_spatial.shape[1], kernel_size=1
+                    )
+                sonar_feat_for_adaptive = self.quality_projection_adapters[proj_key](sonar_feat_for_adaptive)
+
+            # Apply adaptive weighting based on physical quality
+            fused_features_quality_weighted, quality_weights_dict = self.adaptive_weighting(
+                rgb_feat=rgb_feat_for_adaptive,
+                sonar_feat=sonar_feat_for_adaptive,
+                q_rgb=rgb_quality,
+                q_sonar=sonar_quality
+            )
+
+            # Blend quality-weighted features with geometric-fused features
+            # Quality-weighted: emphasizes modality with better physical quality
+            # Geometric-fused: emphasizes geometric consistency
+            # Combine both: alpha * geometric + (1-alpha) * quality
+            blend_alpha = 0.7  # Favor geometric fusion, but modulate with quality
+            fused_features = blend_alpha * fused_features_spatial + (1 - blend_alpha) * fused_features_quality_weighted
+
+            # Restore original shape if needed
+            if fused_features.dim() == 4 and fused_features_spatial.shape != fused_features.shape:
+                # Was sequence format originally, restore it
+                pass  # Keep spatial for now, heads expect spatial
 
         # =====================================================
         # Stage 4: Temporal Modeling (Optional)
@@ -732,7 +918,13 @@ class AquaSOT3DTracker(BaseModule):
         outputs = {
             # Quality scores (always present)
             'fusion_quality': fusion_quality,
+            'rgb_quality_physical': rgb_quality.squeeze(1) if self.use_quality_gating else None,
+            'sonar_quality_physical': sonar_quality.squeeze(1) if self.use_quality_gating else None,
         }
+
+        # Add adaptive quality weights if computed
+        if quality_weights_dict is not None:
+            outputs['quality_weights'] = quality_weights_dict
 
         # Add predictions conditionally based on available modalities
         if 'fusion_boxes' in box_outputs:
@@ -778,6 +970,10 @@ class AquaSOT3DTracker(BaseModule):
                 losses['rgb_proj_loss'] = weak3d_outputs['rgb_proj_loss']
             if 'sonar_proj_loss' in weak3d_outputs:
                 losses['sonar_proj_loss'] = weak3d_outputs['sonar_proj_loss']
+
+            # Quality-consistency loss (learned quality vs physical quality)
+            if quality_fusion_loss is not None:
+                losses['quality_fusion_loss'] = quality_fusion_loss
 
             outputs['losses'] = losses
 

@@ -123,7 +123,8 @@ def parse_groundtruth(gt_path: Union[str, Path]) -> np.ndarray:
                     raise ValueError(
                         f"Line {line_idx}: Expected 4 values, got {len(parts)}"
                     )
-                bbox = [int(x) for x in parts]
+                # Parse as float to preserve sub-pixel precision
+                bbox = [float(x) for x in parts]
                 bboxes.append(bbox)
             except ValueError as e:
                 raise ValueError(

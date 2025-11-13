@@ -118,26 +118,27 @@ class RadialProfileExtractor(BaseModule):
         else:
             adjusted_weights = self.channel_weights if self.learnable_weights else None
 
-        # Aggregate feature activations per bin
+        # Aggregate feature activations per bin using vectorized operations
         radial_profiles = []
         for b in range(B):
-            profile = torch.zeros(self.num_bins, device=device)
-            counts = torch.zeros(self.num_bins, device=device)
-
             # Weighted channel aggregation
             if self.learnable_weights:
                 feat = (feature_map[b] * adjusted_weights.view(C, 1, 1)).sum(dim=0)  # [H, W]
             else:
                 feat = feature_map[b].mean(dim=0)  # [H, W]
 
-            # Bin-wise aggregation
-            for bin_idx in range(self.num_bins):
-                mask = (r_bins == bin_idx)
-                if mask.sum() > 0:
-                    profile[bin_idx] = feat[mask].mean()
-                    counts[bin_idx] = mask.float().sum()
+            # Vectorized bin-wise aggregation using scatter_add
+            feat_flat = feat.flatten()  # [H*W]
+            r_bins_flat = r_bins.flatten()  # [H*W]
 
-            # Normalize by counts to handle varying bin sizes
+            # Accumulate values and counts for each bin
+            profile = torch.zeros(self.num_bins, device=device)
+            counts = torch.zeros(self.num_bins, device=device)
+
+            profile.scatter_add_(0, r_bins_flat, feat_flat)
+            counts.scatter_add_(0, r_bins_flat, torch.ones_like(feat_flat))
+
+            # Compute mean: divide accumulated values by counts (single normalization)
             profile = profile / (counts + 1e-6)
             radial_profiles.append(profile)
 
@@ -189,6 +190,9 @@ class ScalePyramidExtractor(BaseModule):
         self.feature_dim = feature_dim
         self.num_scales = num_scales
         self.use_attention = use_attention
+
+        # Channel dimension adapters (registered as ModuleDict for state dict persistence)
+        self.channel_adapters = nn.ModuleDict()
 
         # Scale-specific processing layers
         self.scale_convs = nn.ModuleList([
@@ -248,8 +252,15 @@ class ScalePyramidExtractor(BaseModule):
         # Check if input dimension matches expected dimension
         actual_dim = pyramid_levels[0].shape[1]
         if actual_dim != self.feature_dim:
-            # Create dynamic projection layer if needed
-            projection = nn.Conv2d(actual_dim, self.feature_dim, kernel_size=1).to(pyramid_levels[0].device)
+            # Get or create channel adapter for this dimension
+            adapter_key = str(actual_dim)
+            if adapter_key not in self.channel_adapters:
+                # Create and register new adapter for this input dimension
+                self.channel_adapters[adapter_key] = nn.Conv2d(
+                    actual_dim, self.feature_dim, kernel_size=1
+                )
+            # Use registered adapter
+            projection = self.channel_adapters[adapter_key]
             # Project all pyramid levels to expected dimension
             pyramid_levels = [projection(level) for level in pyramid_levels[:self.num_scales]]
 
@@ -391,6 +402,11 @@ class GeometryGatedAttention(BaseModule):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
+        # Dynamic dimension adapters (registered for state dict persistence)
+        self.rgb_adapters = nn.ModuleDict()
+        self.sonar_adapters = nn.ModuleDict()
+        self.rgb_out_adapters = nn.ModuleDict()
+
         self.dropout = nn.Dropout(dropout)
         self.scale = self.head_dim ** -0.5
 
@@ -420,22 +436,26 @@ class GeometryGatedAttention(BaseModule):
 
         # Check if feature dimensions match embed_dim, if not, project them
         if C_rgb != self.embed_dim:
-            if not hasattr(self, 'rgb_proj'):
-                # Create projection layer on the fly
-                self.rgb_proj = nn.Linear(C_rgb, self.embed_dim).to(rgb_features.device)
+            # Get or create RGB adapter for this dimension
+            adapter_key = str(C_rgb)
+            if adapter_key not in self.rgb_adapters:
+                self.rgb_adapters[adapter_key] = nn.Linear(C_rgb, self.embed_dim)
+            rgb_proj = self.rgb_adapters[adapter_key]
             rgb_flat = rgb_features.flatten(2).permute(0, 2, 1)  # [B, H_rgb*W_rgb, C_rgb]
-            rgb_flat = self.rgb_proj(rgb_flat)  # [B, H_rgb*W_rgb, embed_dim]
+            rgb_flat = rgb_proj(rgb_flat)  # [B, H_rgb*W_rgb, embed_dim]
             rgb_features_proj = rgb_flat.permute(0, 2, 1).view(B, self.embed_dim, H_rgb, W_rgb)
         else:
             rgb_features_proj = rgb_features
             rgb_flat = rgb_features.flatten(2).permute(0, 2, 1)
 
         if C_sonar != self.embed_dim:
-            if not hasattr(self, 'sonar_proj'):
-                # Create projection layer on the fly
-                self.sonar_proj = nn.Linear(C_sonar, self.embed_dim).to(sonar_features.device)
+            # Get or create Sonar adapter for this dimension
+            adapter_key = str(C_sonar)
+            if adapter_key not in self.sonar_adapters:
+                self.sonar_adapters[adapter_key] = nn.Linear(C_sonar, self.embed_dim)
+            sonar_proj = self.sonar_adapters[adapter_key]
             sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)  # [B, H_sonar*W_sonar, C_sonar]
-            sonar_flat = self.sonar_proj(sonar_flat)  # [B, H_sonar*W_sonar, embed_dim]
+            sonar_flat = sonar_proj(sonar_flat)  # [B, H_sonar*W_sonar, embed_dim]
         else:
             sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)
 
@@ -475,10 +495,12 @@ class GeometryGatedAttention(BaseModule):
 
         # If input RGB dimension was different, project back to original dimension
         if C_rgb != self.embed_dim:
-            if not hasattr(self, 'rgb_out_proj'):
-                # Create output projection layer
-                self.rgb_out_proj = nn.Linear(self.embed_dim, C_rgb).to(attn_output.device)
-            attn_output = self.rgb_out_proj(attn_output)  # [B, N_rgb, C_rgb]
+            # Get or create RGB output adapter for this dimension
+            adapter_key = str(C_rgb)
+            if adapter_key not in self.rgb_out_adapters:
+                self.rgb_out_adapters[adapter_key] = nn.Linear(self.embed_dim, C_rgb)
+            rgb_out_proj = self.rgb_out_adapters[adapter_key]
+            attn_output = rgb_out_proj(attn_output)  # [B, N_rgb, C_rgb]
 
         # Reshape back to spatial dimensions
         output_dim = C_rgb if C_rgb != self.embed_dim else self.embed_dim

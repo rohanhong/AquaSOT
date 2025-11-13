@@ -22,6 +22,83 @@ from aquasot3d.models.backbones.sonar_encoder import SonarEncoder
 logger = logging.getLogger(__name__)
 
 
+class DummyBackbone(nn.Module):
+    """
+    Dummy backbone for unit testing without loading full models.
+
+    Returns fixed-size random features for fast testing of downstream components
+    without requiring actual pretrained weights or heavy computation.
+
+    Matches the interface of real backbones (ViTRGBBackbone, SonarEncoder):
+    - forward(template, search, return_separate=False)
+    - Returns {'template_features': ..., 'search_features': ...} or {'features': ...}
+
+    Args:
+        output_dim: Feature dimension to output
+        spatial_size: Spatial resolution of output features (H=W)
+    """
+
+    def __init__(self, output_dim: int = 256, spatial_size: int = 14):
+        super().__init__()
+        self.output_dim = output_dim
+        self.spatial_size = spatial_size
+        # Minimal parameters to make it a valid nn.Module
+        self.dummy_param = nn.Parameter(torch.zeros(1))
+
+    def forward(
+        self,
+        template: torch.Tensor,
+        search: torch.Tensor,
+        return_separate: bool = False
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Return dummy features with correct shape.
+
+        Args:
+            template: Template frame (B, C, H_t, W_t)
+            search: Search frame (B, C, H_s, W_s)
+            return_separate: Whether to return separate template/search features
+
+        Returns:
+            Dictionary with dummy features matching real backbone interface
+        """
+        B = template.shape[0]
+        device = template.device
+
+        # Generate deterministic random features
+        # Use fixed seed for reproducibility in tests
+        gen_template = torch.Generator(device='cpu').manual_seed(42)
+        gen_search = torch.Generator(device='cpu').manual_seed(43)
+
+        template_features = torch.randn(
+            B, self.output_dim, self.spatial_size, self.spatial_size,
+            generator=gen_template
+        ).to(device)
+
+        search_features = torch.randn(
+            B, self.output_dim, self.spatial_size, self.spatial_size,
+            generator=gen_search
+        ).to(device)
+
+        if return_separate:
+            # Return separate template and search features
+            return {
+                'template_features': template_features,
+                'search_features': search_features,
+            }
+        else:
+            # Return concatenated features (typical for tracking)
+            return {
+                'features': search_features,  # Use search features as default
+                'template_features': template_features,  # Also include for compatibility
+                'search_features': search_features,
+            }
+
+    def get_feature_dim(self) -> int:
+        """Return output feature dimension."""
+        return self.output_dim
+
+
 class BackboneFactory:
     """
     Factory class for creating backbone networks.
@@ -179,9 +256,13 @@ class BackboneFactory:
         config = config.copy()
         backbone_type = config.pop('type', None)
 
-        # Handle null type (for single-modal training)
+        # Handle null type: return DummyBackbone for testing
         if backbone_type is None or backbone_type == 'null':
-            return None
+            # Create dummy backbone with configurable dimensions
+            output_dim = config.get('output_dim', 256)
+            spatial_size = config.get('spatial_size', 14)
+            logger.info(f"Creating DummyBackbone for testing: output_dim={output_dim}, spatial_size={spatial_size}")
+            return DummyBackbone(output_dim=output_dim, spatial_size=spatial_size)
 
         return BackboneFactory.create(backbone_type, **config)
 
