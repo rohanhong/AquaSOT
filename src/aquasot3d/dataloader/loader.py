@@ -146,10 +146,12 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
     ]
 
     # Get image dimensions for normalization
-    # RGB search images are typically 255x255 or 256x256
-    # Template images are typically 127x127
+    # Search images are typically 255x255 or 256x256
+    # Template images are typically 127x127 or 128x128
     rgb_search_h, rgb_search_w = batch[0]['rgb_search'].shape[-2:] if 'rgb_search' in batch[0] else (256, 256)
     sonar_search_h, sonar_search_w = batch[0]['sonar_search'].shape[-2:] if 'sonar_search' in batch[0] else (256, 256)
+    rgb_template_h, rgb_template_w = batch[0]['rgb_template'].shape[-2:] if 'rgb_template' in batch[0] else (128, 128)
+    sonar_template_h, sonar_template_w = batch[0]['sonar_template'].shape[-2:] if 'sonar_template' in batch[0] else (128, 128)
 
     for key in bbox_keys:
         if key in batch[0]:
@@ -162,11 +164,18 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
 
             # Normalize bounding boxes to [0, 1] based on image dimensions
             # Format: [x, y, w, h] in pixels → [cx, cy, w, h] in [0, 1]
-            if 'rgb' in key and not key.endswith('_normalized'):
-                # RGB bounding boxes
+            # Priority 2.2: Use correct image dimensions for template vs search bboxes
+            if 'template' in key and 'rgb' in key and not key.endswith('_normalized'):
+                # RGB template bounding boxes - use template dimensions
+                img_w, img_h = rgb_template_w, rgb_template_h
+            elif 'template' in key and 'sonar' in key and not key.endswith('_normalized'):
+                # Sonar template bounding boxes - use template dimensions
+                img_w, img_h = sonar_template_w, sonar_template_h
+            elif 'rgb' in key and not key.endswith('_normalized'):
+                # RGB search/other bounding boxes - use search dimensions
                 img_w, img_h = rgb_search_w, rgb_search_h
             elif 'sonar' in key and not key.endswith('_normalized'):
-                # Sonar bounding boxes
+                # Sonar search/other bounding boxes - use search dimensions
                 img_w, img_h = sonar_search_w, sonar_search_h
             else:
                 # Generic fallback (256x256)

@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.cuda.amp import autocast, GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from typing import Dict, Optional, Any, Callable, Union
+from typing import Dict, Optional, Any, Callable, Union, Tuple
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -233,6 +233,90 @@ class Trainer:
         if self.writer is not None:
             self.writer.close()
 
+    def _compute_model_losses(self, model_losses: Dict[str, torch.Tensor], epoch: int) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Compute weighted total loss from model-internal losses.
+
+        Maps model loss names to config loss weight keys and applies weighting.
+
+        Args:
+            model_losses: Loss dictionary from model outputs['losses']
+            epoch: Current epoch (for loss scheduling if needed)
+
+        Returns:
+            (total_loss, loss_dict) where loss_dict contains all component losses and total
+        """
+        loss_dict = {}
+        total_loss = 0.0
+
+        # Get loss weights from config
+        loss_weights = self.loss_manager.loss_weights
+
+        # Define loss name mapping from model internal names to config keys
+        loss_name_map = {
+            'rgb_box_loss': 'rgb_box',
+            'sonar_box_loss': 'sonar_box',
+            'fusion_box_loss': 'fusion_box',
+            'component_consistency': 'component_consistency',
+            'representation_consistency': 'representation_consistency',
+            'X_consistency_loss': 'weak3d_reg',
+        }
+
+        # Process individual losses with name mapping
+        for model_key, loss_value in model_losses.items():
+            if loss_value is None or not isinstance(loss_value, torch.Tensor):
+                continue
+
+            # Map model loss name to config weight key
+            config_key = loss_name_map.get(model_key, model_key)
+
+            # Get weight for this loss component
+            weight = loss_weights.get(config_key, 0.0)
+
+            # Weighted loss
+            weighted_loss = weight * loss_value
+            total_loss = total_loss + weighted_loss
+
+            # Store both raw and weighted loss for logging
+            loss_dict[f'{config_key}_raw'] = loss_value.detach()
+            loss_dict[config_key] = weighted_loss.detach()
+
+        # Handle cyclic losses (combine rgb_cyclic_loss + sonar_cyclic_loss -> weak3d_cycle)
+        cyclic_losses = []
+        if 'rgb_cyclic_loss' in model_losses and model_losses['rgb_cyclic_loss'] is not None:
+            cyclic_losses.append(model_losses['rgb_cyclic_loss'])
+        if 'sonar_cyclic_loss' in model_losses and model_losses['sonar_cyclic_loss'] is not None:
+            cyclic_losses.append(model_losses['sonar_cyclic_loss'])
+
+        if cyclic_losses:
+            avg_cyclic_loss = sum(cyclic_losses) / len(cyclic_losses)
+            weight = loss_weights.get('weak3d_cycle', 0.0)
+            weighted_cyclic = weight * avg_cyclic_loss
+            total_loss = total_loss + weighted_cyclic
+            loss_dict['weak3d_cycle_raw'] = avg_cyclic_loss.detach()
+            loss_dict['weak3d_cycle'] = weighted_cyclic.detach()
+
+        # Handle projection losses (combine rgb_proj_loss + sonar_proj_loss)
+        proj_losses = []
+        if 'rgb_proj_loss' in model_losses and model_losses['rgb_proj_loss'] is not None:
+            proj_losses.append(model_losses['rgb_proj_loss'])
+        if 'sonar_proj_loss' in model_losses and model_losses['sonar_proj_loss'] is not None:
+            proj_losses.append(model_losses['sonar_proj_loss'])
+
+        if proj_losses:
+            avg_proj_loss = sum(proj_losses) / len(proj_losses)
+            # Use same weight as cyclic or create a new one
+            weight = loss_weights.get('weak3d_proj', loss_weights.get('weak3d_cycle', 0.0))
+            weighted_proj = weight * avg_proj_loss
+            total_loss = total_loss + weighted_proj
+            loss_dict['weak3d_proj_raw'] = avg_proj_loss.detach()
+            loss_dict['weak3d_proj'] = weighted_proj.detach()
+
+        # Add total loss to dict
+        loss_dict['total'] = total_loss.detach()
+
+        return total_loss, loss_dict
+
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """
         Train for one epoch.
@@ -266,6 +350,10 @@ class Trainer:
             if 'sonar_boxes' in batch:
                 gt_boxes['sonar'] = batch['sonar_boxes']
 
+            # Priority 0.2: Add fusion GT fallback (use RGB GT as fusion target)
+            if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
+                gt_boxes['fusion'] = gt_boxes['rgb']
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():
@@ -277,11 +365,16 @@ class Trainer:
                         gt_boxes=gt_boxes,
                         return_losses=True
                     )
-                    total_loss, loss_dict = self.loss_manager.compute_losses(
-                        outputs,
-                        batch,
-                        epoch=epoch
-                    )
+                    # Priority 0.1: Use model-provided losses if available
+                    if 'losses' in outputs and len(outputs['losses']) > 0:
+                        total_loss, loss_dict = self._compute_model_losses(outputs['losses'], epoch)
+                    else:
+                        # Fallback to LossManager
+                        total_loss, loss_dict = self.loss_manager.compute_losses(
+                            outputs,
+                            batch,
+                            epoch=epoch
+                        )
             else:
                 outputs = self.model(
                     batch['rgb_template'],
@@ -291,11 +384,16 @@ class Trainer:
                     gt_boxes=gt_boxes,
                     return_losses=True
                 )
-                total_loss, loss_dict = self.loss_manager.compute_losses(
-                    outputs,
-                    batch,
-                    epoch=epoch
-                )
+                # Priority 0.1: Use model-provided losses if available
+                if 'losses' in outputs and len(outputs['losses']) > 0:
+                    total_loss, loss_dict = self._compute_model_losses(outputs['losses'], epoch)
+                else:
+                    # Fallback to LossManager
+                    total_loss, loss_dict = self.loss_manager.compute_losses(
+                        outputs,
+                        batch,
+                        epoch=epoch
+                    )
 
             # Scale loss for gradient accumulation
             loss = total_loss / self.gradient_accumulation_steps
@@ -380,6 +478,17 @@ class Trainer:
                 # Move batch to device
                 batch = self._to_device(batch)
 
+                # Prepare ground truth boxes (for validation loss computation)
+                gt_boxes = {}
+                if 'rgb_boxes' in batch:
+                    gt_boxes['rgb'] = batch['rgb_boxes']
+                if 'sonar_boxes' in batch:
+                    gt_boxes['sonar'] = batch['sonar_boxes']
+
+                # Add fusion GT fallback
+                if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
+                    gt_boxes['fusion'] = gt_boxes['rgb']
+
                 # Forward pass
                 if self.use_amp:
                     with autocast():
@@ -387,25 +496,39 @@ class Trainer:
                             batch['rgb_template'],
                             batch['rgb_search'],
                             batch['sonar_template'],
-                            batch['sonar_search']
+                            batch['sonar_search'],
+                            gt_boxes=gt_boxes if gt_boxes else None,
+                            return_losses=True if gt_boxes else False
                         )
-                        total_loss, loss_dict = self.loss_manager.compute_losses(
-                            outputs,
-                            batch,
-                            epoch=epoch
-                        )
+                        # Use model-provided losses if available
+                        if 'losses' in outputs and len(outputs['losses']) > 0:
+                            total_loss, loss_dict = self._compute_model_losses(outputs['losses'], epoch)
+                        else:
+                            # Fallback to LossManager
+                            total_loss, loss_dict = self.loss_manager.compute_losses(
+                                outputs,
+                                batch,
+                                epoch=epoch
+                            )
                 else:
                     outputs = self.model(
                         batch['rgb_template'],
                         batch['rgb_search'],
                         batch['sonar_template'],
-                        batch['sonar_search']
+                        batch['sonar_search'],
+                        gt_boxes=gt_boxes if gt_boxes else None,
+                        return_losses=True if gt_boxes else False
                     )
-                    total_loss, loss_dict = self.loss_manager.compute_losses(
-                        outputs,
-                        batch,
-                        epoch=epoch
-                    )
+                    # Use model-provided losses if available
+                    if 'losses' in outputs and len(outputs['losses']) > 0:
+                        total_loss, loss_dict = self._compute_model_losses(outputs['losses'], epoch)
+                    else:
+                        # Fallback to LossManager
+                        total_loss, loss_dict = self.loss_manager.compute_losses(
+                            outputs,
+                            batch,
+                            epoch=epoch
+                        )
 
                 # Accumulate metrics
                 for key, value in loss_dict.items():

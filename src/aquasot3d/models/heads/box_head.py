@@ -547,6 +547,11 @@ class BoxHead(BaseHead):
         # Classification (quality score)
         pred_scores = self.cls_head(shared_feat).squeeze(-1)  # (B,)
 
+        # CRITICAL: Clamp pred_scores to [0, 1] for numerical stability
+        # Sigmoid in FP16/AMP mode can occasionally produce values slightly outside [0, 1]
+        # This prevents CUDA assertion failures in BCE loss computation
+        pred_scores = torch.clamp(pred_scores, min=0.0, max=1.0)
+
         # Regression (box coordinates in cxcywh)
         pred_boxes_cxcywh = self.reg_head(shared_feat)  # (B, 4)
 

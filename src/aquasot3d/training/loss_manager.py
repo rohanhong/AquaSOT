@@ -99,8 +99,12 @@ class LossManager(nn.Module):
         """
         Compute all losses and combine them with appropriate weights.
 
+        Priority 1 Enhancement: Support model-internal losses passthrough.
+        If predictions contain 'losses' dict, use those directly; otherwise compute from predictions/targets.
+
         Args:
             predictions: Dictionary containing all model predictions
+                - 'losses': Pre-computed loss dictionary from model (optional, Priority 1)
                 - 'rgb_box': RGB bounding box predictions
                 - 'sonar_box': Sonar bounding box predictions
                 - 'fusion_box': Fusion bounding box predictions
@@ -113,6 +117,7 @@ class LossManager(nn.Module):
             targets: Dictionary containing ground truth
                 - 'rgb_box': RGB target boxes
                 - 'sonar_box': Sonar target boxes
+                - 'fusion_box': Fusion target boxes (optional, fallback to rgb_box)
                 - 'rgb_cls': RGB classification targets (optional)
                 - 'sonar_cls': Sonar classification targets (optional)
                 - 'weak3d': 3D center targets (optional)
@@ -127,6 +132,15 @@ class LossManager(nn.Module):
 
         # Update weights if using scheduling
         weights = self._get_current_weights()
+
+        # Priority 1.1: Check if model provided pre-computed losses
+        if 'losses' in predictions and len(predictions.get('losses', {})) > 0:
+            # Use model-internal losses directly with name mapping
+            return self._compute_from_model_losses(predictions['losses'], epoch)
+
+        # Priority 1.2: Add fusion GT fallback (use RGB GT if fusion GT missing)
+        if targets.get('fusion_box') is None and targets.get('rgb_box') is not None:
+            targets = {**targets, 'fusion_box': targets['rgb_box']}
 
         loss_dict = {}
 
@@ -238,6 +252,103 @@ class LossManager(nn.Module):
 
         return total_loss, loss_dict
 
+    def _compute_from_model_losses(
+        self,
+        model_losses: Dict[str, torch.Tensor],
+        epoch: Optional[int] = None
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Compute total loss from model-provided losses (Priority 1).
+
+        This method handles model-internal losses with name mapping and weighting.
+
+        Args:
+            model_losses: Loss dictionary from model outputs['losses']
+            epoch: Current epoch (for logging)
+
+        Returns:
+            (total_loss, loss_dict) where loss_dict contains all component losses and total
+        """
+        loss_dict = {}
+        total_loss = 0.0
+
+        # Get current weights (with scheduling)
+        weights = self._get_current_weights()
+
+        # Define loss name mapping from model internal names to config keys
+        loss_name_map = {
+            'rgb_box_loss': 'rgb_box',
+            'sonar_box_loss': 'sonar_box',
+            'fusion_box_loss': 'fusion_box',
+            'component_consistency': 'component_consistency',
+            'representation_consistency': 'representation_consistency',
+            'X_consistency_loss': 'weak3d_reg',
+        }
+
+        # Process individual losses with name mapping
+        for model_key, loss_value in model_losses.items():
+            if loss_value is None or not isinstance(loss_value, torch.Tensor):
+                continue
+
+            # Map model loss name to config weight key
+            config_key = loss_name_map.get(model_key, model_key)
+
+            # Get weight for this loss component
+            weight = weights.get(config_key, 0.0)
+
+            # Weighted loss
+            weighted_loss = weight * loss_value
+            total_loss = total_loss + weighted_loss
+
+            # Store both raw and weighted loss for logging
+            loss_dict[f'{config_key}_raw'] = loss_value.detach()
+            loss_dict[config_key] = weighted_loss.detach()
+
+        # Handle cyclic losses (combine rgb_cyclic_loss + sonar_cyclic_loss -> weak3d_cycle)
+        cyclic_losses = []
+        if 'rgb_cyclic_loss' in model_losses and model_losses['rgb_cyclic_loss'] is not None:
+            cyclic_losses.append(model_losses['rgb_cyclic_loss'])
+        if 'sonar_cyclic_loss' in model_losses and model_losses['sonar_cyclic_loss'] is not None:
+            cyclic_losses.append(model_losses['sonar_cyclic_loss'])
+
+        if cyclic_losses:
+            avg_cyclic_loss = sum(cyclic_losses) / len(cyclic_losses)
+            weight = weights.get('weak3d_cycle', 0.0)
+            weighted_cyclic = weight * avg_cyclic_loss
+            total_loss = total_loss + weighted_cyclic
+            loss_dict['weak3d_cycle_raw'] = avg_cyclic_loss.detach()
+            loss_dict['weak3d_cycle'] = weighted_cyclic.detach()
+
+        # Handle projection losses (combine rgb_proj_loss + sonar_proj_loss)
+        proj_losses = []
+        if 'rgb_proj_loss' in model_losses and model_losses['rgb_proj_loss'] is not None:
+            proj_losses.append(model_losses['rgb_proj_loss'])
+        if 'sonar_proj_loss' in model_losses and model_losses['sonar_proj_loss'] is not None:
+            proj_losses.append(model_losses['sonar_proj_loss'])
+
+        if proj_losses:
+            avg_proj_loss = sum(proj_losses) / len(proj_losses)
+            # Use same weight as cyclic or create a new one
+            weight = weights.get('weak3d_proj', weights.get('weak3d_cycle', 0.0))
+            weighted_proj = weight * avg_proj_loss
+            total_loss = total_loss + weighted_proj
+            loss_dict['weak3d_proj_raw'] = avg_proj_loss.detach()
+            loss_dict['weak3d_proj'] = weighted_proj.detach()
+
+        # Add total loss to dict
+        loss_dict['total'] = total_loss.detach()
+
+        # Store for logging
+        if epoch is not None:
+            self.loss_history.append({
+                'epoch': epoch,
+                'total': total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss,
+                **{k: v.item() if isinstance(v, torch.Tensor) else v
+                   for k, v in loss_dict.items() if not k.endswith('_weighted') and k != 'total'}
+            })
+
+        return total_loss, loss_dict
+
     def _compute_box_loss(
         self,
         pred_boxes: torch.Tensor,
@@ -289,8 +400,11 @@ class LossManager(nn.Module):
         """
         Compute classification loss.
 
+        IMPORTANT: This method expects pred_scores to be already sigmoid-activated (range [0,1]),
+        NOT raw logits. This aligns with BoxHead design which uses nn.Sigmoid() in cls_head.
+
         Args:
-            pred_scores: Predicted classification scores [B, ...]
+            pred_scores: Predicted classification scores [B, ...], already sigmoid-activated in [0,1]
             target_labels: Target labels [B, ...]
             loss_type: Type of classification loss
 
@@ -298,8 +412,10 @@ class LossManager(nn.Module):
             Classification loss
         """
         if loss_type == 'bce':
-            return F.binary_cross_entropy_with_logits(
-                pred_scores,
+            # Clamp predictions to [0, 1] for numerical stability
+            pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
+            return F.binary_cross_entropy(
+                pred_scores_clamped,
                 target_labels.float(),
                 reduction=self.reduction
             )
@@ -310,8 +426,10 @@ class LossManager(nn.Module):
             focal_loss = QualityFocalLoss(reduction=self.reduction)
             return focal_loss(pred_scores, target_labels)
 
-        return F.binary_cross_entropy_with_logits(
-            pred_scores,
+        # Default fallback to BCE
+        pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
+        return F.binary_cross_entropy(
+            pred_scores_clamped,
             target_labels.float(),
             reduction=self.reduction
         )

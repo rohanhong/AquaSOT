@@ -142,16 +142,30 @@ def build_dataloaders(cfg):
     """Build training and validation dataloaders"""
     logger.info("Building dataloaders")
 
+    # Priority 3: Use config-driven data paths instead of hardcoded values
+    # Parse train_root and val_root from config (e.g., 'data/UUV2' -> data_root='data', sequence_name='UUV2')
+    train_path = Path(cfg.data.train_root)
+    val_path = Path(cfg.data.val_root)
+
+    # Extract data_root (parent) and sequence_name (name)
+    train_data_root = str(train_path.parent)
+    train_sequence_name = train_path.name
+    val_data_root = str(val_path.parent)
+    val_sequence_name = val_path.name
+
+    logger.info(f"Train data: {train_data_root}/{train_sequence_name}")
+    logger.info(f"Val data: {val_data_root}/{val_sequence_name}")
+
     # Create base datasets (single frames)
     train_base_dataset = RGBSonarDataset(
-        data_root='data',
-        sequence_name='uuv2',  # Will look in data/uuv2/light and data/uuv2/sonar
+        data_root=train_data_root,
+        sequence_name=train_sequence_name,
         return_occluded=True
     )
 
     val_base_dataset = RGBSonarDataset(
-        data_root='data',
-        sequence_name='uuv3',  # Will look in data/uuv3/light and data/uuv3/sonar
+        data_root=val_data_root,
+        sequence_name=val_sequence_name,
         return_occluded=True
     )
 
@@ -179,12 +193,24 @@ def build_dataloaders(cfg):
                 # Apply RGB transforms
                 if rgb_img is not None:
                     for transform in self.rgb_transforms:
-                        rgb_img = transform(rgb_img)
+                        # Check if transform accepts bbox parameter
+                        import inspect
+                        sig = inspect.signature(transform.__call__)
+                        if 'bbox' in sig.parameters:
+                            rgb_img = transform(rgb_img, bbox=rgb_bbox)
+                        else:
+                            rgb_img = transform(rgb_img)
 
-                # Apply Sonar transforms
+                # Apply Sonar transforms (pass bbox to avoid occluding target)
                 if sonar_img is not None:
                     for transform in self.sonar_transforms:
-                        sonar_img = transform(sonar_img)
+                        # Check if transform accepts bbox parameter
+                        import inspect
+                        sig = inspect.signature(transform.__call__)
+                        if 'bbox' in sig.parameters:
+                            sonar_img = transform(sonar_img, bbox=sonar_bbox)
+                        else:
+                            sonar_img = transform(sonar_img)
 
                 return {
                     'rgb_img': rgb_img,

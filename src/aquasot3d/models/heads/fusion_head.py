@@ -378,6 +378,11 @@ class FusionHead(BaseHead):
         rgb_confidence = self.rgb_uncertainty_estimator(rgb_features)  # (B,)
         sonar_confidence = self.sonar_uncertainty_estimator(sonar_features)  # (B,)
 
+        # CRITICAL: Clamp confidence scores to [0, 1] for numerical stability
+        # Sigmoid in FP16/AMP mode can occasionally produce values slightly outside [0, 1]
+        rgb_confidence = torch.clamp(rgb_confidence, min=0.0, max=1.0)
+        sonar_confidence = torch.clamp(sonar_confidence, min=0.0, max=1.0)
+
         # Adaptive fusion
         fused_features, fusion_weights = self.fusion_gate(
             rgb_features,
@@ -388,6 +393,10 @@ class FusionHead(BaseHead):
 
         # Predict quality score
         quality_score = self.quality_predictor(fused_features).squeeze(-1)  # (B,)
+
+        # CRITICAL: Clamp quality_score to [0, 1] for numerical stability
+        # This prevents CUDA assertion failures in BCE loss computation
+        quality_score = torch.clamp(quality_score, min=0.0, max=1.0)
 
         outputs = {
             'fused_features': fused_features,

@@ -1,7 +1,7 @@
 # AquaSOT-3D Training Guide
 
-**Version:** 1.0
-**Date:** 2025-11-12
+**Version:** 1.1
+**Date:** 2025-11-13
 
 ---
 
@@ -177,17 +177,32 @@ python scripts/train.py --config <config> \
     --opts training.batch_size=2 training.gradient_accumulation_steps=8
 ```
 
-### NaN Loss
+### NaN Loss / CUDA Assertion Failures
 
-Reduce learning rate:
+**Issue**: Training crashes with CUDA assertion error: `input_val >= zero && input_val <= one` or NaN loss appears early in training.
+
+**Root Cause**: AMP (FP16) numerical instability causing BCE loss computation to receive out-of-range values.
+
+**Solution 1 (Recommended)**: Disable AMP for numerical stability
+```bash
+python scripts/train.py --config <config> --opts system.use_amp=false
+```
+
+**Solution 2**: Try BFloat16 (better numerical range than FP16)
+```bash
+python scripts/train.py --config <config> --opts system.amp_dtype=bfloat16
+```
+
+**Solution 3**: Reduce learning rate if using AMP
 ```bash
 python scripts/train.py --config <config> --opts training.optimizer.lr=0.0001
 ```
 
-Enable gradient clipping (should be enabled by default):
-```bash
-python scripts/train.py --config <config> --opts training.grad_clip.max_norm=0.5
-```
+**Additional Debugging**:
+- Enable anomaly detection: `--opts debug.detect_anomaly=true`
+- Check specific log: `docs/audits/Stage3_BCE_CUDA_Error_Resolution.md`
+
+**Note**: FP32 training (AMP disabled) is ~30% slower but guarantees numerical stability for Stage 3 fusion training.
 
 ### Slow Training
 
@@ -207,4 +222,4 @@ python scripts/train.py --config <config> --opts data.num_workers=8
 
 ---
 
-**Last Updated:** 2025-11-12
+**Last Updated:** 2025-11-13
