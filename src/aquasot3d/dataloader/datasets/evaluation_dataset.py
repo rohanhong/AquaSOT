@@ -17,6 +17,7 @@ from typing import Dict, Optional, List
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset
+from ..transforms.sonar_transforms import letterbox_resize
 
 
 class EvaluationSequenceDataset(Dataset):
@@ -235,41 +236,60 @@ class EvaluationSequenceDataset(Dataset):
 
         Returns:
             Tensor of shape (C, target_size, target_size)
+
+        Note:
+            CRITICAL FIX (Audit 2025111408 Finding 2): For sonar images, use letterbox
+            padding to preserve aspect ratio and maintain sensor origin at cy=H-1.
+            This ensures training and evaluation use identical geometry.
         """
         if img is None:
             # Return zeros for None images (occluded frames)
             num_channels = 1 if is_sonar else 3
             return torch.zeros(num_channels, target_size, target_size)
 
-        if isinstance(img, np.ndarray):
-            # Convert HWC to CHW
-            if img.ndim == 3 and img.shape[2] in [1, 3]:
-                img = img.transpose(2, 0, 1)
+        # Convert to numpy array if tensor
+        if isinstance(img, torch.Tensor):
+            # Convert CHW to HWC for letterbox_resize
+            if img.ndim == 3 and img.shape[0] in [1, 3]:
+                img = img.permute(1, 2, 0).cpu().numpy()
             elif img.ndim == 2:
-                # Handle 2D grayscale images (H, W) -> (1, H, W)
-                img = img[np.newaxis, :, :]
-            # Convert to tensor
-            img = torch.from_numpy(img).float()
-        elif isinstance(img, torch.Tensor):
-            # Already tensor, ensure CHW format
-            if img.ndim == 2:
-                img = img.unsqueeze(0)
-            elif img.ndim == 3 and img.shape[0] not in [1, 3]:
-                img = img.permute(2, 0, 1)
+                img = img.cpu().numpy()
+            # Denormalize if in [0, 1] range
+            if img.max() <= 1.0:
+                img = (img * 255).astype(np.uint8)
+
+        # Ensure numpy array
+        if not isinstance(img, np.ndarray):
+            raise ValueError(f"Expected numpy array or tensor, got {type(img)}")
+
+        # Branch based on modality
+        if is_sonar:
+            # Sonar: Use letterbox padding to preserve aspect ratio (Audit 2025111408 Finding 2)
+            # This keeps sensor origin at cy=H-1 for log-polar transform
+            img_resized, (scale, pad_y, pad_x) = letterbox_resize(
+                img, (target_size, target_size), fill_value=0
+            )
+        else:
+            # RGB: Direct resize (no geometric constraints)
+            import cv2
+            img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        # Convert to tensor and normalize
+        # Handle different channel formats
+        if img_resized.ndim == 2:
+            # Grayscale (H, W) -> (1, H, W)
+            img_tensor = torch.from_numpy(img_resized).unsqueeze(0).float()
+        elif img_resized.ndim == 3:
+            # Color (H, W, C) -> (C, H, W)
+            img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float()
+        else:
+            raise ValueError(f"Unexpected image shape: {img_resized.shape}")
 
         # Normalize to [0, 1] if in [0, 255] range
-        if img.max() > 1.0:
-            img = img / 255.0
+        if img_tensor.max() > 1.0:
+            img_tensor = img_tensor / 255.0
 
-        # Resize to target size using bilinear interpolation
-        img = F.interpolate(
-            img.unsqueeze(0),
-            size=(target_size, target_size),
-            mode='bilinear',
-            align_corners=False
-        ).squeeze(0)
-
-        return img
+        return img_tensor
 
     def get_sequence_info(self) -> Dict:
         """

@@ -388,6 +388,13 @@ class Trainer:
             if 'sonar_boxes' in batch:
                 gt_boxes['sonar'] = batch['sonar_boxes']
 
+            # CRITICAL FIX (Audit 2025111408 Finding 3):
+            # Add pixel coordinates for quality estimators
+            if 'rgb_boxes_pixels' in batch:
+                gt_boxes['rgb_pixels'] = batch['rgb_boxes_pixels']
+            if 'sonar_boxes_pixels' in batch:
+                gt_boxes['sonar_pixels'] = batch['sonar_boxes_pixels']
+
             # Priority 0.2: Add fusion GT fallback (use RGB GT as fusion target)
             if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                 gt_boxes['fusion'] = gt_boxes['rgb']
@@ -527,6 +534,13 @@ class Trainer:
                     gt_boxes['rgb'] = batch['rgb_boxes']
                 if 'sonar_boxes' in batch:
                     gt_boxes['sonar'] = batch['sonar_boxes']
+
+                # CRITICAL FIX (Audit 2025111408 Finding 3):
+                # Add pixel coordinates for quality estimators
+                if 'rgb_boxes_pixels' in batch:
+                    gt_boxes['rgb_pixels'] = batch['rgb_boxes_pixels']
+                if 'sonar_boxes_pixels' in batch:
+                    gt_boxes['sonar_pixels'] = batch['sonar_boxes_pixels']
 
                 # Add fusion GT fallback
                 if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:

@@ -720,17 +720,23 @@ class AquaSOT3DTracker(BaseModule):
         B = fused_features.shape[0]
 
         # 3.1 Physical quality estimation (SNR/Sharpness)
+        # CRITICAL FIX (Audit 2025111408 Finding 3):
+        # Quality estimators need pixel coordinates, not normalized coordinates
         if self.use_quality_gating and self.rgb_quality_estimator is not None:
+            # Get pixel bboxes if available, otherwise use None (full frame quality)
+            rgb_bbox_pixels = gt_boxes.get('rgb_pixels') if gt_boxes is not None else None
+            sonar_bbox_pixels = gt_boxes.get('sonar_pixels') if gt_boxes is not None else None
+
             # Estimate RGB quality based on sharpness/blur
             rgb_quality = self.rgb_quality_estimator(
                 rgb_frame=rgb_search,
-                bbox=gt_boxes.get('rgb') if gt_boxes is not None else None
+                bbox=rgb_bbox_pixels
             )  # (B, 1)
 
             # Estimate Sonar quality based on SNR/speckle
             sonar_quality = self.sonar_quality_estimator(
                 sonar_frame=sonar_search,
-                bbox=gt_boxes.get('sonar') if gt_boxes is not None else None
+                bbox=sonar_bbox_pixels
             )  # (B, 1)
         else:
             # No quality gating: use default high quality scores

@@ -464,3 +464,79 @@ class SonarTransformPipeline:
             img = torch.from_numpy(img.copy())
 
         return img
+
+
+def letterbox_resize(
+    img: np.ndarray,
+    target_size: Tuple[int, int],
+    fill_value: int = 0
+) -> Tuple[np.ndarray, Tuple[float, int, int]]:
+    """
+    Resize image with aspect ratio preservation using letterbox padding.
+
+    CRITICAL FIX (Audit 2025111408 Finding 2):
+    Sonar images have specific aspect ratios (682x376 ≈ 1.81:1) that encode
+    different spatial units along range and azimuth. Warping to squares breaks
+    the log-polar transform assumption of isotropic pixels.
+
+    This function preserves aspect ratio by:
+    1. Scaling to fit within target size
+    2. Padding the remainder to reach exact target size
+
+    Args:
+        img: Input image (H, W) or (H, W, C)
+        target_size: Desired output size (H, W)
+        fill_value: Padding fill value (default: 0 for black)
+
+    Returns:
+        Tuple of:
+            - Padded image (target_H, target_W, C)
+            - Metadata (scale, pad_top, pad_left) for coordinate adjustment
+
+    Example:
+        >>> img = np.random.rand(376, 682)  # Original sonar
+        >>> resized, (scale, pad_y, pad_x) = letterbox_resize(img, (256, 256))
+        >>> resized.shape
+        (256, 256)
+    """
+    H, W = img.shape[:2]
+    target_H, target_W = target_size
+
+    # Calculate scale factor to fit within target (preserve aspect ratio)
+    scale = min(target_H / H, target_W / W)
+
+    # New dimensions after scaling
+    new_H = int(H * scale)
+    new_W = int(W * scale)
+
+    # Resize image maintaining aspect ratio
+    resized = cv2.resize(img, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
+
+    # CRITICAL FIX (Audit 2025111408 Finding 1 remediation):
+    # For sonar images, the sensor origin MUST remain at bottom-center (cx=W/2, cy=H-1)
+    # Therefore, we place ALL vertical padding on TOP (not centered)
+    # This ensures the sensor position stays at the bottom edge after padding
+
+    # Horizontal padding: center the image (sensor stays at horizontal center)
+    pad_left = (target_W - new_W) // 2
+    pad_right = target_W - new_W - pad_left
+
+    # Vertical padding: ALL on top to keep sensor at bottom
+    pad_top = target_H - new_H  # All remaining space goes to top
+    pad_bottom = 0              # No padding at bottom (sensor stays at cy=H-1)
+
+    # Pad to target size
+    if resized.ndim == 2:
+        padded = cv2.copyMakeBorder(
+            resized, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=fill_value
+        )
+    else:
+        padded = cv2.copyMakeBorder(
+            resized, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=[fill_value] * resized.shape[2]
+        )
+
+    # Return image and metadata for coordinate adjustment
+    # Note: pad_top is now the TOTAL vertical padding (all on top)
+    return padded, (scale, pad_top, pad_left)

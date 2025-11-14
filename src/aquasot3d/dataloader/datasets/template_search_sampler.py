@@ -24,6 +24,7 @@ import numpy as np
 import cv2
 
 from ...core.registry import SAMPLER_REGISTRY
+from ..transforms.sonar_transforms import letterbox_resize
 
 
 def expand_bbox(
@@ -394,13 +395,12 @@ class TemplateSearchSampler:
         search_region_rgb = expand_bbox(
             prev_bbox_rgb, scale=self.search_scale, img_shape=search_rgb.shape[:2]
         )
-        search_region_sonar = expand_bbox(
-            prev_bbox_sonar, scale=self.search_scale, img_shape=search_sonar.shape[:2]
-        )
 
-        # Crop search regions
+        # CRITICAL FIX (Audit 2025111408 Finding 1): Do NOT crop sonar search frames
+        # Sonar needs full fan to preserve sensor origin at (cx=W/2, cy=H-1) for log-polar transform
+        # Only crop RGB search frame
         search_crop_rgb = crop_image(search_rgb, search_region_rgb)
-        search_crop_sonar = crop_image(search_sonar, search_region_sonar)
+        search_crop_sonar = search_sonar  # Keep full sonar frame (no crop)
 
         # Normalize GT bboxes to search region coordinates and scale to target size
         # CRITICAL FIX (Audit 2025111405): Pass target_size to scale bboxes after crop+resize
@@ -412,41 +412,61 @@ class TemplateSearchSampler:
             # Use zero bbox for occluded frames
             search_bbox_normalized_rgb = np.zeros(4, dtype=np.float32)
 
+        # Sonar bbox: no crop normalization needed since we keep full frame
+        # Just use original bbox (will be adjusted for letterbox padding later)
         if not sonar_occluded:
-            search_bbox_normalized_sonar = normalize_bbox_to_crop(
-                sonar_bbox_search, search_region_sonar, target_size=self.search_size
-            )
+            search_bbox_normalized_sonar = sonar_bbox_search.copy()
         else:
             search_bbox_normalized_sonar = np.zeros(4, dtype=np.float32)
 
         # Resize to target sizes
+        # RGB: direct resize (no geometric constraints)
         template_rgb_resized = cv2.resize(
             template_rgb, self.template_size[::-1], interpolation=cv2.INTER_LINEAR
-        )
-        template_sonar_resized = cv2.resize(
-            template_sonar, self.template_size[::-1], interpolation=cv2.INTER_LINEAR
         )
         search_rgb_resized = cv2.resize(
             search_crop_rgb, self.search_size[::-1], interpolation=cv2.INTER_LINEAR
         )
-        search_sonar_resized = cv2.resize(
-            search_crop_sonar, self.search_size[::-1], interpolation=cv2.INTER_LINEAR
+
+        # Sonar: letterbox padding to preserve aspect ratio (Audit 2025111408 Finding 2)
+        # This prevents log-polar transform distortion from anisotropic warping
+        template_sonar_resized, (t_sonar_scale, t_sonar_pad_y, t_sonar_pad_x) = letterbox_resize(
+            template_sonar, self.template_size, fill_value=0
         )
+        search_sonar_resized, (s_sonar_scale, s_sonar_pad_y, s_sonar_pad_x) = letterbox_resize(
+            search_crop_sonar, self.search_size, fill_value=0
+        )
+
+        # Adjust sonar template bbox for letterbox padding
+        # Original bbox [x, y, w, h] -> scaled + padded
+        template_bbox_sonar_adjusted = template_bbox_sonar.copy()
+        template_bbox_sonar_adjusted[0] = template_bbox_sonar[0] * t_sonar_scale + t_sonar_pad_x  # x
+        template_bbox_sonar_adjusted[1] = template_bbox_sonar[1] * t_sonar_scale + t_sonar_pad_y  # y
+        template_bbox_sonar_adjusted[2] = template_bbox_sonar[2] * t_sonar_scale  # w
+        template_bbox_sonar_adjusted[3] = template_bbox_sonar[3] * t_sonar_scale  # h
+
+        # Adjust sonar search bbox for letterbox padding
+        # search_bbox_normalized_sonar is already in search crop coordinates
+        if not sonar_occluded:
+            search_bbox_normalized_sonar[0] = search_bbox_normalized_sonar[0] * s_sonar_scale + s_sonar_pad_x
+            search_bbox_normalized_sonar[1] = search_bbox_normalized_sonar[1] * s_sonar_scale + s_sonar_pad_y
+            search_bbox_normalized_sonar[2] = search_bbox_normalized_sonar[2] * s_sonar_scale
+            search_bbox_normalized_sonar[3] = search_bbox_normalized_sonar[3] * s_sonar_scale
 
         # Build sample dictionary
         sample = {
             'template_rgb': template_rgb_resized,
             'template_sonar': template_sonar_resized,
             'template_bbox_rgb': template_bbox_rgb,
-            'template_bbox_sonar': template_bbox_sonar,
+            'template_bbox_sonar': template_bbox_sonar_adjusted,  # Use letterbox-adjusted bbox
 
             'search_rgb': search_rgb_resized,
             'search_sonar': search_sonar_resized,
             'search_bbox_rgb': search_bbox_normalized_rgb,
-            'search_bbox_sonar': search_bbox_normalized_sonar,
+            'search_bbox_sonar': search_bbox_normalized_sonar,  # Already adjusted above
 
             'search_region_rgb': search_region_rgb,
-            'search_region_sonar': search_region_sonar,
+            # Note: search_region_sonar not included - sonar uses full frame (no crop)
 
             'template_idx': template_idx,
             'search_idx': search_idx,

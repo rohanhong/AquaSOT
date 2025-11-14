@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset, MultiSequenceRGBSonarDataset
+from ..transforms.sonar_transforms import letterbox_resize
 
 
 class TrackingDataset(Dataset):
@@ -174,17 +175,26 @@ class TrackingDataset(Dataset):
             sequence_name = seq_info['sequence_name']
 
         # Prepare images and get per-axis scale factors
-        rgb_template, rgb_template_scale_x, rgb_template_scale_y = self._prepare_image(template_data['rgb_img'], self.template_size, is_sonar=False)
-        rgb_search, rgb_search_scale_x, rgb_search_scale_y = self._prepare_image(search_data['rgb_img'], self.search_size, is_sonar=False)
-        sonar_template, sonar_template_scale_x, sonar_template_scale_y = self._prepare_image(template_data['sonar_img'], self.template_size, is_sonar=True)
-        sonar_search, sonar_search_scale_x, sonar_search_scale_y = self._prepare_image(search_data['sonar_img'], self.search_size, is_sonar=True)
+        rgb_template, rgb_template_scale_x, rgb_template_scale_y, rgb_t_pad_x, rgb_t_pad_y = self._prepare_image(template_data['rgb_img'], self.template_size, is_sonar=False)
+        rgb_search, rgb_search_scale_x, rgb_search_scale_y, rgb_s_pad_x, rgb_s_pad_y = self._prepare_image(search_data['rgb_img'], self.search_size, is_sonar=False)
+        sonar_template, sonar_template_scale_x, sonar_template_scale_y, sonar_t_pad_x, sonar_t_pad_y = self._prepare_image(template_data['sonar_img'], self.template_size, is_sonar=True)
+        sonar_search, sonar_search_scale_x, sonar_search_scale_y, sonar_s_pad_x, sonar_s_pad_y = self._prepare_image(search_data['sonar_img'], self.search_size, is_sonar=True)
 
         # Scale bounding boxes to match resized images with per-axis scaling
         # CRITICAL FIX (Audit 2025111405 Requirement #1): Use separate scale_x and scale_y
+        # CRITICAL FIX (Audit 2025111408 Finding 2): Add padding offsets for letterbox sonar
         template_bbox_rgb_scaled = self._scale_bbox(template_data['rgb_bbox'], rgb_template_scale_x, rgb_template_scale_y)
-        template_bbox_sonar_scaled = self._scale_bbox(template_data['sonar_bbox'], sonar_template_scale_x, sonar_template_scale_y)
         search_bbox_rgb_scaled = self._scale_bbox(search_data['rgb_bbox'], rgb_search_scale_x, rgb_search_scale_y)
-        search_bbox_sonar_scaled = self._scale_bbox(search_data['sonar_bbox'], sonar_search_scale_x, sonar_search_scale_y)
+
+        # Sonar bboxes need letterbox padding adjustments
+        template_bbox_sonar_scaled = self._scale_bbox_with_padding(
+            template_data['sonar_bbox'], sonar_template_scale_x, sonar_template_scale_y,
+            sonar_t_pad_x, sonar_t_pad_y
+        )
+        search_bbox_sonar_scaled = self._scale_bbox_with_padding(
+            search_data['sonar_bbox'], sonar_search_scale_x, sonar_search_scale_y,
+            sonar_s_pad_x, sonar_s_pad_y
+        )
 
         # Build tracking pair
         pair = {
@@ -321,67 +331,74 @@ class TrackingDataset(Dataset):
             is_sonar: If True, prepare as 1-channel grayscale; if False, as 3-channel RGB
 
         Returns:
-            Tuple of (resized_tensor, scale_x, scale_y):
+            Tuple of (resized_tensor, scale_x, scale_y, pad_x, pad_y):
                 - resized_tensor: Tensor of shape (C, target_size, target_size) where C=1 for sonar, C=3 for RGB
-                - scale_x: float, x-axis scale factor (target_size / original_width)
-                - scale_y: float, y-axis scale factor (target_size / original_height)
+                - scale_x: float, x-axis scale factor
+                - scale_y: float, y-axis scale factor
+                - pad_x: int, left padding offset (0 for RGB direct resize)
+                - pad_y: int, top padding offset (0 for RGB direct resize)
 
         Note:
-            CRITICAL FIX (Audit 2025111405 Requirement #1): Returns separate per-axis scale factors
-            instead of averaged scale_factor. This prevents geometry distortion when resizing
-            non-square images (e.g., 1920x1080 -> 255x255). Using averaged scale would cause:
-            - x-coords over-scaled by ~39% (0.1845/0.1328)
-            - y-coords under-scaled by ~22% (0.1845/0.2361)
-            leading to incorrect normalized bbox labels.
+            CRITICAL FIX (Audit 2025111408 Finding 2): For sonar images, use letterbox padding
+            to preserve aspect ratio and prevent log-polar transform distortion. RGB images
+            use direct resize as before (no geometric constraints).
         """
         if img is None:
             # Return zeros for None images (occluded frames)
             num_channels = 1 if is_sonar else 3
-            return torch.zeros(num_channels, target_size, target_size), 1.0, 1.0
+            return torch.zeros(num_channels, target_size, target_size), 1.0, 1.0, 0, 0
 
-        # Store original size for scale factor calculation
-        if isinstance(img, np.ndarray):
-            original_h, original_w = img.shape[:2]
-            # Convert HWC to CHW
-            if img.ndim == 3 and img.shape[2] in [1, 3]:
-                img = img.transpose(2, 0, 1)
+        # Convert to numpy array if tensor
+        if isinstance(img, torch.Tensor):
+            # Convert CHW to HWC for letterbox_resize
+            if img.ndim == 3 and img.shape[0] in [1, 3]:
+                img = img.permute(1, 2, 0).cpu().numpy()
             elif img.ndim == 2:
-                # Handle 2D grayscale images (H, W) -> (1, H, W)
-                img = img[np.newaxis, :, :]
-            # Convert to tensor
-            img = torch.from_numpy(img).float()
-        elif isinstance(img, torch.Tensor):
-            # Already tensor, ensure CHW format
-            if img.ndim == 2:
-                # Handle 2D grayscale tensors (H, W) -> (1, H, W)
-                img = img.unsqueeze(0)
-                original_h, original_w = img.shape[1], img.shape[2]
-            elif img.ndim == 3 and img.shape[0] not in [1, 3]:
-                original_h, original_w = img.shape[0], img.shape[1]
-                img = img.permute(2, 0, 1)
-            else:
-                original_h, original_w = img.shape[1], img.shape[2]
+                img = img.cpu().numpy()
+            # Denormalize if in [0, 1] range
+            if img.max() <= 1.0:
+                img = (img * 255).astype(np.uint8)
+
+        # Ensure numpy array
+        if not isinstance(img, np.ndarray):
+            raise ValueError(f"Expected numpy array or tensor, got {type(img)}")
+
+        original_h, original_w = img.shape[:2]
+
+        # Branch based on modality
+        if is_sonar:
+            # Sonar: Use letterbox padding to preserve aspect ratio (Audit 2025111408 Finding 2)
+            img_resized, (scale, pad_y, pad_x) = letterbox_resize(
+                img, (target_size, target_size), fill_value=0
+            )
+            # Letterbox returns isotropic scale, so scale_x = scale_y = scale
+            scale_x = scale
+            scale_y = scale
+        else:
+            # RGB: Direct resize (no geometric constraints)
+            import cv2
+            img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+            scale_x = target_size / original_w
+            scale_y = target_size / original_h
+            pad_x = 0
+            pad_y = 0
+
+        # Convert to tensor and normalize
+        # Handle different channel formats
+        if img_resized.ndim == 2:
+            # Grayscale (H, W) -> (1, H, W)
+            img_tensor = torch.from_numpy(img_resized).unsqueeze(0).float()
+        elif img_resized.ndim == 3:
+            # Color (H, W, C) -> (C, H, W)
+            img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float()
+        else:
+            raise ValueError(f"Unexpected image shape: {img_resized.shape}")
 
         # Normalize to [0, 1] if in [0, 255] range
-        if img.max() > 1.0:
-            img = img / 255.0
+        if img_tensor.max() > 1.0:
+            img_tensor = img_tensor / 255.0
 
-        # Resize to target size using bilinear interpolation
-        # Add batch dimension, resize, remove batch dimension
-        img = F.interpolate(
-            img.unsqueeze(0),
-            size=(target_size, target_size),
-            mode='bilinear',
-            align_corners=False
-        ).squeeze(0)
-
-        # Calculate per-axis scale factors (CRITICAL: separate x and y scales)
-        # For non-square images resized to square (e.g., 1920x1080 -> 255x255):
-        # scale_x = 255/1920 = 0.1328, scale_y = 255/1080 = 0.2361
-        scale_x = target_size / original_w
-        scale_y = target_size / original_h
-
-        return img, scale_x, scale_y
+        return img_tensor, scale_x, scale_y, pad_x, pad_y
 
     def _scale_bbox(self, bbox, scale_x, scale_y):
         """
@@ -419,4 +436,39 @@ class TrackingDataset(Dataset):
             y * scale_y,  # Scale y-coordinate by y-axis factor
             w * scale_x,  # Scale width by x-axis factor
             h * scale_y   # Scale height by y-axis factor
+        ], dtype=np.float32)
+
+    def _scale_bbox_with_padding(self, bbox, scale_x, scale_y, pad_x, pad_y):
+        """
+        Scale bounding box coordinates and add padding offsets for letterbox resizing.
+
+        CRITICAL FIX (Audit 2025111408 Finding 2): For sonar images resized with letterbox
+        padding, bounding boxes must be both scaled and offset by the padding amount.
+
+        Args:
+            bbox: Bounding box in [x, y, w, h] format (pixel coordinates)
+            scale_x: X-axis scale factor
+            scale_y: Y-axis scale factor
+            pad_x: Left padding offset (pixels)
+            pad_y: Top padding offset (pixels)
+
+        Returns:
+            Scaled and padded bounding box in [x, y, w, h] format
+
+        Example:
+            >>> # Original 682x376 sonar with bbox [300, 150, 100, 80]
+            >>> # Letterbox to 256x256: scale=0.3733, pad_x=126, pad_y=58
+            >>> scaled = _scale_bbox_with_padding([300, 150, 100, 80], 0.3733, 0.3733, 126, 58)
+            >>> # Result: x=300*0.3733+126=238, y=150*0.3733+58=114, w=37, h=30
+        """
+        if bbox is None or len(bbox) != 4:
+            return bbox
+
+        # Apply scaling and padding
+        x, y, w, h = bbox
+        return np.array([
+            x * scale_x + pad_x,  # Scale and offset x-coordinate
+            y * scale_y + pad_y,  # Scale and offset y-coordinate
+            w * scale_x,          # Scale width (no padding)
+            h * scale_y           # Scale height (no padding)
         ], dtype=np.float32)

@@ -141,7 +141,7 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
     bbox_keys = [
         'template_bbox_rgb', 'template_bbox_sonar',
         'search_bbox_rgb', 'search_bbox_sonar',
-        'search_region_rgb', 'search_region_sonar',
+        'search_region_rgb',  # Only RGB search region (sonar uses full frame per Audit 2025111408)
         'rgb_boxes', 'sonar_boxes'  # Trainer-expected keys for loss computation
     ]
 
@@ -181,12 +181,20 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
                 # Generic fallback (256x256)
                 img_w, img_h = 256.0, 256.0
 
-            # Convert [x, y, w, h] to [cx, cy, w, h] and normalize
-            # cx = (x + w/2) / img_w, cy = (y + h/2) / img_h
-            # w_norm = w / img_w, h_norm = h / img_h
+            # CRITICAL FIX (Audit 2025111408 Finding 3):
+            # Store BOTH pixel coordinates (for quality estimators) and normalized (for losses)
+            # Quality estimators need pixel xywh to crop ROIs correctly
+
             bbox_tensor = batched[key].clone()
             x, y, w, h = bbox_tensor[:, 0], bbox_tensor[:, 1], bbox_tensor[:, 2], bbox_tensor[:, 3]
 
+            # Store original pixel coordinates in xywh format for quality estimation
+            pixel_key = key + '_pixels'
+            batched[pixel_key] = bbox_tensor.clone()  # Keep pixel xywh
+
+            # Convert [x, y, w, h] to [cx, cy, w, h] and normalize for losses
+            # cx = (x + w/2) / img_w, cy = (y + h/2) / img_h
+            # w_norm = w / img_w, h_norm = h / img_h
             cx = (x + w / 2.0) / img_w
             cy = (y + h / 2.0) / img_h
             w_norm = w / img_w
