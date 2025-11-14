@@ -504,6 +504,11 @@ class Trainer:
         """
         self.model.eval()
 
+        # Reset temporal state at the start of validation epoch
+        # Prevents cross-sequence state leakage in adaptive weighting and temporal modules
+        if hasattr(self.model, 'reset_temporal_state'):
+            self.model.reset_temporal_state()
+
         val_metrics = defaultdict(float)
         val_counts = defaultdict(int)
 

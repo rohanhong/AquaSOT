@@ -2047,6 +2047,61 @@ bbox = center_to_bbox(center, size)  # [[10, 10, 50, 50]]
 
 ---
 
+### Bounding Box Conversion Utilities
+
+**Module: `aquasot3d.utils.bbox_utils`**
+
+Utilities for converting bounding boxes between different coordinate formats.
+
+**Function: `convert_boxes(boxes, in_fmt, out_fmt)`**
+
+Convert bounding boxes between different coordinate formats.
+
+**Supported Formats:**
+- `'xyxy'`: [x_min, y_min, x_max, y_max] (top-left and bottom-right corners)
+- `'xywh'`: [x_min, y_min, width, height] (top-left corner and dimensions)
+- `'cxcywh'`: [center_x, center_y, width, height] (center point and dimensions)
+
+**Parameters:**
+- `boxes` (Tensor): Input boxes with shape (N, 4)
+- `in_fmt` (str): Input format ('xyxy', 'xywh', or 'cxcywh')
+- `out_fmt` (str): Output format ('xyxy', 'xywh', or 'cxcywh')
+
+**Returns:**
+- Tensor: Converted boxes with shape (N, 4)
+
+**Example:**
+
+```python
+from aquasot3d.utils.bbox_utils import convert_boxes
+import torch
+
+# Convert from corner format to center format
+boxes_xyxy = torch.tensor([[10, 20, 110, 70]])  # [x_min, y_min, x_max, y_max]
+boxes_cxcywh = convert_boxes(boxes_xyxy, in_fmt='xyxy', out_fmt='cxcywh')
+# Result: [[60, 45, 100, 50]] (center_x, center_y, width, height)
+
+# Convert from center format to top-left format
+boxes_xywh = convert_boxes(boxes_cxcywh, in_fmt='cxcywh', out_fmt='xywh')
+# Result: [[10, 20, 100, 50]] (x_min, y_min, width, height)
+
+# Batch conversion
+boxes_batch = torch.tensor([
+    [10, 20, 110, 70],
+    [50, 50, 150, 100]
+])
+boxes_converted = convert_boxes(boxes_batch, in_fmt='xyxy', out_fmt='cxcywh')
+# Shape: (2, 4)
+```
+
+**Notes:**
+- All conversions preserve the batch dimension
+- Input and output tensors share the same dtype and device
+- Introduced in Audit 2025111405 to fix coordinate format bugs
+- See `docs/audits/2025111405_Audit.md` for detailed conversion formulas
+
+---
+
 **Class: `CyclicConsistencyLoss`**
 
 3D→2D→3D cyclic consistency loss.

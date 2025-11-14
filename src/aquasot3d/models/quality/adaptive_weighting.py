@@ -96,29 +96,46 @@ class AdaptiveWeighting(BaseModule):
             q_sonar: Current Sonar quality (B, 1)
 
         Returns:
-            Smoothed quality scores
+            Smoothed quality scores (B, 1)
         """
-        if self.training or self.ema_q_rgb is None:
-            # Initialize or update during training
-            self.ema_q_rgb = q_rgb.detach().mean(dim=0, keepdim=True)
-            self.ema_q_sonar = q_sonar.detach().mean(dim=0, keepdim=True)
+        # Compute batch mean (detached to prevent gradient flow)
+        mean_rgb = q_rgb.detach().mean(dim=0, keepdim=True)  # (1, 1)
+        mean_sonar = q_sonar.detach().mean(dim=0, keepdim=True)  # (1, 1)
+
+        # Initialize buffers on first call
+        if self.ema_q_rgb is None:
+            self.ema_q_rgb = mean_rgb
+            self.ema_q_sonar = mean_sonar
+            # Return original values on initialization
             return q_rgb, q_sonar
-        else:
-            # Apply EMA during inference
-            q_rgb_smoothed = (
-                self.ema_alpha * self.ema_q_rgb +
-                (1 - self.ema_alpha) * q_rgb
-            )
-            q_sonar_smoothed = (
-                self.ema_alpha * self.ema_q_sonar +
-                (1 - self.ema_alpha) * q_sonar
-            )
 
-            # Update EMA buffers
-            self.ema_q_rgb = q_rgb_smoothed.detach()
-            self.ema_q_sonar = q_sonar_smoothed.detach()
+        # Apply EMA update (both training and inference)
+        self.ema_q_rgb = (
+            self.ema_alpha * self.ema_q_rgb +
+            (1 - self.ema_alpha) * mean_rgb
+        )
+        self.ema_q_sonar = (
+            self.ema_alpha * self.ema_q_sonar +
+            (1 - self.ema_alpha) * mean_sonar
+        )
 
-            return q_rgb_smoothed, q_sonar_smoothed
+        # Broadcast scalar buffers to match batch size
+        q_rgb_smoothed = self.ema_q_rgb.expand_as(q_rgb)
+        q_sonar_smoothed = self.ema_q_sonar.expand_as(q_sonar)
+
+        return q_rgb_smoothed, q_sonar_smoothed
+
+    def reset_state(self):
+        """
+        Reset temporal state (EMA buffers).
+
+        Call this method at the start of each new sequence or epoch
+        to prevent cross-sequence state leakage.
+        """
+        if self.temporal_smoothing:
+            self.ema_q_rgb = None
+            self.ema_q_sonar = None
+            self.logger.debug("Reset AdaptiveWeighting temporal state")
 
     def compute_weights_softmax(
         self,

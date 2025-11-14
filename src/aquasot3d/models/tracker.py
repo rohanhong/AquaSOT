@@ -349,6 +349,8 @@ class AquaSOT3DTracker(BaseModule):
             self.temporal_head.reset_state()
         if self.temporal_aggregator is not None and hasattr(self.temporal_aggregator, 'reset'):
             self.temporal_aggregator.reset()
+        if self.adaptive_weighting is not None and hasattr(self.adaptive_weighting, 'reset_state'):
+            self.adaptive_weighting.reset_state()
 
     def extract_backbone_features(
         self,
