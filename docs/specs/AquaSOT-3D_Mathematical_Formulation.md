@@ -17,7 +17,8 @@
 6. [Weak 3D Center Estimation](#6-weak-3d-center-estimation)
 7. [Geometric Cyclic Projection](#7-geometric-cyclic-projection)
 8. [Complete Loss Function and Optimization](#8-complete-loss-function-and-optimization)
-9. [References](#9-references)
+9. [Evaluation Metrics](#9-evaluation-metrics)
+10. [References](#10-references)
 
 ---
 
@@ -39,10 +40,10 @@ $$
 $$
 
 where:
-- $I_t^{\text{rgb}} \in \mathbb{R}^{3 \times H_{\text{rgb}} \times W_{\text{rgb}}}$: RGB image (e.g., $1920 \times 1080$)
-- $I_t^{\text{sonar}} \in \mathbb{R}^{1 \times H_{\text{sonar}} \times W_{\text{sonar}}}$: Sonar intensity image (e.g., $682 \times 376$, fan-shaped FOV)
-- $B_t^{\text{rgb}} = (x_t^{\text{rgb}}, y_t^{\text{rgb}}, w_t^{\text{rgb}}, h_t^{\text{rgb}})$: RGB bounding box annotation (training only)
-- $B_t^{\text{sonar}} = (x_t^{\text{sonar}}, y_t^{\text{sonar}}, w_t^{\text{sonar}}, h_t^{\text{sonar}})$: Sonar bounding box annotation (training only)
+- $I_t^{\text{rgb}} \in \mathbb{R}^{3 \times H_{\text{rgb}} \times W_{\text{rgb}}}$: RGB image (standard: $1080 \times 1920$)
+- $I_t^{\text{sonar}} \in \mathbb{R}^{1 \times H_{\text{sonar}} \times W_{\text{sonar}}}$: Sonar intensity image (standard: $376 \times 682$, fan-shaped FOV)
+- $B_t^{\text{rgb}} = (c_x^{\text{rgb}}, c_y^{\text{rgb}}, w_t^{\text{rgb}}, h_t^{\text{rgb}})$: RGB bounding box in cxcywh format (training only)
+- $B_t^{\text{sonar}} = (c_x^{\text{sonar}}, c_y^{\text{sonar}}, w_t^{\text{sonar}}, h_t^{\text{sonar}})$: Sonar bounding box in cxcywh format (training only)
 
 **Missing Frame Handling**: When modality $m$ is occluded or unavailable, $B_t^{m} = (0, 0, 0, 0)$ and the system applies visibility gating.
 
@@ -70,6 +71,20 @@ X &: \text{Horizontal (right positive)} \\
 Y &: \text{Vertical (down positive, image convention)} \\
 Z &: \text{Depth/Forward (away from sensor positive)}
 \end{cases}
+$$
+
+**Bounding Box Formats**:
+- **cxcywh**: $(c_x, c_y, w, h)$ - center point + width/height (model internal format)
+- **xywh**: $(x, y, w, h)$ - top-left corner + width/height (dataset format)
+- **xyxy**: $(x_1, y_1, x_2, y_2)$ - top-left + bottom-right corners (IoU computation)
+
+**Format Conversions**:
+$$
+\begin{aligned}
+\text{cxcywh} \rightarrow \text{xywh}: & \quad (x, y, w, h) = (c_x - w/2, c_y - h/2, w, h) \\
+\text{xywh} \rightarrow \text{cxcywh}: & \quad (c_x, c_y, w, h) = (x + w/2, y + h/2, w, h) \\
+\text{cxcywh} \rightarrow \text{xyxy}: & \quad (x_1, y_1, x_2, y_2) = (c_x - w/2, c_y - h/2, c_x + w/2, c_y + h/2)
+\end{aligned}
 $$
 
 **Alignment**: RGB frame is aligned with Fusion frame; Sonar-to-Fusion transformation is learned implicitly.
@@ -135,19 +150,27 @@ Linear-complexity SSM for long-sequence tracking:
 
 | Symbol | Description | Dimension |
 |--------|-------------|-----------|
-| $\alpha, \beta$ | Learnable log-polar scales | $\mathbb{R}_{+}$ |
-| $\mathbf{r}$ | Radial activation profile | $\mathbb{R}^{B \times N_{\text{bins}}}$ |
+| $\alpha, \beta$ | Learnable log-polar scales | $\mathbb{R}_{+}$ (initialized to 1.0) |
+| $\mathbf{r}$ | Radial activation profile | $\mathbb{R}^{B \times N_{\text{bins}}}$ ($N_{\text{bins}} = 50$) |
 | $\mathbf{s}$ | Scale pyramid encoding | $\mathbb{R}^{B \times D_s}$ |
-| $\mathbf{g}$ | Geometric gating weights | $\mathbb{R}^{B \times N_{\text{heads}}}$ |
-| $\Delta \mathbf{p}$ | Deformable sampling offsets | $\mathbb{R}^{B \times N_q \times H \times K \times 2}$ |
+| $\mathbf{g}$ | Geometric gating weights | $\mathbb{R}^{B \times N_{\text{heads}}}$ ($N_{\text{heads}} = 8$) |
+| $\Delta \mathbf{p}$ | Deformable sampling offsets | $\mathbb{R}^{B \times N_q \times H \times K \times 2}$ ($K = 4$) |
+| $\tau$ | InfoNCE temperature | 0.07 |
+| $\epsilon$ | Numerical stability constant | $10^{-6}$ or $10^{-7}$ |
 
 ### 2.2 Operation Notation
 
-- $\otimes$: Element-wise multiplication (Hadamard product)
+- $\otimes$ or $\odot$: Element-wise multiplication (Hadamard product)
 - $\oplus$: Element-wise addition
-- $\||\cdot\||_p$: $L_p$ norm
+- $\|\cdot\|_1$: L1 norm
+- $\|\cdot\|_2$: L2 norm
+- $\|\cdot\|_p$: $L_p$ norm
+- $[\cdot;\cdot]$: Concatenation
 - $\sigma(\cdot)$: Sigmoid function $\frac{1}{1 + e^{-x}}$
 - $\text{softmax}(\cdot)$: Softmax normalization $\frac{e^{x_i}}{\sum_j e^{x_j}}$
+- $\text{softplus}(\cdot)$: Softplus function $\log(1 + e^x)$
+- $\text{GAP}(\cdot)$: Global Average Pooling
+- $\mathbb{1}[\cdot]$: Indicator function
 - $\text{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V})$: Attention mechanism
 
 ---
@@ -253,13 +276,15 @@ G²-DCMA is the **core fusion module** that integrates three complementary mecha
 
 Given sonar feature map $\mathcal{F}^{\text{sonar}} \in \mathbb{R}^{B \times C \times H' \times W'}$:
 
-1. **Compute radial distance map**:
+1. **Compute radial distance map** (sensor at bottom-center):
 
 $$
 R(i, j) = \sqrt{(j - c_x)^2 + (i - c_y)^2}, \quad \forall (i, j) \in [0, H') \times [0, W')
 $$
 
-2. **Discretize into $N_{\text{bins}}$ radial bins**:
+where $(c_x, c_y) = (W'/2, H'-1)$ for standard upward-facing FLS.
+
+2. **Discretize into $N_{\text{bins}} = 50$ radial bins**:
 
 $$
 \text{bin}(i, j) = \left\lfloor \frac{R(i, j)}{R_{\max}} \cdot (N_{\text{bins}} - 1) \right\rfloor
@@ -382,9 +407,9 @@ $$
 $$
 
 where:
-- $H$: Number of attention heads
-- $K$: Number of sampling points per head
-- $\sigma_{\text{scale}}$: Offset scale factor (default 1.0)
+- $H = 8$: Number of attention heads
+- $K = 4$: Number of sampling points per head
+- $\sigma_{\text{scale}} = 1.0$: Offset scale factor
 - $\tanh(\cdot)$: Bounds offsets to $[-\sigma_{\text{scale}}, \sigma_{\text{scale}}]$
 
 **Initialization**: $\text{MLP}_{\text{offset}}$ weights initialized to zero → **identity initialization** (no offset initially).
@@ -488,11 +513,11 @@ $$
 
 where:
 - $\text{sim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u}^\top \mathbf{v}}{\|\mathbf{u}\|_2 \|\mathbf{v}\|_2}$: Cosine similarity
-- $\tau > 0$: Temperature parameter (default 0.07)
+- $\tau = 0.07$: Temperature parameter
   - **Interpretation**: Controls concentration of similarity distribution
   - Smaller $\tau$ (e.g., 0.01): Sharper distribution, emphasizes hard negatives
   - Larger $\tau$ (e.g., 0.5): Softer distribution, easier optimization
-  - Typical range for contrastive learning: $\tau \in [0.05, 0.20]$
+  - Default value $\tau = 0.07$ balances hard negative mining and stable optimization
 - **Positive pairs**: $(\mathbf{e}_i^{\text{rgb}}, \mathbf{e}_i^{\text{sonar}})$ from same frame
 - **Negative pairs**: $(\mathbf{e}_i^{\text{rgb}}, \mathbf{e}_j^{\text{sonar}})$ from different frames ($i \neq j$)
 
@@ -572,6 +597,11 @@ $$
 $$
 
 This enables **selective** state updates: important information is retained, irrelevant information is forgotten.
+
+**Key Parameters**:
+- State dimension: $d_{\text{state}} = 16$ (SSM state expansion factor)
+- Convolution width: $d_{\text{conv}} = 4$ (local convolution kernel size)
+- Expansion factor: $\text{expand} = 2$ (block expansion ratio)
 
 ### 5.5 Vision-Mamba Block
 
@@ -715,6 +745,7 @@ $$
 \mathbf{C}_t^{3D} = [X_{\text{fused}}, Y, Z]^\top \in \mathbb{R}^3
 $$
 
+
 ---
 
 ## 7. Geometric Cyclic Projection
@@ -848,19 +879,19 @@ $$
 #### 8.2.1 Generalized IoU Loss
 
 $$
-\text{GIoU}(B, \hat{B}) = \text{IoU}(B, \hat{B}) - \frac{|C \setminus (B \cup \hat{B})|}{|C|}
+\text{GIoU}(B, \hat{B}) = \text{IoU}(B, \hat{B}) - \frac{|\mathcal{C} \setminus (B \cup \hat{B})|}{|\mathcal{C}|}
 $$
 
-where $C$ is the smallest enclosing box.
+where $\mathcal{C}$ is the smallest enclosing box containing both $B$ and $\hat{B}$.
 
 $$
-\mathcal{L}_{\text{GIoU}} = 1 - \text{GIoU}(B_{\text{gt}}, \hat{B})
+\mathcal{L}_{\text{GIoU}}^m = 1 - \text{GIoU}(B_{\text{gt}}^m, \hat{B}^m)
 $$
 
 #### 8.2.2 L1 Box Loss
 
 $$
-\mathcal{L}_{L1} = \|B_{\text{gt}} - \hat{B}\|_1
+\mathcal{L}_{L1}^m = \|B_{\text{gt}}^m - \hat{B}^m\|_1
 $$
 
 #### 8.2.3 Quality Focal Loss
@@ -883,16 +914,19 @@ $$
 
 ### 8.4 Loss Weights
 
-**Default Configuration** (initial weights):
+**Default Configuration**:
 
 | Component | Symbol | Default Weight |
-|-----------|--------|----------------|
+|:----------|:-------|:--------------:|
+| RGB Classification | $\lambda_{\text{cls}}^{\text{rgb}}$ | 1.0 |
 | RGB Box Loss | $\lambda_{\text{box}}^{\text{rgb}}$ | 1.0 |
+| Sonar Classification | $\lambda_{\text{cls}}^{\text{sonar}}$ | 1.0 |
 | Sonar Box Loss | $\lambda_{\text{box}}^{\text{sonar}}$ | 1.0 |
+| Fusion Classification | $\lambda_{\text{cls}}^{\text{fusion}}$ | 1.0 |
 | Fusion Box Loss | $\lambda_{\text{box}}^{\text{fusion}}$ | 1.0 |
 | Component Consistency | $\lambda_{\text{comp}}$ | 0.2 |
 | Representation Consistency | $\lambda_{\text{repr}}$ | 0.1 |
-| Cyclic 3D | $\lambda_{\text{cycle}}$ | 0.6 |
+| Weak 3D Cyclic | $\lambda_{\text{cycle}}$ | 0.6 |
 | Temporal Smoothness | $\lambda_{\text{temp}}$ | 0.1 |
 
 **Dynamic Weighting**: Loss weights are **automatically adjusted** during training based on task convergence rates (optional).
@@ -914,7 +948,8 @@ $$
 **Hyperparameters**:
 - $\beta_1 = 0.9, \beta_2 = 0.999$
 - Base learning rate: $\eta_0 = 2 \times 10^{-4}$
-- Weight decay: $\lambda_{\text{wd}} = 1 \times 10^{-4}$
+- Weight decay: $\lambda_{\text{wd}} = 10^{-4}$
+- Epsilon: $\epsilon = 10^{-8}$
 
 #### 8.5.2 Learning Rate Schedule
 
@@ -965,13 +1000,44 @@ Gradients are scaled, then unscaled before optimizer step.
 
 #### 8.6.2 Batch Size and Accumulation
 
-- Physical batch size: 2-8 (GPU memory limited)
-- Gradient accumulation: 4-8 steps → effective batch size 32
-- Global synchronization in distributed training (DDP)
+- Physical batch size: 2-8 (GPU memory limited, typically 32 for training)
+- Gradient accumulation: 2 steps (for memory efficiency)
+- Effective batch size: physical_batch_size × accumulation_steps × num_gpus
+- Global synchronization in distributed training (DistributedDataParallel)
 
 ---
 
-## 9. References
+## 9. Evaluation Metrics
+
+### 9.1 Success Rate
+
+**Success Curve**: Fraction of frames where IoU exceeds threshold $\theta$:
+
+$$S(\theta) = \frac{1}{N} \sum_{t=1}^{N} \mathbb{1}[\text{IoU}_t > \theta]$$
+
+**Area Under Curve (AUC)**:
+$$\text{AUC} = \int_0^1 S(\theta) d\theta$$
+
+### 9.2 Precision
+
+**Center Error**: Distance between predicted and ground truth centers:
+$$e_t = \sqrt{(c_x^{\text{pred}} - c_x^{\text{gt}})^2 + (c_y^{\text{pred}} - c_y^{\text{gt}})^2}$$
+
+**Precision at Threshold** (default 20 pixels):
+$$P_{20} = \frac{1}{N} \sum_{t=1}^{N} \mathbb{1}[e_t < 20]$$
+
+### 9.3 Average Center Error (ACE)
+
+$$\text{ACE} = \frac{1}{N} \sum_{t=1}^{N} e_t$$
+
+### 9.4 3D Metrics (Optional)
+
+**3D Center Error**:
+$$\text{3D-CE} = \frac{1}{N} \sum_{t=1}^{N} \|\mathbf{C}_{3D,\text{pred}}^t - \mathbf{C}_{3D,\text{gt}}^t\|_2$$
+
+---
+
+## 10. References
 
 ### Core Publications
 
@@ -1013,22 +1079,35 @@ Gradients are scaled, then unscaled before optimizer step.
 
 ### Additional References
 
+- **AdamW Optimizer**: Loshchilov, I., & Hutter, F. (2019). *Decoupled Weight Decay Regularization*. ICLR 2019. [arXiv:1711.05101](https://arxiv.org/abs/1711.05101)
 - **Log-Polar Transform**: Differentiable implementation using PyTorch `grid_sample` for sonar image warping
-- **Multi-Head Attention**: Vaswani, A., et al. (2017). *Attention is All You Need*. NeurIPS 2017.
+- **Multi-Head Attention**: Vaswani, A., et al. (2017). *Attention is All You Need*. NeurIPS 2017. [arXiv:1706.03762](https://arxiv.org/abs/1706.03762)
 - **Zero-Order Hold Discretization**: Franklin, G. F., Powell, J. D., & Workman, M. L. (1998). *Digital Control of Dynamic Systems*. Addison-Wesley.
 
 ---
 
 ## Appendix: Implementation Notes
 
+### Data Augmentation
+
+**RGB Augmentation**:
+- **ColorJitter**: Brightness, contrast, saturation, hue variations (probability = 0.5)
+- **RandomBlur**: Gaussian blur for turbidity effects (probability = 0.3)
+- **RandomOcclusion**: Synthetic rectangular occlusions (probability = 0.2, size 5-30%)
+
+**Sonar Augmentation**:
+- **SpeckleNoise**: Multiplicative speckle noise $I' = I \cdot (1 + 0.1 \cdot \mathcal{N}(0,1))$ (probability = 0.5)
+- **SectorOcclusion**: Fan-shaped masks matching sonar geometry (probability = 0.2, angle 10°-40°)
+- **RadialScalingJitter**: DISABLED due to bbox synchronization issues
+
 ### Computational Complexity
 
 | Module | Complexity | Notes |
-|--------|------------|-------|
-| Log-Polar Transform | $O(BHW \log(HW))$ | Grid sampling |
+|:-------|:-----------|:------|
+| Log-Polar Transform | $O(BHW)$ | Grid sampling with bilinear interpolation |
 | Geometric Gating | $O(BC H W)$ | Linear in spatial size |
-| Deformable Attention | $O(B N_q H K d_k)$ | $K$ points per head |
-| Vision-Mamba | $O(BTD^2)$ | Linear in sequence length |
+| Deformable Attention | $O(B N_q H K d_k)$ | $K=4$ points per head |
+| Vision-Mamba | $O(BTD^2)$ | Linear in sequence length $T$ |
 | Weak 3D Head | $O(BD)$ | Per-frame prediction |
 
 ### Memory Optimization
@@ -1039,6 +1118,24 @@ Gradients are scaled, then unscaled before optimizer step.
 
 ### Numerical Stability
 
-- $\epsilon = 10^{-6}$ added to denominators (division by zero)
-- Gradient clipping at norm 1.0
-- Softplus for positive constraints: $\text{softplus}(x) = \log(1 + e^x)$
+- $\epsilon = 10^{-6}$ or $10^{-7}$ added to denominators (division by zero prevention)
+- Gradient clipping at norm 1.0 (prevents gradient explosion)
+- Softplus for positive constraints: $\text{softplus}(x) = \log(1 + e^x)$ (ensures positive width/height)
+- Clamp operations: $Z_{\text{safe}} = \max(Z, 0.1)$ for perspective projection stability
+
+### Key Hyperparameters
+
+| Parameter | Value | Description |
+|:-------------------|:------|:------------|
+| Batch Size | 32 | Training batch size |
+| Epochs | 60 | Total training epochs |
+| Template Size | $128 \times 128$ | Template patch size |
+| Search Size | $256 \times 256$ | Search region size |
+| Embed Dim | 256 | Fusion embedding dimension |
+| Num Heads | 8 | Attention heads in G²-DCMA |
+| Num Radial Bins | 50 | Sonar radial profile discretization |
+| Num Deform Points | 4 | Sampling points per attention head |
+| Dropout | 0.1 | Dropout probability |
+| Learning Rate | $2 \times 10^{-4}$ | Base learning rate |
+| Weight Decay | $10^{-4}$ | AdamW weight decay |
+| Gradient Clip | 1.0 | Max gradient norm |
