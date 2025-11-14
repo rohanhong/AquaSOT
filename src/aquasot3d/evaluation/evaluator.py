@@ -116,6 +116,8 @@ class TrackingEvaluator:
 
         # CRITICAL FIX (Audit 2025111412 Finding 5): Record temporal reset status per sequence
         reset_status_log = {}
+        # Store for report generation (Audit 2025111413 Finding 5)
+        self._reset_status_log = reset_status_log
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(
@@ -178,8 +180,8 @@ class TrackingEvaluator:
             # Compute metrics for this sequence
             seq_metrics = self.compute_sequence_metrics(predictions)
 
-            # CRITICAL FIX (Audit 2025111412 Finding 3):
-            # Add per-sequence diagnostics for failure mode analysis
+            # CRITICAL FIX (Audit 2025111413 Finding 3):
+            # Add per-sequence diagnostics with quality trends for failure analysis
             diagnostics = {
                 'num_frames': {
                     'rgb': len(predictions.get('rgb_pred', [])),
@@ -190,9 +192,9 @@ class TrackingEvaluator:
                     'has_rgb': len(predictions.get('rgb_pred', [])) > 0,
                     'has_sonar': len(predictions.get('sonar_pred', [])) > 0,
                     'has_fusion': len(predictions.get('fusion_pred', [])) > 0
-                }
-                # TODO: Add quality score trends (rgb vs sonar per frame)
-                # TODO: Add failure mode detection (tracking loss, drift, etc.)
+                },
+                'quality_trends': self._compute_quality_diagnostics(predictions),
+                'temporal_reset': reset_status_log.get(sequence_name, {})
             }
 
             # Store results with diagnostics
@@ -228,6 +230,66 @@ class TrackingEvaluator:
             'sequences': self.sequence_results,
             'temporal_reset_status': reset_status_log  # Per-sequence reset outcomes
         }
+
+    def _compute_quality_diagnostics(self, predictions: Dict) -> Dict:
+        """
+        Compute quality score diagnostics for failure analysis.
+
+        CRITICAL FIX (Audit 2025111413 Finding 3): Extract quality trends
+        to enable automated failure mode detection when fusion underperforms.
+
+        Args:
+            predictions: Predictions dict with quality scores
+
+        Returns:
+            Quality diagnostics dict with statistics
+        """
+        import numpy as np
+
+        diagnostics = {}
+
+        # RGB quality statistics
+        if predictions.get('rgb_quality'):
+            rgb_q = np.array(predictions['rgb_quality'])
+            diagnostics['rgb_quality'] = {
+                'mean': float(np.mean(rgb_q)),
+                'std': float(np.std(rgb_q)),
+                'min': float(np.min(rgb_q)),
+                'max': float(np.max(rgb_q))
+            }
+
+        # Sonar quality statistics
+        if predictions.get('sonar_quality'):
+            sonar_q = np.array(predictions['sonar_quality'])
+            diagnostics['sonar_quality'] = {
+                'mean': float(np.mean(sonar_q)),
+                'std': float(np.std(sonar_q)),
+                'min': float(np.min(sonar_q)),
+                'max': float(np.max(sonar_q))
+            }
+
+        # Fusion quality statistics
+        if predictions.get('fusion_quality'):
+            fusion_q = np.array(predictions['fusion_quality'])
+            diagnostics['fusion_quality'] = {
+                'mean': float(np.mean(fusion_q)),
+                'std': float(np.std(fusion_q)),
+                'min': float(np.min(fusion_q)),
+                'max': float(np.max(fusion_q))
+            }
+
+        # Adaptive fusion weights
+        if predictions.get('fusion_weights'):
+            weights = np.array(predictions['fusion_weights'])
+            if weights.ndim == 2 and weights.shape[1] == 2:
+                diagnostics['fusion_weights'] = {
+                    'rgb_mean': float(np.mean(weights[:, 0])),
+                    'sonar_mean': float(np.mean(weights[:, 1])),
+                    'rgb_std': float(np.std(weights[:, 0])),
+                    'sonar_std': float(np.std(weights[:, 1]))
+                }
+
+        return diagnostics
 
     def _denormalize_bbox(
         self,
@@ -382,13 +444,18 @@ class TrackingEvaluator:
             metadata=metadata
         )
 
-        # Extract predictions
+        # Extract predictions with quality scores
         predictions = {
             'rgb_pred': [],
             'sonar_pred': [],
             'fusion_pred': [],
             'rgb_gt': [],
-            'sonar_gt': []
+            'sonar_gt': [],
+            # CRITICAL FIX (Audit 2025111413 Finding 3): Collect quality trends
+            'rgb_quality': [],
+            'sonar_quality': [],
+            'fusion_quality': [],
+            'fusion_weights': []
         }
 
         # Get predictions (model outputs plural keys: rgb_boxes, sonar_boxes, fusion_boxes)
@@ -536,6 +603,16 @@ class TrackingEvaluator:
                         self._denormalize_bbox(sonar_gt[i], self.search_size)
                         for i in range(len(sonar_gt))
                     ]
+
+        # CRITICAL FIX (Audit 2025111413 Finding 3): Extract quality scores and fusion weights
+        if 'rgb_quality' in outputs:
+            predictions['rgb_quality'] = outputs['rgb_quality'].cpu().numpy().tolist()
+        if 'sonar_quality' in outputs:
+            predictions['sonar_quality'] = outputs['sonar_quality'].cpu().numpy().tolist()
+        if 'fusion_quality' in outputs:
+            predictions['fusion_quality'] = outputs['fusion_quality'].cpu().numpy().tolist()
+        if 'fusion_weights' in outputs:
+            predictions['fusion_weights'] = outputs['fusion_weights'].cpu().numpy().tolist()
 
         return predictions
 
@@ -717,6 +794,35 @@ class TrackingEvaluator:
             lines.append(f"    Std:    {metrics.get('avg_center_error_std', 0.0):.2f} px")
             lines.append("")
 
+        # CRITICAL FIX (Audit 2025111413 Finding 5): Include temporal reset status
+        lines.append("Temporal State Reset Summary:")
+        lines.append("-" * 50)
+
+        # Access temporal_reset_status from evaluate() return value
+        # Note: This is called during evaluate(), so we need to track it
+        if hasattr(self, '_reset_status_log'):
+            reset_log = self._reset_status_log
+            total_resets = len(reset_log)
+            failed_resets = sum(
+                1 for status in reset_log.values()
+                if status and any(v is False for v in status.values())
+            )
+
+            lines.append(f"  Total Sequence Boundaries: {total_resets}")
+            lines.append(f"  Successful Resets: {total_resets - failed_resets}")
+            lines.append(f"  Failed Resets: {failed_resets}")
+
+            if failed_resets > 0:
+                lines.append("")
+                lines.append("  Failed Reset Details:")
+                for seq_name, status in reset_log.items():
+                    if status and any(v is False for v in status.values()):
+                        failed_modules = [k for k, v in status.items() if v is False]
+                        lines.append(f"    {seq_name}: {', '.join(failed_modules)}")
+        else:
+            lines.append("  (Temporal reset tracking not available)")
+
+        lines.append("")
         lines.append("=" * 70)
 
         return "\n".join(lines)

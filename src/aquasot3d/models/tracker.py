@@ -688,26 +688,25 @@ class AquaSOT3DTracker(BaseModule):
 
         # Compute cyclic consistency loss if ground truth boxes are provided
         if compute_cyclic_loss and gt_boxes is not None:
-            # CRITICAL FIX (Audit 2025111412 Finding 2):
-            # Projectors should receive metadata for calibrated geometry
-            # TODO: Update GeometricCyclicProjector.forward() to accept metadata parameter
-            # and adjust log-polar transform based on actual crop scale/padding
+            # CRITICAL FIX (Audit 2025111413 Finding 2):
+            # Projectors now receive metadata for calibrated geometry, reconciling
+            # resized crops with true sensor geometry for accurate cyclic losses
 
             # Extract relevant metadata for projectors
             rgb_metadata = metadata.get('rgb_search_metadata') if metadata else None
             sonar_metadata = metadata.get('sonar_search_metadata') if metadata else None
 
-            # Project 3D → 2D
-            # Note: Projectors currently use default geometry; metadata integration pending
+            # Project 3D → 2D with metadata-aware geometry
+            # CRITICAL FIX (Audit 2025111413 Finding 2): Pass metadata to projectors
             rgb_proj_outputs = self.rgb_projector(
                 center_3d,
-                compute_cyclic_loss=True
-                # metadata=rgb_metadata  # TODO: Enable when projector supports it
+                compute_cyclic_loss=True,
+                metadata=rgb_metadata
             )
             sonar_proj_outputs = self.sonar_projector(
                 center_3d,
-                compute_cyclic_loss=True
-                # metadata=sonar_metadata  # TODO: Enable when projector supports it
+                compute_cyclic_loss=True,
+                metadata=sonar_metadata
             )
 
             outputs['rgb_proj_boxes'] = rgb_proj_outputs['bbox_2d']

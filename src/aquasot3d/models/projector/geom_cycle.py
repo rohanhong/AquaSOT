@@ -113,17 +113,23 @@ class GeometricCyclicProjector(BaseModule):
     def project_3d_to_2d(
         self,
         center_3d: torch.Tensor,
-        context: Optional[torch.Tensor] = None
+        context: Optional[torch.Tensor] = None,
+        metadata: Optional[Dict] = None
     ) -> torch.Tensor:
         """
-        Project 3D center to 2D bounding box.
+        Project 3D center to 2D bounding box with metadata-aware geometry adjustment.
 
         CRITICAL (Audit 2025111411 Finding 3): Output is in cxcywh format.
         Callers should wrap output using BBoxCXCYWH for type-safe handling.
 
+        CRITICAL FIX (Audit 2025111413 Finding 2): Now accepts metadata to adjust
+        projection geometry based on actual crop scale/padding, reconciling resized
+        crops with true sensor geometry.
+
         Args:
             center_3d: 3D center coordinates (X, Y, Z), shape (B, 3)
             context: Optional context features, shape (B, C)
+            metadata: Optional metadata list with per-sample scale/padding info
 
         Returns:
             2D bounding box in cxcywh format (cx, cy, w, h), shape (B, 4)
@@ -140,13 +146,40 @@ class GeometricCyclicProjector(BaseModule):
             cx_offset, cy_offset = self.principal_point
             sx, sy = self.size_scale
 
-            cx = (fx * X / Z_safe) + cx_offset
-            cy = (fy * Y / Z_safe) + cy_offset
+            # CRITICAL FIX (Audit 2025111413 Finding 2): Apply metadata scale correction
+            if metadata is not None and len(metadata) > 0:
+                batch_size = center_3d.shape[0]
+
+                # CRITICAL FIX (Audit 2025111413 Finding 4): Validate metadata list
+                assert isinstance(metadata, (list, tuple)), \
+                    f"Metadata must be list/tuple for projector, got {type(metadata)}"
+                assert len(metadata) >= batch_size, \
+                    f"Metadata list too short: {len(metadata)} < {batch_size}"
+
+                scale_correction = torch.ones(batch_size, device=center_3d.device)
+
+                for i in range(min(batch_size, len(metadata))):
+                    if metadata[i] and 'scale_factor' in metadata[i]:
+                        scale_correction[i] = metadata[i]['scale_factor']
+
+                # Adjust focal length and size scale based on crop rescaling
+                fx_adjusted = fx * scale_correction
+                fy_adjusted = fy * scale_correction
+                sx_adjusted = sx * scale_correction
+                sy_adjusted = sy * scale_correction
+            else:
+                fx_adjusted = fx
+                fy_adjusted = fy
+                sx_adjusted = sx
+                sy_adjusted = sy
+
+            cx = (fx_adjusted * X / Z_safe) + cx_offset
+            cy = (fy_adjusted * Y / Z_safe) + cy_offset
 
             # Estimate bounding box size based on depth
             # Objects closer (smaller Z) appear larger
-            w = sx / Z_safe
-            h = sy / Z_safe
+            w = sx_adjusted / Z_safe
+            h = sy_adjusted / Z_safe
 
             bbox_2d = torch.stack([cx, cy, w, h], dim=-1)
         else:
@@ -158,9 +191,30 @@ class GeometricCyclicProjector(BaseModule):
 
             bbox_2d = self.forward_projector(proj_input)
 
-            # Ensure positive width and height (avoid inplace for gradient)
-            bbox_2d_xy = bbox_2d[:, :2]
-            bbox_2d_wh = F.softplus(bbox_2d[:, 2:])
+            # CRITICAL FIX (Audit 2025111413 Finding 2): Apply metadata scale correction
+            if metadata is not None and len(metadata) > 0:
+                batch_size = center_3d.shape[0]
+
+                # CRITICAL FIX (Audit 2025111413 Finding 4): Validate metadata list
+                assert isinstance(metadata, (list, tuple)), \
+                    f"Metadata must be list/tuple for projector, got {type(metadata)}"
+                assert len(metadata) >= batch_size, \
+                    f"Metadata list too short: {len(metadata)} < {batch_size}"
+
+                scale_correction = torch.ones(batch_size, 1, device=center_3d.device)
+
+                for i in range(min(batch_size, len(metadata))):
+                    if metadata[i] and 'scale_factor' in metadata[i]:
+                        scale_correction[i, 0] = metadata[i]['scale_factor']
+
+                # Adjust projected coordinates and sizes
+                bbox_2d_xy = bbox_2d[:, :2] * scale_correction
+                bbox_2d_wh = F.softplus(bbox_2d[:, 2:]) * scale_correction
+            else:
+                # Ensure positive width and height (avoid inplace for gradient)
+                bbox_2d_xy = bbox_2d[:, :2]
+                bbox_2d_wh = F.softplus(bbox_2d[:, 2:])
+
             bbox_2d = torch.cat([bbox_2d_xy, bbox_2d_wh], dim=-1)
 
         return bbox_2d
@@ -204,21 +258,26 @@ class GeometricCyclicProjector(BaseModule):
         self,
         center_3d: torch.Tensor,
         context: Optional[torch.Tensor] = None,
-        compute_cyclic_loss: bool = False
+        compute_cyclic_loss: bool = False,
+        metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass: Project 3D to 2D and optionally compute cyclic loss.
+        Forward pass: Project 3D to 2D with metadata-aware geometry.
+
+        CRITICAL FIX (Audit 2025111413 Finding 2): Now accepts metadata to ensure
+        cyclic losses operate on real crop geometry instead of ideal assumptions.
 
         Args:
             center_3d: 3D center coordinates (X, Y, Z), shape (B, 3)
             context: Optional context features, shape (B, C)
             compute_cyclic_loss: Whether to compute cyclic consistency loss
+            metadata: Optional metadata list with per-sample scale/padding info
 
         Returns:
             Dictionary with projection results
         """
-        # Forward projection: 3D → 2D
-        bbox_2d = self.project_3d_to_2d(center_3d, context)
+        # Forward projection: 3D → 2D with metadata awareness
+        bbox_2d = self.project_3d_to_2d(center_3d, context, metadata)
 
         outputs = {
             'bbox_2d': bbox_2d,
