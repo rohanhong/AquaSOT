@@ -589,30 +589,46 @@ class BoxHead(BaseHead):
 
         # Compute losses if targets are provided
         if target_boxes is not None:
-            # Validate target boxes shape
-            if target_boxes.shape[-1] != 4:
-                raise ValueError(f"Invalid target_boxes shape: {target_boxes.shape}")
+            # CRITICAL (Audit 2025111411 Finding 3): Enforce type-safe bbox wrappers
+            # to prevent silent format confusion between xywh/cxcywh during training
+            from aquasot3d.utils.bbox import BBoxCXCYWH
+
+            # Wrap predictions and targets to enforce format contract
+            try:
+                pred_bbox_wrapper = BBoxCXCYWH(pred_boxes_cxcywh)
+                target_bbox_wrapper = BBoxCXCYWH(target_boxes)
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"Bbox format validation failed in BoxHead.forward(): {e}. "
+                    f"Expected [B, 4] tensors in cxcywh format. "
+                    f"Got pred shape={pred_boxes_cxcywh.shape}, target shape={target_boxes.shape}"
+                )
 
             # CRITICAL FIX: collate_fn_template_search already converts boxes from
             # pixel xywh to normalized cxcywh (loader.py:184-196).
             # No further conversion needed - targets are already in cxcywh format.
-            # The previous box_xywh_to_cxcywh() call caused double conversion,
-            # offsetting centers by w/2 and h/2, breaking training.
 
-            # L1 loss (targets already in normalized cxcywh)
-            l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes)
+            # Extract validated tensors for loss computation
+            pred_tensor = pred_bbox_wrapper.tensor()
+            target_tensor = target_bbox_wrapper.tensor()
 
-            # IoU loss (targets already in normalized cxcywh)
-            iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes)
+            # L1 loss (using validated tensors in cxcywh format)
+            l1_loss = self.l1_loss_fn(pred_tensor, target_tensor)
 
-            # Classification loss
+            # IoU loss (using validated tensors in cxcywh format)
+            iou_loss = self.iou_loss_fn(pred_tensor, target_tensor)
+
+            # Classification loss with IoU-based quality
             if target_labels is not None:
                 if self.use_quality_focal:
-                    # Compute IoU as quality target
+                    # Compute IoU as quality target - use type-safe conversion
                     with torch.no_grad():
-                        pred_xyxy = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
-                        target_xyxy = box_cxcywh_to_xyxy(target_boxes)  # targets already in cxcywh
-                        target_quality = compute_iou(pred_xyxy, target_xyxy)
+                        pred_xyxy_wrapper = pred_bbox_wrapper.to_xyxy()
+                        target_xyxy_wrapper = target_bbox_wrapper.to_xyxy()
+                        target_quality = compute_iou(
+                            pred_xyxy_wrapper.tensor(),
+                            target_xyxy_wrapper.tensor()
+                        )
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
                 else:
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())
@@ -621,9 +637,12 @@ class BoxHead(BaseHead):
                 target_labels = torch.ones_like(pred_scores)
                 if self.use_quality_focal:
                     with torch.no_grad():
-                        pred_xyxy = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
-                        target_xyxy = box_cxcywh_to_xyxy(target_boxes)
-                        target_quality = compute_iou(pred_xyxy, target_xyxy)
+                        pred_xyxy_wrapper = pred_bbox_wrapper.to_xyxy()
+                        target_xyxy_wrapper = target_bbox_wrapper.to_xyxy()
+                        target_quality = compute_iou(
+                            pred_xyxy_wrapper.tensor(),
+                            target_xyxy_wrapper.tensor()
+                        )
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
                 else:
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels)
@@ -648,7 +667,10 @@ class BoxHead(BaseHead):
         target_labels: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-        Compute box prediction loss from predictions and targets.
+        Compute box prediction loss with enforced type-safe format checking.
+
+        CRITICAL (Audit 2025111411 Finding 3): Enforces cxcywh format using
+        type-safe wrappers to prevent silent format confusion.
 
         Args:
             predictions: Dictionary from forward() containing pred_boxes and pred_scores
@@ -658,32 +680,45 @@ class BoxHead(BaseHead):
         Returns:
             Total loss (scalar)
         """
+        from aquasot3d.utils.bbox import BBoxCXCYWH, BBoxXYXY
+
         # Extract predictions
         pred_boxes = predictions['pred_boxes']
         pred_scores = predictions['pred_scores']
 
-        # Convert boxes to cxcywh if needed
+        # Convert boxes to cxcywh if needed, using type-safe wrappers
         if self.box_format == 'xyxy':
-            pred_boxes_cxcywh = box_xyxy_to_cxcywh(pred_boxes)
+            pred_bbox_xyxy = BBoxXYXY(pred_boxes)
+            pred_bbox_cxcywh = pred_bbox_xyxy.to_cxcywh()
         else:
-            pred_boxes_cxcywh = pred_boxes
+            pred_bbox_cxcywh = BBoxCXCYWH(pred_boxes)
 
-        # L1 loss
-        l1_loss = self.l1_loss_fn(pred_boxes_cxcywh, target_boxes)
+        # Wrap target boxes to enforce format contract
+        target_bbox_cxcywh = BBoxCXCYWH(target_boxes)
 
-        # IoU loss
-        iou_loss = self.iou_loss_fn(pred_boxes_cxcywh, target_boxes)
+        # Extract validated tensors for loss computation
+        pred_tensor = pred_bbox_cxcywh.tensor()
+        target_tensor = target_bbox_cxcywh.tensor()
+
+        # L1 loss (using validated tensors)
+        l1_loss = self.l1_loss_fn(pred_tensor, target_tensor)
+
+        # IoU loss (using validated tensors)
+        iou_loss = self.iou_loss_fn(pred_tensor, target_tensor)
 
         # Classification loss
         if target_labels is None:
             target_labels = torch.ones_like(pred_scores)
 
         if self.use_quality_focal:
-            # Compute IoU as quality target
+            # Compute IoU as quality target - use type-safe conversion
             with torch.no_grad():
-                pred_xyxy = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
-                target_xyxy = box_cxcywh_to_xyxy(target_boxes)
-                target_quality = compute_iou(pred_xyxy, target_xyxy)
+                pred_xyxy_wrapper = pred_bbox_cxcywh.to_xyxy()
+                target_xyxy_wrapper = target_bbox_cxcywh.to_xyxy()
+                target_quality = compute_iou(
+                    pred_xyxy_wrapper.tensor(),
+                    target_xyxy_wrapper.tensor()
+                )
             cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
         else:
             cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())

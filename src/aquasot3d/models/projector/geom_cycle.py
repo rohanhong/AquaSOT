@@ -118,12 +118,15 @@ class GeometricCyclicProjector(BaseModule):
         """
         Project 3D center to 2D bounding box.
 
+        CRITICAL (Audit 2025111411 Finding 3): Output is in cxcywh format.
+        Callers should wrap output using BBoxCXCYWH for type-safe handling.
+
         Args:
             center_3d: 3D center coordinates (X, Y, Z), shape (B, 3)
             context: Optional context features, shape (B, C)
 
         Returns:
-            2D bounding box (cx, cy, w, h), shape (B, 4)
+            2D bounding box in cxcywh format (cx, cy, w, h), shape (B, 4)
         """
         if self.projection_type == 'perspective':
             # Perspective projection
@@ -166,8 +169,11 @@ class GeometricCyclicProjector(BaseModule):
         """
         Project 2D bounding box back to 3D center (for cyclic consistency).
 
+        CRITICAL (Audit 2025111411 Finding 3): Input must be in cxcywh format.
+        Callers should pass BBoxCXCYWH.tensor() for type-safe handling.
+
         Args:
-            bbox_2d: 2D bounding box (cx, cy, w, h), shape (B, 4)
+            bbox_2d: 2D bounding box in cxcywh format (cx, cy, w, h), shape (B, 4)
 
         Returns:
             Reconstructed 3D center (X, Y, Z), shape (B, 3)
@@ -237,22 +243,47 @@ class GeometricCyclicProjector(BaseModule):
         loss_type: str = 'l1'
     ) -> torch.Tensor:
         """
-        Compute 2D projection loss.
+        Compute 2D projection loss with enforced type-safe format checking.
+
+        CRITICAL (Audit 2025111411 Finding 3): Enforces cxcywh format using
+        type-safe wrappers to prevent silent format confusion.
 
         Args:
-            pred_bbox_2d: Predicted 2D box, shape (B, 4)
-            target_bbox_2d: Target 2D box, shape (B, 4)
+            pred_bbox_2d: Predicted 2D box in cxcywh format, shape (B, 4)
+            target_bbox_2d: Target 2D box in cxcywh format, shape (B, 4)
             loss_type: Loss type ('l1', 'l2', or 'smooth_l1')
 
         Returns:
-            Projection loss
+            Projection loss (scalar)
+
+        Raises:
+            ValueError: If inputs are not [B, 4] tensors in cxcywh format
         """
+        # CRITICAL: Type-safe format enforcement (Audit 2025111411 Finding 3)
+        from aquasot3d.utils.bbox import BBoxCXCYWH
+
+        # Wrap inputs to enforce format contract and validate shape
+        try:
+            pred_bbox_wrapper = BBoxCXCYWH(pred_bbox_2d)
+            target_bbox_wrapper = BBoxCXCYWH(target_bbox_2d)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Bbox format validation failed in compute_projection_loss: {e}. "
+                f"Expected [B, 4] tensors in cxcywh format. "
+                f"Got pred shape={pred_bbox_2d.shape}, target shape={target_bbox_2d.shape}"
+            )
+
+        # Extract validated tensors for loss computation
+        pred_tensor = pred_bbox_wrapper.tensor()
+        target_tensor = target_bbox_wrapper.tensor()
+
+        # Compute loss using validated tensors
         if loss_type == 'l1':
-            loss = F.l1_loss(pred_bbox_2d, target_bbox_2d)
+            loss = F.l1_loss(pred_tensor, target_tensor)
         elif loss_type == 'l2':
-            loss = F.mse_loss(pred_bbox_2d, target_bbox_2d)
+            loss = F.mse_loss(pred_tensor, target_tensor)
         elif loss_type == 'smooth_l1':
-            loss = F.smooth_l1_loss(pred_bbox_2d, target_bbox_2d)
+            loss = F.smooth_l1_loss(pred_tensor, target_tensor)
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
 

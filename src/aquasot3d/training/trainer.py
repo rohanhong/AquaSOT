@@ -408,6 +408,17 @@ class Trainer:
                 'template_sonar_metadata': batch.get('template_sonar_metadata'),
             }
 
+            # CRITICAL VALIDATION (Audit 2025111412 Finding 4):
+            # Validate metadata list lengths before model forward
+            batch_size = batch['rgb_template'].shape[0]
+            for key, meta_list in metadata.items():
+                if meta_list is not None and isinstance(meta_list, list):
+                    if len(meta_list) != batch_size:
+                        raise RuntimeError(
+                            f"Trainer metadata validation failed: {key} has {len(meta_list)} "
+                            f"entries but batch_size={batch_size}. Loader bug detected!"
+                        )
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():

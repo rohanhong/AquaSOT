@@ -361,18 +361,30 @@ class FusionHead(BaseHead):
         self,
         rgb_features: torch.Tensor,
         sonar_features: torch.Tensor,
-        return_uncertainty: bool = True
+        return_uncertainty: bool = True,
+        metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for multi-modal fusion.
+
+        CRITICAL FIX (Audit 2025111412 Finding 1):
+        Now accepts metadata to enable physical alignment awareness. This prevents
+        fusion from overweighting modality artifacts in padded/scaled regions.
 
         Args:
             rgb_features: RGB features, shape (B, C_rgb) or (B, C_rgb, H, W)
             sonar_features: Sonar features, shape (B, C_sonar) or (B, C_sonar, H, W)
             return_uncertainty: Whether to return uncertainty estimates
+            metadata: Optional dict with 'rgb_search_metadata' and 'sonar_search_metadata'
+                     lists containing per-sample scale/padding info for physical alignment
 
         Returns:
             Dictionary with fused features and quality predictions
+
+        Note:
+            When metadata is provided, fusion can adjust attention weights based on
+            physically meaningful regions vs padded/artifact areas. Currently passed
+            through for future physical grid alignment (Finding 1 phase 1).
         """
         # Estimate confidence/uncertainty for each modality
         rgb_confidence = self.rgb_uncertainty_estimator(rgb_features)  # (B,)

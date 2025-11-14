@@ -358,55 +358,44 @@ class LossManager(nn.Module):
         loss_type: Literal['l1', 'giou', 'ciou'] = 'giou'
     ) -> torch.Tensor:
         """
-        Compute bounding box regression loss.
+        Compute bounding box regression loss with enforced type-safe format checking.
 
-        CRITICAL (Audit 2025111411 Finding 3): This function expects cxcywh format.
-        Use type-safe wrappers to prevent format confusion:
-            from aquasot3d.utils import BBoxCXCYWH
-            pred_bbox = BBoxCXCYWH(pred_boxes)  # Explicit format declaration
-            target_bbox = BBoxCXCYWH(target_boxes)
-            loss = _compute_box_loss(pred_bbox.tensor(), target_bbox.tensor())
+        CRITICAL (Audit 2025111411 Finding 3): This function enforces cxcywh format
+        using type-safe wrappers throughout computation. All inputs are automatically
+        wrapped and validated to prevent silent format confusion between xywh/cxcywh.
 
         Args:
             pred_boxes: Predicted boxes [B, 4] in cxcywh format (normalized [0,1])
             target_boxes: Target boxes [B, 4] in cxcywh format (normalized [0,1])
-            loss_type: Type of loss to use
+            loss_type: Type of loss to use ('l1', 'giou', 'ciou')
 
         Returns:
-            Box regression loss
+            Box regression loss (scalar)
+
+        Raises:
+            ValueError: If inputs are not [B, 4] tensors in cxcywh format
         """
         # CRITICAL: Type-safe format enforcement (Audit 2025111411 Finding 3)
-        # Wrap inputs to validate format and make conversions explicit
-        from aquasot3d.utils import BBoxCXCYWH
+        # Enforce bbox wrappers throughout computation to prevent silent format confusion
+        from aquasot3d.utils.bbox import BBoxCXCYWH
 
-        # Validate shape first
-        if pred_boxes.dim() != 2 or pred_boxes.shape[-1] != 4:
-            raise ValueError(
-                f"Invalid pred_boxes shape: {pred_boxes.shape}. "
-                f"Expected [B, 4] in cxcywh format."
-            )
-        if target_boxes.dim() != 2 or target_boxes.shape[-1] != 4:
-            raise ValueError(
-                f"Invalid target_boxes shape: {target_boxes.shape}. "
-                f"Expected [B, 4] in cxcywh format."
-            )
-
-        # Use type-safe wrappers to enforce format contract
-        # This will raise if shape is wrong, and documents the expected format
+        # Wrap inputs to enforce format contract and validate shape
         try:
             pred_bbox = BBoxCXCYWH(pred_boxes)
             target_bbox = BBoxCXCYWH(target_boxes)
-            # Extract tensors for computation (already validated)
-            pred_boxes = pred_bbox.tensor()
-            target_boxes = target_bbox.tensor()
         except (ValueError, TypeError) as e:
             raise ValueError(
                 f"Bbox format validation failed: {e}. "
-                f"This function expects [B, 4] tensors in cxcywh format."
+                f"This function requires [B, 4] tensors in cxcywh format. "
+                f"Got pred_boxes.shape={pred_boxes.shape}, target_boxes.shape={target_boxes.shape}"
             )
 
-        # Warn if boxes appear to be in pixel coordinates (values >> 1) instead of normalized
-        if torch.any(pred_boxes > 2.0) or torch.any(target_boxes > 2.0):
+        # Extract validated tensors for computation
+        pred_tensor = pred_bbox.tensor()
+        target_tensor = target_bbox.tensor()
+
+        # Warn if boxes appear to be in pixel coordinates instead of normalized
+        if torch.any(pred_tensor > 2.0) or torch.any(target_tensor > 2.0):
             import warnings
             warnings.warn(
                 "Box coordinates > 2.0 detected in loss computation. "
@@ -415,18 +404,21 @@ class LossManager(nn.Module):
                 RuntimeWarning
             )
 
-        # L1 loss component
-        l1_loss = F.l1_loss(pred_boxes, target_boxes, reduction=self.reduction)
+        # L1 loss component using validated tensors
+        l1_loss = F.l1_loss(pred_tensor, target_tensor, reduction=self.reduction)
 
         if loss_type == 'l1':
             return l1_loss
 
-        # GIoU or CIoU loss
-        # Convert to xyxy format for IoU computation
-        from aquasot3d.models.heads.box_head import box_cxcywh_to_xyxy, compute_giou, compute_ciou
+        # GIoU or CIoU loss - use wrapper conversion methods for type safety
+        # Convert to xyxy format using type-safe wrapper methods
+        pred_bbox_xyxy = pred_bbox.to_xyxy()
+        target_bbox_xyxy = target_bbox.to_xyxy()
 
-        pred_boxes_xyxy = box_cxcywh_to_xyxy(pred_boxes)
-        target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)
+        # Extract tensors for IoU computation
+        from aquasot3d.models.heads.box_head import compute_giou, compute_ciou
+        pred_boxes_xyxy = pred_bbox_xyxy.tensor()
+        target_boxes_xyxy = target_bbox_xyxy.tensor()
 
         if loss_type == 'giou':
             giou = compute_giou(pred_boxes_xyxy, target_boxes_xyxy)

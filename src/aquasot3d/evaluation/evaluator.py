@@ -114,6 +114,9 @@ class TrackingEvaluator:
         # CRITICAL FIX (Audit 2025111409 Finding 4): Track current sequence for temporal state reset
         current_sequence = None
 
+        # CRITICAL FIX (Audit 2025111412 Finding 5): Record temporal reset status per sequence
+        reset_status_log = {}
+
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(
                 self.dataloader,
@@ -145,8 +148,19 @@ class TrackingEvaluator:
                 if current_sequence is None or sequence_name != current_sequence:
                     logger.debug(f"Sequence boundary detected: {current_sequence} -> {sequence_name}")
                     if hasattr(self.model, 'reset_temporal_state'):
-                        self.model.reset_temporal_state()
-                        logger.debug("Temporal state reset")
+                        # CRITICAL FIX (Audit 2025111412 Finding 5):
+                        # Capture reset status for QA visibility
+                        reset_status = self.model.reset_temporal_state()
+                        reset_status_log[sequence_name] = reset_status
+                        logger.debug(f"Temporal state reset: {reset_status}")
+
+                        # Warn if any module failed to reset
+                        if reset_status and any(v is False for v in reset_status.values()):
+                            failed_modules = [k for k, v in reset_status.items() if v is False]
+                            logger.warning(
+                                f"Sequence {sequence_name}: Temporal reset incomplete. "
+                                f"Failed modules: {failed_modules}"
+                            )
                     current_sequence = sequence_name
 
                 # Track batch (returns per-frame predictions)
@@ -164,10 +178,28 @@ class TrackingEvaluator:
             # Compute metrics for this sequence
             seq_metrics = self.compute_sequence_metrics(predictions)
 
-            # Store results
+            # CRITICAL FIX (Audit 2025111412 Finding 3):
+            # Add per-sequence diagnostics for failure mode analysis
+            diagnostics = {
+                'num_frames': {
+                    'rgb': len(predictions.get('rgb_pred', [])),
+                    'sonar': len(predictions.get('sonar_pred', [])),
+                    'fusion': len(predictions.get('fusion_pred', []))
+                },
+                'modality_availability': {
+                    'has_rgb': len(predictions.get('rgb_pred', [])) > 0,
+                    'has_sonar': len(predictions.get('sonar_pred', [])) > 0,
+                    'has_fusion': len(predictions.get('fusion_pred', [])) > 0
+                }
+                # TODO: Add quality score trends (rgb vs sonar per frame)
+                # TODO: Add failure mode detection (tracking loss, drift, etc.)
+            }
+
+            # Store results with diagnostics
             self.sequence_results[sequence_name] = {
                 'predictions': predictions,
-                'metrics': seq_metrics
+                'metrics': seq_metrics,
+                'diagnostics': diagnostics  # New field for debugging
             }
 
             sequence_metrics.append(seq_metrics)
@@ -189,9 +221,12 @@ class TrackingEvaluator:
 
         logger.info("Evaluation completed")
 
+        # CRITICAL FIX (Audit 2025111412 Finding 5):
+        # Include temporal reset status for QA visibility
         return {
             'overall': self.overall_metrics,
-            'sequences': self.sequence_results
+            'sequences': self.sequence_results,
+            'temporal_reset_status': reset_status_log  # Per-sequence reset outcomes
         }
 
     def _denormalize_bbox(
