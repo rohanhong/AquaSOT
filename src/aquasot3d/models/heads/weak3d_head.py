@@ -84,13 +84,17 @@ def extract_radial_activation(
     B, C, H, W = sonar_feat_map.shape
 
     # Calculate downsampling scale
+    # CRITICAL FIX (Audit 2025111407): Use index ranges instead of pixel counts
+    # for proper coordinate scaling. Pixel indices range from 0 to N-1, so the
+    # scaling factor should be (H-1)/(H_orig-1), not H/H_orig.
     H_orig, W_orig = sonar_img.shape[-2:]
-    scale_h = H / H_orig
-    scale_w = W / W_orig
+    scale_h = (H - 1) / max(1, H_orig - 1)
+    scale_w = (W - 1) / max(1, W_orig - 1)
 
     # Sensor position in feature map coordinates (scaled from original)
-    # Standard FLS: sensor at bottom center (cx=W_orig//2, cy=H_orig-1)
-    cx = (W_orig // 2) * scale_w
+    # Standard FLS: sensor at bottom center (cx=(W_orig-1)/2, cy=H_orig-1)
+    # For centered sensor, we can also directly compute from feature map size
+    cx = (W_orig - 1) / 2 * scale_w
     cy = (H_orig - 1) * scale_h
 
     # Create radial distance map in feature space

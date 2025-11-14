@@ -152,24 +152,36 @@ class LogPolarTransform(nn.Module):
         # Convert FOV angle to radians
         fov_angle_rad = torch.deg2rad(torch.tensor(self.fov_angle, device=self.rho_grid.device))
 
-        # Inverse log-polar transformation
+        # Inverse log-polar transformation for SAMPLING (log-polar grid → Cartesian coords)
         # ρ = α * log(r + 1) => r = exp(ρ / α) - 1
         # φ = β * θ => θ = φ / β
+        #
+        # CRITICAL FIX (Audit 2025111407):
+        # The inverse transform is used to CREATE THE SAMPLING GRID.
+        # We want to sample from the ENTIRE physical FOV, so theta should ALWAYS span ±fov/2.
+        # Beta's role is NOT to change the sampling range, but to affect the FORWARD mapping
+        # (how Cartesian angles are distributed in the log-polar OUTPUT space).
+        #
+        # Fix: Directly map normalized phi_grid to physical theta spanning the configured FOV.
+        # Beta will still have an effect through the forward transform (in inverse_transform method).
 
-        # Denormalize rho and phi (WITHOUT multiplying by alpha/beta)
-        # rho_grid is normalized [0,1], denormalize to actual ρ values
+        # Apply constrained scales (ensure positive values)
+        alpha_pos = F.softplus(self.alpha) if self.learnable_scales else self.alpha
+        beta_pos = F.softplus(self.beta) if self.learnable_scales else self.beta
+
+        # Step 1: Map phi_grid DIRECTLY to physical angle theta
+        # phi_grid ∈ [-1, 1] → theta ∈ [-fov/2, fov/2]
+        # This ensures we ALWAYS sample from the full physical FOV, regardless of beta
+        theta = self.phi_grid * (fov_angle_rad / 2)
+
+        # Step 2: Denormalize rho_grid to radial coordinate ρ
         rho_denorm = self.rho_grid * np.log(self.max_range + 1)
-        # phi_grid is normalized [-1,1], denormalize to actual φ values
-        phi_denorm = self.phi_grid * (fov_angle_rad / 2)
 
-        # Apply inverse transformation with learnable scales
-        # This ensures alpha and beta affect the sampling grid
-        r = torch.exp(rho_denorm / (self.alpha + 1e-6)) - 1
+        # Step 3: Convert ρ to physical radius r
+        # ρ = α * log(r + 1), so r = exp(ρ / α) - 1
+        r = torch.exp(rho_denorm / (alpha_pos + 1e-6)) - 1
 
-        # Compute angle
-        theta = phi_denorm / (self.beta + 1e-6)
-
-        # Convert polar (r, θ) to Cartesian (x, y)
+        # Step 4: Convert polar (r, θ) to Cartesian (x, y)
         # For upward-facing fan: x = cx + r * sin(θ), y = cy - r * cos(θ)
         x = self.cx + r * torch.sin(theta)
         y = self.cy - r * torch.cos(theta)
@@ -235,20 +247,20 @@ class LogPolarTransform(nn.Module):
             torch.tensor(self.fov_angle, device=self.rho_grid.device)
         )
 
-        # Use base log-polar grids (output size remains constant)
-        # Denormalize rho and phi using scaled max_range (WITHOUT multiplying by alpha/beta)
+        # CRITICAL FIX (Audit 2025111407): Ensure sampling always covers full physical FOV
+        alpha_pos = F.softplus(self.alpha) if self.learnable_scales else self.alpha
+        beta_pos = F.softplus(self.beta) if self.learnable_scales else self.beta
+
+        # Step 1: Map phi_grid DIRECTLY to physical angle theta (full FOV coverage)
+        theta = self.phi_grid * (fov_angle_rad / 2)
+
+        # Step 2: Denormalize rho using scaled max_range
         rho_denorm = self.rho_grid * np.log(max_range_scaled + 1)
-        phi_denorm = self.phi_grid * (fov_angle_rad / 2)
 
-        # Apply inverse transformation with learnable scales
-        # This ensures alpha and beta affect the sampling grid
-        r = torch.exp(rho_denorm / (self.alpha + 1e-6)) - 1
+        # Step 3: Convert ρ to physical radius r
+        r = torch.exp(rho_denorm / (alpha_pos + 1e-6)) - 1
 
-        # Compute angle
-        theta = phi_denorm / (self.beta + 1e-6)
-
-        # Convert polar (r, θ) to Cartesian (x, y) with scaled sensor position
-        # For upward-facing fan: x = cx + r * sin(θ), y = cy - r * cos(θ)
+        # Step 4: Convert polar (r, θ) to Cartesian (x, y) with scaled sensor position
         x = cx_scaled + r * torch.sin(theta)
         y = cy_scaled - r * torch.cos(theta)
 
@@ -343,16 +355,25 @@ class LogPolarTransform(nn.Module):
         r = torch.sqrt((xx - self.cx)**2 + (yy - self.cy)**2)
         theta = torch.atan2(xx - self.cx, self.cy - yy)
 
-        # Convert polar to log-polar
-        rho = self.alpha * torch.log(r + 1)
-        phi = self.beta * theta
+        # Convert polar to log-polar (FORWARD transform)
+        # CRITICAL FIX (Audit 2025111407): Apply constrained alpha/beta
+        alpha_pos = F.softplus(self.alpha) if self.learnable_scales else self.alpha
+        beta_pos = F.softplus(self.beta) if self.learnable_scales else self.beta
+
+        rho = alpha_pos * torch.log(r + 1)
+        phi = beta_pos * theta  # Beta scales the angular coordinate in log-polar space
 
         # Normalize to [-1, 1] for grid_sample
         fov_angle_rad = torch.deg2rad(torch.tensor(self.fov_angle, device=logpolar_img.device))
-        rho_max = self.alpha * np.log(self.max_range + 1)
+        rho_max = alpha_pos * np.log(self.max_range + 1)
 
+        # CRITICAL: Normalize rho to [-1, 1]
         rho_norm = 2 * (rho / rho_max) - 1
-        phi_norm = 2 * (phi / (self.beta * fov_angle_rad / 2)) - 1
+
+        # CRITICAL: phi normalization - since phi = beta * theta and theta ∈ [-fov/2, fov/2],
+        # phi ∈ [beta*(-fov/2), beta*(fov/2)], so we normalize by (beta * fov/2)
+        # This makes beta affect the angular distribution in the log-polar output space
+        phi_norm = 2 * (phi / (beta_pos * fov_angle_rad / 2)) - 1
 
         # Clamp to valid range
         rho_norm = torch.clamp(rho_norm, -1, 1)

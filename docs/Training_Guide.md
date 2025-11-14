@@ -244,6 +244,35 @@ Increase dataloader workers:
 python scripts/train.py --config <config> --opts data.num_workers=8
 ```
 
+### Corrupt JPEG Data Warning
+
+**Issue**: Training logs show warnings like:
+```
+Corrupt JPEG data: premature end of data segment
+Corrupt JPEG data: bad Huffman code
+```
+
+**Root Cause**: Some RGB frames in the dataset contain damaged JPEG markers that PIL/OpenCV can still decode but trigger warnings. These do not crash training but pollute logs and may indicate subtle image quality degradation.
+
+**Solution**: Scrub damaged frames using `jpegtran` (lossless JPEG repair):
+
+```bash
+# Repair single file (lossless, strips corrupted markers)
+jpegtran -copy none -optimize -progressive input.jpg > output.jpg
+
+# Batch repair all JPEGs in a sequence directory
+find data/uuv2/rgb -name "*.jpg" -exec sh -c \
+  'jpegtran -copy none -optimize -progressive "$1" > "$1.tmp" && mv "$1.tmp" "$1"' _ {} \;
+```
+
+**Note**:
+- The `-copy none` flag strips EXIF/metadata that may contain corruption
+- `-optimize` and `-progressive` rebuild the Huffman tables cleanly
+- This operation is **lossless** (pixel data unchanged)
+- Run this preprocessing step **before** training if warnings appear frequently
+
+**Reference**: See Audit 2025111406 Finding 1.4 for detailed analysis.
+
 ---
 
 ## Best Practices
@@ -255,4 +284,4 @@ python scripts/train.py --config <config> --opts data.num_workers=8
 
 ---
 
-**Last Updated:** 2025-11-13
+**Last Updated:** 2025-11-14

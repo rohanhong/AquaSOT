@@ -89,20 +89,6 @@ class SonarEncoder(BaseModule):
             max_range_pixels = int(img_size[0] * 0.95)
         self.max_range_pixels = max_range_pixels
 
-        # Log-polar transformation (differentiable)
-        if use_logpolar:
-            self.logpolar_transform = LogPolarTransform(
-                sonar_height=img_size[0],
-                sonar_width=img_size[1],
-                output_height=224,  # Match ViT input size
-                output_width=224,   # Match ViT input size
-                learnable_scales=learnable_logpolar,
-                init_alpha=1.0,
-                init_beta=1.0,
-            )
-        else:
-            self.logpolar_transform = nn.Identity()
-
         # Sonar geometry handler
         self.geometry_handler = SonarGeometryHandler(
             sonar_height=img_size[0],
@@ -110,6 +96,25 @@ class SonarEncoder(BaseModule):
             max_range=max_range_pixels,
             fov_angle=sonar_fov_angle,
         )
+
+        # Log-polar transformation (differentiable)
+        # CRITICAL FIX (Audit 2025111407): Forward custom FOV/max_range/sensor_pos to LogPolarTransform
+        # This ensures masks/radial weights and log-polar sampling use consistent coordinate systems
+        if use_logpolar:
+            self.logpolar_transform = LogPolarTransform(
+                sonar_height=img_size[0],
+                sonar_width=img_size[1],
+                output_height=224,  # Match ViT input size
+                output_width=224,   # Match ViT input size
+                fov_angle=sonar_fov_angle,  # Forward custom FOV
+                max_range=max_range_pixels,  # Forward custom max range
+                sensor_pos=self.geometry_handler.sensor_pos,  # Forward sensor position
+                learnable_scales=learnable_logpolar,
+                init_alpha=1.0,
+                init_beta=1.0,
+            )
+        else:
+            self.logpolar_transform = nn.Identity()
 
         # Input channel adapter (sonar is typically grayscale)
         self.input_adapter = nn.Conv2d(1, 3, kernel_size=1)
