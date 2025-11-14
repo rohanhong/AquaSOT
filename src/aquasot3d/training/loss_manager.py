@@ -360,14 +360,61 @@ class LossManager(nn.Module):
         """
         Compute bounding box regression loss.
 
+        CRITICAL (Audit 2025111411 Finding 3): This function expects cxcywh format.
+        Use type-safe wrappers to prevent format confusion:
+            from aquasot3d.utils import BBoxCXCYWH
+            pred_bbox = BBoxCXCYWH(pred_boxes)  # Explicit format declaration
+            target_bbox = BBoxCXCYWH(target_boxes)
+            loss = _compute_box_loss(pred_bbox.tensor(), target_bbox.tensor())
+
         Args:
-            pred_boxes: Predicted boxes [B, 4] in cxcywh format
-            target_boxes: Target boxes [B, 4] in cxcywh format
+            pred_boxes: Predicted boxes [B, 4] in cxcywh format (normalized [0,1])
+            target_boxes: Target boxes [B, 4] in cxcywh format (normalized [0,1])
             loss_type: Type of loss to use
 
         Returns:
             Box regression loss
         """
+        # CRITICAL: Type-safe format enforcement (Audit 2025111411 Finding 3)
+        # Wrap inputs to validate format and make conversions explicit
+        from aquasot3d.utils import BBoxCXCYWH
+
+        # Validate shape first
+        if pred_boxes.dim() != 2 or pred_boxes.shape[-1] != 4:
+            raise ValueError(
+                f"Invalid pred_boxes shape: {pred_boxes.shape}. "
+                f"Expected [B, 4] in cxcywh format."
+            )
+        if target_boxes.dim() != 2 or target_boxes.shape[-1] != 4:
+            raise ValueError(
+                f"Invalid target_boxes shape: {target_boxes.shape}. "
+                f"Expected [B, 4] in cxcywh format."
+            )
+
+        # Use type-safe wrappers to enforce format contract
+        # This will raise if shape is wrong, and documents the expected format
+        try:
+            pred_bbox = BBoxCXCYWH(pred_boxes)
+            target_bbox = BBoxCXCYWH(target_boxes)
+            # Extract tensors for computation (already validated)
+            pred_boxes = pred_bbox.tensor()
+            target_boxes = target_bbox.tensor()
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Bbox format validation failed: {e}. "
+                f"This function expects [B, 4] tensors in cxcywh format."
+            )
+
+        # Warn if boxes appear to be in pixel coordinates (values >> 1) instead of normalized
+        if torch.any(pred_boxes > 2.0) or torch.any(target_boxes > 2.0):
+            import warnings
+            warnings.warn(
+                "Box coordinates > 2.0 detected in loss computation. "
+                "This function expects normalized [0,1] cxcywh format. "
+                "Use normalize_bbox() before passing to loss computation.",
+                RuntimeWarning
+            )
+
         # L1 loss component
         l1_loss = F.l1_loss(pred_boxes, target_boxes, reduction=self.reduction)
 

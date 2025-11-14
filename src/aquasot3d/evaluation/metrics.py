@@ -28,10 +28,17 @@ def compute_iou(
     CRITICAL FIX (Audit 2025111409 Finding 2): Removed format guessing heuristics.
     Format must be explicitly specified to avoid mis-parsing positive xyxy boxes as cxcywh.
 
+    BEST PRACTICE (Audit 2025111411 Finding 3): Use type-safe bbox wrappers:
+        from aquasot3d.utils import BBoxXYWH, BBoxCXCYWH
+        bbox1 = BBoxXYWH(np.array([10, 20, 40, 50]))  # Explicit xywh
+        bbox2_cxcywh = BBoxCXCYWH(pred_boxes[i])      # Explicit cxcywh
+        bbox2 = bbox2_cxcywh.to_xywh()                # Type-safe conversion
+        iou = compute_iou(bbox1.numpy(), bbox2.numpy(), format='xywh')
+
     Args:
-        bbox1: First bounding box
-        bbox2: Second bounding box
-        format: Box format - 'cxcywh' (center x, y, width, height) or 'xyxy' (x1, y1, x2, y2)
+        bbox1: First bounding box [4,] array
+        bbox2: Second bounding box [4,] array
+        format: Box format - 'xywh' (x,y,w,h), 'cxcywh' (cx,cy,w,h), or 'xyxy' (x1,y1,x2,y2)
 
     Returns:
         IoU value in [0, 1]
@@ -41,6 +48,32 @@ def compute_iou(
         >>> bbox2 = np.array([55, 55, 40, 40])
         >>> iou = compute_iou(bbox1, bbox2, format='cxcywh')
     """
+    # CRITICAL VALIDATION (Audit 2025111411 Finding 3):
+    # Validate bbox shape and format to prevent silent errors
+    if bbox1.shape != (4,) or bbox2.shape != (4,):
+        raise ValueError(
+            f"Invalid bbox shapes: bbox1={bbox1.shape}, bbox2={bbox2.shape}. "
+            f"Expected (4,) arrays in format '{format}'."
+        )
+
+    # Validate format is recognized
+    if format not in ['xywh', 'cxcywh', 'xyxy']:
+        raise ValueError(
+            f"Unknown bbox format: '{format}'. "
+            f"Use 'xywh', 'cxcywh', or 'xyxy'. "
+            f"Prefer type-safe wrappers (BBoxXYWH, BBoxCXCYWH) to avoid confusion."
+        )
+
+    # Warn if boxes appear to be normalized [0,1] when pixel coords expected
+    if format in ['xywh', 'xyxy'] and np.all(bbox1 <= 1.0) and np.all(bbox2 <= 1.0):
+        import warnings
+        warnings.warn(
+            f"Boxes in range [0,1] detected for format='{format}'. "
+            f"Evaluation metrics expect pixel coordinates. "
+            f"Use denormalize_bbox() to convert from normalized [0,1] to pixels.",
+            RuntimeWarning
+        )
+
     # Convert to xyxy format if needed
     if format == 'cxcywh':
         # Convert from [cx, cy, w, h] to [x1, y1, x2, y2]

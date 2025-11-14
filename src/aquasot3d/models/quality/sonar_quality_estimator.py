@@ -217,28 +217,65 @@ class SonarQualityEstimator(BaseModule):
 
         return torch.stack(intensities).unsqueeze(1)  # (B, 1)
 
-    def crop_roi(self, sonar_frame: torch.Tensor, bbox: torch.Tensor) -> torch.Tensor:
+    def crop_roi(
+        self,
+        sonar_frame: torch.Tensor,
+        bbox: torch.Tensor,
+        metadata: Optional[Dict] = None
+    ) -> torch.Tensor:
         """
         Crop region of interest from sonar image.
 
+        CRITICAL FIX (Audit 2025111411 Finding 4):
+        Now padding-aware to avoid including padded zeros in quality estimation.
+        Sonar letterbox padding artificially depresses SNR/intensity scores.
+
         Args:
             sonar_frame: Input sonar (B, 1, H, W)
-            bbox: Bounding boxes (B, 4)
+            bbox: Bounding boxes (B, 4) in pixel coordinates [x, y, w, h]
+            metadata: Optional dict or list of dicts with padding info
 
         Returns:
             Cropped ROIs (B, 1, 64, 64)
         """
         B = sonar_frame.shape[0]
+        H, W = sonar_frame.shape[2], sonar_frame.shape[3]
         rois = []
+
+        # Handle metadata format (dict for legacy, list for per-sample)
+        if metadata is None:
+            metadata_list = [{}] * B
+        elif isinstance(metadata, dict):
+            metadata_list = [metadata] * B
+        else:
+            metadata_list = metadata
 
         for i in range(B):
             x, y, w, h = bbox[i].long()
 
-            # Clamp
-            x = torch.clamp(x, 0, sonar_frame.shape[3] - 1)
-            y = torch.clamp(y, 0, sonar_frame.shape[2] - 1)
-            w = torch.clamp(w, 1, sonar_frame.shape[3] - x)
-            h = torch.clamp(h, 1, sonar_frame.shape[2] - y)
+            # CRITICAL FIX (Audit 2025111411 Finding 4):
+            # Adjust bbox to exclude letterbox padding (top-only padding for sonar)
+            meta = metadata_list[i] if i < len(metadata_list) else {}
+            pad_x = int(meta.get('pad_x', 0))
+            pad_y = int(meta.get('pad_y', 0))
+
+            # Clamp bbox to valid (non-padded) region
+            # For sonar, padding is top-only (pad_y > 0), so valid region is [pad_y:H, pad_x:W-pad_x]
+            valid_y_min = pad_y
+            valid_y_max = H
+            valid_x_min = pad_x
+            valid_x_max = W
+
+            # Clamp bbox coordinates to valid region
+            x = torch.clamp(x, valid_x_min, valid_x_max - 1)
+            y = torch.clamp(y, valid_y_min, valid_y_max - 1)
+
+            # Ensure bbox doesn't extend into padded region
+            x_max = min(x + w, valid_x_max)
+            y_max = min(y + h, valid_y_max)
+
+            w = torch.clamp(x_max - x, 1, W)
+            h = torch.clamp(y_max - y, 1, H)
 
             roi = sonar_frame[i:i+1, :, y:y+h, x:x+w]
 
@@ -246,6 +283,7 @@ class SonarQualityEstimator(BaseModule):
             if roi.shape[2] > 0 and roi.shape[3] > 0:
                 roi = F.interpolate(roi, size=(64, 64), mode='bilinear', align_corners=False)
             else:
+                # Fallback for edge cases
                 roi = torch.zeros(1, 1, 64, 64, device=sonar_frame.device)
 
             rois.append(roi)
@@ -256,15 +294,25 @@ class SonarQualityEstimator(BaseModule):
         self,
         sonar_frame: torch.Tensor,
         bbox: Optional[torch.Tensor] = None,
-        geometry_weights: Optional[torch.Tensor] = None
+        geometry_weights: Optional[torch.Tensor] = None,
+        metadata: Optional[Dict] = None
     ) -> torch.Tensor:
         """
         Estimate sonar frame quality.
+
+        CRITICAL FIX (Audit 2025111411 Finding 4):
+        Now accepts metadata to handle letterbox padding correctly. Sonar ROIs
+        are cropped from the valid (non-padded) region only to prevent artificially
+        depressed SNR scores from padded zeros.
 
         Args:
             sonar_frame: Sonar frames (B, 1, H, W)
             bbox: Bounding boxes (B, 4) for ROI-based quality estimation
             geometry_weights: Sonar geometry weights (B, H, W) from SonarGeometryHandler
+            metadata: Optional dict or list of dicts containing padding info:
+                      - pad_x: left padding offset
+                      - pad_y: top padding offset
+                      - original_height, original_width: pre-letterbox dimensions
 
         Returns:
             Quality scores (B, 1) in range [0, 1]
@@ -280,7 +328,7 @@ class SonarQualityEstimator(BaseModule):
 
         # Learnable quality estimation
         if self.learnable and self.quality_net is not None:
-            roi = self.crop_roi(sonar_frame, bbox)
+            roi = self.crop_roi(sonar_frame, bbox, metadata=metadata)
             quality = self.quality_net(roi)
             return quality
 

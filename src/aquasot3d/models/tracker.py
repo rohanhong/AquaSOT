@@ -338,19 +338,72 @@ class AquaSOT3DTracker(BaseModule):
             f"use_weak3d={use_weak3d}, use_quality_gating={use_quality_gating}"
         )
 
-    def reset_temporal_state(self) -> None:
+    def reset_temporal_state(self) -> Dict[str, bool]:
         """
-        Reset temporal state for new sequence.
+        Reset temporal state for new sequence with introspection.
+
+        CRITICAL FIX (Audit 2025111411 Finding 5):
+        Returns dict of reset statuses to verify all temporal modules acknowledged reset.
+        This prevents silent state leakage if a module lacks reset implementation.
 
         Call this when starting tracking on a new video sequence.
+
+        Returns:
+            Dict mapping module names to reset success status:
+            {
+                'temporal_state': True,
+                'temporal_head': bool,
+                'temporal_aggregator': bool,
+                'adaptive_weighting': bool
+            }
         """
+        reset_status = {}
+
+        # Always clear base temporal state
         self.temporal_state = None
-        if self.temporal_head is not None and hasattr(self.temporal_head, 'reset_state'):
-            self.temporal_head.reset_state()
-        if self.temporal_aggregator is not None and hasattr(self.temporal_aggregator, 'reset'):
-            self.temporal_aggregator.reset()
-        if self.adaptive_weighting is not None and hasattr(self.adaptive_weighting, 'reset_state'):
-            self.adaptive_weighting.reset_state()
+        reset_status['temporal_state'] = True
+
+        # Reset temporal head (Vision-Mamba)
+        if self.temporal_head is not None:
+            if hasattr(self.temporal_head, 'reset_state'):
+                self.temporal_head.reset_state()
+                reset_status['temporal_head'] = True
+            else:
+                reset_status['temporal_head'] = False
+                self.logger.warning("temporal_head lacks reset_state() method - state may leak!")
+        else:
+            reset_status['temporal_head'] = None  # Not used
+
+        # Reset temporal aggregator
+        if self.temporal_aggregator is not None:
+            if hasattr(self.temporal_aggregator, 'reset'):
+                self.temporal_aggregator.reset()
+                reset_status['temporal_aggregator'] = True
+            else:
+                reset_status['temporal_aggregator'] = False
+                self.logger.warning("temporal_aggregator lacks reset() method - state may leak!")
+        else:
+            reset_status['temporal_aggregator'] = None  # Not used
+
+        # Reset adaptive weighting EMA
+        if self.adaptive_weighting is not None:
+            if hasattr(self.adaptive_weighting, 'reset_state'):
+                self.adaptive_weighting.reset_state()
+                reset_status['adaptive_weighting'] = True
+            else:
+                reset_status['adaptive_weighting'] = False
+                self.logger.warning("adaptive_weighting lacks reset_state() method - state may leak!")
+        else:
+            reset_status['adaptive_weighting'] = None  # Not used
+
+        # Log summary
+        failed_resets = [k for k, v in reset_status.items() if v is False]
+        if failed_resets:
+            self.logger.error(f"Failed to reset temporal state for: {failed_resets}")
+        else:
+            self.logger.debug(f"Temporal state reset successful: {reset_status}")
+
+        return reset_status
 
     def extract_backbone_features(
         self,
@@ -670,7 +723,8 @@ class AquaSOT3DTracker(BaseModule):
         sonar_search: torch.Tensor,
         gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
         return_losses: bool = True,
-        return_intermediate: bool = False
+        return_intermediate: bool = False,
+        metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Complete forward pass of AquaSOT-3D tracker.
@@ -684,6 +738,10 @@ class AquaSOT3DTracker(BaseModule):
                 Expected format: {'rgb': (B, 4), 'sonar': (B, 4), 'fusion': (B, 4)}
             return_losses: Whether to compute and return losses
             return_intermediate: Whether to return intermediate features
+            metadata: Optional metadata dict containing:
+                - 'rgb_search_metadata': List of dicts with scale/padding info
+                - 'sonar_search_metadata': List of dicts with scale/padding info
+                (CRITICAL FIX for Audit 2025111411 Finding 4)
 
         Returns:
             Dictionary containing:
@@ -727,16 +785,23 @@ class AquaSOT3DTracker(BaseModule):
             rgb_bbox_pixels = gt_boxes.get('rgb_pixels') if gt_boxes is not None else None
             sonar_bbox_pixels = gt_boxes.get('sonar_pixels') if gt_boxes is not None else None
 
+            # CRITICAL FIX (Audit 2025111411 Finding 4):
+            # Extract per-sample metadata for padding-aware quality estimation
+            rgb_search_metadata = metadata.get('rgb_search_metadata') if metadata else None
+            sonar_search_metadata = metadata.get('sonar_search_metadata') if metadata else None
+
             # Estimate RGB quality based on sharpness/blur
             rgb_quality = self.rgb_quality_estimator(
                 rgb_frame=rgb_search,
-                bbox=rgb_bbox_pixels
+                bbox=rgb_bbox_pixels,
+                metadata=rgb_search_metadata
             )  # (B, 1)
 
             # Estimate Sonar quality based on SNR/speckle
             sonar_quality = self.sonar_quality_estimator(
                 sonar_frame=sonar_search,
-                bbox=sonar_bbox_pixels
+                bbox=sonar_bbox_pixels,
+                metadata=sonar_search_metadata
             )  # (B, 1)
         else:
             # No quality gating: use default high quality scores

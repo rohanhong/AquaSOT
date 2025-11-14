@@ -399,6 +399,15 @@ class Trainer:
             if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                 gt_boxes['fusion'] = gt_boxes['rgb']
 
+            # CRITICAL FIX (Audit 2025111411 Finding 4):
+            # Extract metadata for quality estimators (per-sample list of dicts)
+            metadata = {
+                'rgb_search_metadata': batch.get('rgb_search_metadata'),
+                'sonar_search_metadata': batch.get('sonar_search_metadata'),
+                'template_rgb_metadata': batch.get('template_rgb_metadata'),
+                'template_sonar_metadata': batch.get('template_sonar_metadata'),
+            }
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():
@@ -408,7 +417,8 @@ class Trainer:
                         batch['sonar_template'],
                         batch['sonar_search'],
                         gt_boxes=gt_boxes,
-                        return_losses=True
+                        return_losses=True,
+                        metadata=metadata
                     )
                     # Priority 0.1: Use model-provided losses if available
                     if 'losses' in outputs and len(outputs['losses']) > 0:
@@ -427,7 +437,8 @@ class Trainer:
                     batch['sonar_template'],
                     batch['sonar_search'],
                     gt_boxes=gt_boxes,
-                    return_losses=True
+                    return_losses=True,
+                    metadata=metadata
                 )
                 # Priority 0.1: Use model-provided losses if available
                 if 'losses' in outputs and len(outputs['losses']) > 0:
@@ -546,6 +557,15 @@ class Trainer:
                 if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                     gt_boxes['fusion'] = gt_boxes['rgb']
 
+                # CRITICAL FIX (Audit 2025111411 Finding 4):
+                # Extract metadata for quality estimators
+                metadata = {
+                    'rgb_search_metadata': batch.get('rgb_search_metadata'),
+                    'sonar_search_metadata': batch.get('sonar_search_metadata'),
+                    'template_rgb_metadata': batch.get('template_rgb_metadata'),
+                    'template_sonar_metadata': batch.get('template_sonar_metadata'),
+                }
+
                 # Forward pass
                 if self.use_amp:
                     with autocast():
@@ -555,7 +575,8 @@ class Trainer:
                             batch['sonar_template'],
                             batch['sonar_search'],
                             gt_boxes=gt_boxes if gt_boxes else None,
-                            return_losses=True if gt_boxes else False
+                            return_losses=True if gt_boxes else False,
+                            metadata=metadata
                         )
                         # Use model-provided losses if available
                         if 'losses' in outputs and len(outputs['losses']) > 0:
@@ -574,7 +595,8 @@ class Trainer:
                         batch['sonar_template'],
                         batch['sonar_search'],
                         gt_boxes=gt_boxes if gt_boxes else None,
-                        return_losses=True if gt_boxes else False
+                        return_losses=True if gt_boxes else False,
+                        metadata=metadata
                     )
                     # Use model-provided losses if available
                     if 'losses' in outputs and len(outputs['losses']) > 0:

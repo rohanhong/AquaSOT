@@ -221,19 +221,20 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             # Keep as list of strings (cannot convert to tensor)
             batched[key] = [sample[key] for sample in batch]
 
-    # CRITICAL FIX (Audit 2025111409 Finding 1):
+    # CRITICAL FIX (Audit 2025111409 Finding 1 & Audit 2025111411 Finding 2):
     # Handle transformation metadata for physical coordinate reconstruction
     # Metadata dicts contain: original_height, original_width, scale_x, scale_y, pad_x, pad_y
+    #
+    # IMPORTANT (Audit 2025111411 Finding 2): Store per-sample metadata to support batch_size > 1
+    # Previously assumed batch_size=1 and only used batch[0], which breaks for multi-sample batches
     metadata_keys = [
         'rgb_search_metadata', 'sonar_search_metadata',
         'template_rgb_metadata', 'template_sonar_metadata'
     ]
     for key in metadata_keys:
         if key in batch[0]:
-            # For evaluation (batch_size=1), just use first sample's metadata
-            # For training (batch_size>1), each sample should have identical metadata
-            # since they come from the same preprocessing pipeline
-            batched[key] = batch[0][key]
+            # Store as list of dicts (one per sample in batch)
+            batched[key] = [sample[key] for sample in batch]
 
     return batched
 

@@ -196,6 +196,16 @@ class TrackingDataset(Dataset):
             sonar_s_pad_x, sonar_s_pad_y
         )
 
+        # CRITICAL FIX (Audit 2025111411 Finding 1):
+        # Propagate transformation metadata for training pipeline
+        # Quality estimators and weak-3D projectors need physical coordinate context
+
+        # Get original image dimensions
+        template_rgb_h, template_rgb_w = template_data['rgb_img'].shape[:2] if template_data['rgb_img'] is not None else (self.template_size, self.template_size)
+        search_rgb_h, search_rgb_w = search_data['rgb_img'].shape[:2] if search_data['rgb_img'] is not None else (self.search_size, self.search_size)
+        template_sonar_h, template_sonar_w = template_data['sonar_img'].shape[:2] if template_data['sonar_img'] is not None else (self.template_size, self.template_size)
+        search_sonar_h, search_sonar_w = search_data['sonar_img'].shape[:2] if search_data['sonar_img'] is not None else (self.search_size, self.search_size)
+
         # Build tracking pair
         pair = {
             # Images (resized tensors)
@@ -224,6 +234,41 @@ class TrackingDataset(Dataset):
             'template_idx': template_idx,
             'search_idx': search_idx,
             'is_valid': template_data['is_valid'] and search_data['is_valid'],
+
+            # CRITICAL FIX (Audit 2025111411 Finding 1): Transformation metadata for training
+            # These dicts enable quality estimators and weak-3D projectors to operate in physical coordinates
+            'template_rgb_metadata': {
+                'original_height': template_rgb_h,
+                'original_width': template_rgb_w,
+                'scale_x': rgb_template_scale_x,
+                'scale_y': rgb_template_scale_y,
+                'pad_x': rgb_t_pad_x,
+                'pad_y': rgb_t_pad_y,
+            },
+            'rgb_search_metadata': {
+                'original_height': search_rgb_h,
+                'original_width': search_rgb_w,
+                'scale_x': rgb_search_scale_x,
+                'scale_y': rgb_search_scale_y,
+                'pad_x': rgb_s_pad_x,
+                'pad_y': rgb_s_pad_y,
+            },
+            'template_sonar_metadata': {
+                'original_height': template_sonar_h,
+                'original_width': template_sonar_w,
+                'scale_x': sonar_template_scale_x,
+                'scale_y': sonar_template_scale_y,
+                'pad_x': sonar_t_pad_x,
+                'pad_y': sonar_t_pad_y,
+            },
+            'sonar_search_metadata': {
+                'original_height': search_sonar_h,
+                'original_width': search_sonar_w,
+                'scale_x': sonar_search_scale_x,
+                'scale_y': sonar_search_scale_y,
+                'pad_x': sonar_s_pad_x,
+                'pad_y': sonar_s_pad_y,
+            },
         }
 
         return pair

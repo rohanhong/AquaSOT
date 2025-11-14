@@ -315,8 +315,37 @@ class TrackingEvaluator:
         sonar_template = batch['sonar_template'].to(self.device)
         sonar_search = batch['sonar_search'].to(self.device)
 
-        # Run model
-        outputs = self.model(rgb_template, rgb_search, sonar_template, sonar_search)
+        # CRITICAL FIX (Audit 2025111411 Finding 4):
+        # Extract metadata for quality estimators (must be done BEFORE model forward)
+        # Support per-sample metadata (list of dicts) for batch_size > 1
+        rgb_metadata_list = batch.get('rgb_search_metadata', [])
+        sonar_metadata_list = batch.get('sonar_search_metadata', [])
+        template_rgb_metadata = batch.get('template_rgb_metadata', [])
+        template_sonar_metadata = batch.get('template_sonar_metadata', [])
+
+        # Handle both list (new format) and dict (legacy format) for backward compatibility
+        if isinstance(rgb_metadata_list, dict):
+            rgb_metadata_list = [rgb_metadata_list]
+        if isinstance(sonar_metadata_list, dict):
+            sonar_metadata_list = [sonar_metadata_list]
+        if isinstance(template_rgb_metadata, dict):
+            template_rgb_metadata = [template_rgb_metadata]
+        if isinstance(template_sonar_metadata, dict):
+            template_sonar_metadata = [template_sonar_metadata]
+
+        # Package metadata for tracker
+        metadata = {
+            'rgb_search_metadata': rgb_metadata_list,
+            'sonar_search_metadata': sonar_metadata_list,
+            'template_rgb_metadata': template_rgb_metadata,
+            'template_sonar_metadata': template_sonar_metadata,
+        }
+
+        # Run model with metadata for quality estimators
+        outputs = self.model(
+            rgb_template, rgb_search, sonar_template, sonar_search,
+            metadata=metadata
+        )
 
         # Extract predictions
         predictions = {
@@ -327,57 +356,96 @@ class TrackingEvaluator:
             'sonar_gt': []
         }
 
-        # CRITICAL FIX (Audit 2025111409 Finding 1):
-        # Extract metadata for physical coordinate reconstruction
-        rgb_metadata = batch.get('rgb_search_metadata', {})
-        sonar_metadata = batch.get('sonar_search_metadata', {})
-
         # Get predictions (model outputs plural keys: rgb_boxes, sonar_boxes, fusion_boxes)
-        # Denormalize boxes from [0,1] to physical pixel coordinates using metadata
+        # Denormalize boxes from [0,1] to physical pixel coordinates using per-sample metadata
+        #
+        # BEST PRACTICE (Audit 2025111411 Finding 3): Use type-safe bbox wrappers at boundaries
+        # to prevent format confusion. Model outputs normalized cxcywh [0,1], but evaluation
+        # expects xywh pixels. Type wrappers make this conversion explicit:
+        #   from aquasot3d.utils import BBoxCXCYWH, BBoxXYWH
+        #   pred_norm_cxcywh = BBoxCXCYWH(outputs['rgb_boxes'])  # Model output
+        #   pred_xywh = pred_norm_cxcywh.to_xywh()                # Convert to xywh format
+        #   pred_pixels = denormalize_bbox(pred_xywh.tensor(), ...)  # Denormalize
+        #   pred_bbox = BBoxXYWH(pred_pixels)                     # Type-safe pixel coords
+        #
         if 'rgb_boxes' in outputs:
-            rgb_boxes = outputs['rgb_boxes'].cpu().numpy()
+            # PRODUCTION USE (Audit 2025111411 Finding 3):
+            # Use type-safe wrappers to make format conversion explicit
+            from aquasot3d.utils import BBoxCXCYWH, BBoxXYWH
+
+            rgb_boxes = outputs['rgb_boxes'].cpu()  # Keep as tensor for wrapper
+
+            # Wrap model outputs as cxcywh (model convention)
+            rgb_boxes_cxcywh = BBoxCXCYWH(rgb_boxes)
+
+            # Convert to xywh for denormalization (evaluation convention)
+            rgb_boxes_xywh = rgb_boxes_cxcywh.to_xywh()
+            rgb_boxes_np = rgb_boxes_xywh.numpy()
+
             predictions['rgb_pred'] = [
                 self._denormalize_bbox(
-                    rgb_boxes[i],
+                    rgb_boxes_np[i],
                     self.search_size,
-                    scale_x=rgb_metadata.get('scale_x'),
-                    scale_y=rgb_metadata.get('scale_y'),
-                    pad_x=rgb_metadata.get('pad_x', 0),
-                    pad_y=rgb_metadata.get('pad_y', 0),
-                    original_size=(rgb_metadata.get('original_height'), rgb_metadata.get('original_width'))
+                    scale_x=rgb_metadata_list[i].get('scale_x') if i < len(rgb_metadata_list) else None,
+                    scale_y=rgb_metadata_list[i].get('scale_y') if i < len(rgb_metadata_list) else None,
+                    pad_x=rgb_metadata_list[i].get('pad_x', 0) if i < len(rgb_metadata_list) else 0,
+                    pad_y=rgb_metadata_list[i].get('pad_y', 0) if i < len(rgb_metadata_list) else 0,
+                    original_size=(
+                        rgb_metadata_list[i].get('original_height'),
+                        rgb_metadata_list[i].get('original_width')
+                    ) if i < len(rgb_metadata_list) else None
                 )
-                for i in range(len(rgb_boxes))
+                for i in range(len(rgb_boxes_np))
             ]
 
         if 'sonar_boxes' in outputs:
-            sonar_boxes = outputs['sonar_boxes'].cpu().numpy()
+            # Type-safe conversion: cxcywh -> xywh
+            from aquasot3d.utils import BBoxCXCYWH
+
+            sonar_boxes = outputs['sonar_boxes'].cpu()
+            sonar_boxes_cxcywh = BBoxCXCYWH(sonar_boxes)
+            sonar_boxes_xywh = sonar_boxes_cxcywh.to_xywh()
+            sonar_boxes_np = sonar_boxes_xywh.numpy()
+
             predictions['sonar_pred'] = [
                 self._denormalize_bbox(
-                    sonar_boxes[i],
+                    sonar_boxes_np[i],
                     self.search_size,
-                    scale_x=sonar_metadata.get('scale_x'),
-                    scale_y=sonar_metadata.get('scale_y'),
-                    pad_x=sonar_metadata.get('pad_x', 0),
-                    pad_y=sonar_metadata.get('pad_y', 0),
-                    original_size=(sonar_metadata.get('original_height'), sonar_metadata.get('original_width'))
+                    scale_x=sonar_metadata_list[i].get('scale_x') if i < len(sonar_metadata_list) else None,
+                    scale_y=sonar_metadata_list[i].get('scale_y') if i < len(sonar_metadata_list) else None,
+                    pad_x=sonar_metadata_list[i].get('pad_x', 0) if i < len(sonar_metadata_list) else 0,
+                    pad_y=sonar_metadata_list[i].get('pad_y', 0) if i < len(sonar_metadata_list) else 0,
+                    original_size=(
+                        sonar_metadata_list[i].get('original_height'),
+                        sonar_metadata_list[i].get('original_width')
+                    ) if i < len(sonar_metadata_list) else None
                 )
-                for i in range(len(sonar_boxes))
+                for i in range(len(sonar_boxes_np))
             ]
 
         if 'fusion_boxes' in outputs:
-            fusion_boxes = outputs['fusion_boxes'].cpu().numpy()
-            # Fusion uses RGB coordinate space by convention
+            # Type-safe conversion: cxcywh -> xywh (fusion uses RGB coordinate space)
+            from aquasot3d.utils import BBoxCXCYWH
+
+            fusion_boxes = outputs['fusion_boxes'].cpu()
+            fusion_boxes_cxcywh = BBoxCXCYWH(fusion_boxes)
+            fusion_boxes_xywh = fusion_boxes_cxcywh.to_xywh()
+            fusion_boxes_np = fusion_boxes_xywh.numpy()
+
             predictions['fusion_pred'] = [
                 self._denormalize_bbox(
-                    fusion_boxes[i],
+                    fusion_boxes_np[i],
                     self.search_size,
-                    scale_x=rgb_metadata.get('scale_x'),
-                    scale_y=rgb_metadata.get('scale_y'),
-                    pad_x=rgb_metadata.get('pad_x', 0),
-                    pad_y=rgb_metadata.get('pad_y', 0),
-                    original_size=(rgb_metadata.get('original_height'), rgb_metadata.get('original_width'))
+                    scale_x=rgb_metadata_list[i].get('scale_x') if i < len(rgb_metadata_list) else None,
+                    scale_y=rgb_metadata_list[i].get('scale_y') if i < len(rgb_metadata_list) else None,
+                    pad_x=rgb_metadata_list[i].get('pad_x', 0) if i < len(rgb_metadata_list) else 0,
+                    pad_y=rgb_metadata_list[i].get('pad_y', 0) if i < len(rgb_metadata_list) else 0,
+                    original_size=(
+                        rgb_metadata_list[i].get('original_height'),
+                        rgb_metadata_list[i].get('original_width')
+                    ) if i < len(rgb_metadata_list) else None
                 )
-                for i in range(len(fusion_boxes))
+                for i in range(len(fusion_boxes_np))
             ]
 
         # Get ground truth boxes
