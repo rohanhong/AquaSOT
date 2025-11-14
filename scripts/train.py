@@ -116,6 +116,23 @@ def build_model(cfg):
     fusion_head_cfg = clean_head_config(cfg.model.heads.get('fusion_box', {}))
     weak3d_cfg = clean_head_config(cfg.model.heads.get('weak3d', {}))
 
+    # CRITICAL FIX (Audit 2025111414 Finding 5): Wire quality_config and projector_config
+    # Allow YAML users to tune quality estimators and projector geometry
+    # Forward these sections whenever they exist (non-empty), not only when 'type' is set
+    quality_cfg = None
+    if hasattr(cfg.model, 'quality') and cfg.model.quality:
+        # Convert to dict and check if non-empty (has actual config keys)
+        quality_dict = _config_to_dict(cfg.model.quality)
+        if quality_dict:  # Non-empty dict means user provided config
+            quality_cfg = quality_dict
+
+    projector_cfg = None
+    if hasattr(cfg.model, 'projector') and cfg.model.projector:
+        # Convert to dict and check if non-empty (has actual config keys)
+        projector_dict = _config_to_dict(cfg.model.projector)
+        if projector_dict:  # Non-empty dict means user provided config
+            projector_cfg = projector_dict
+
     # Determine use_weak3d
     use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
 
@@ -128,6 +145,8 @@ def build_model(cfg):
         box_head_config=box_head_cfg,
         fusion_head_config=fusion_head_cfg,
         weak3d_config=weak3d_cfg,
+        quality_config=quality_cfg,
+        projector_config=projector_cfg,
         use_temporal=cfg.model.temporal.get('enabled', True),
         use_weak3d=use_weak3d
     )

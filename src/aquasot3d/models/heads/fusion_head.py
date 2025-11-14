@@ -211,19 +211,28 @@ class AdaptiveFusionGate(nn.Module):
         mask = torch.ones(batch_size, 2, device=device)
 
         for i in range(min(batch_size, len(rgb_meta), len(sonar_meta))):
+            # CRITICAL FIX (Audit 2025111414 Finding 1): Use pad_x/pad_y instead of 'padding'
+            # Loaders emit scale_x/y and pad_x/y, not a unified 'padding' key
+
             # RGB metadata: check if heavily padded
-            if rgb_meta[i] and 'padding' in rgb_meta[i]:
-                padding = rgb_meta[i]['padding']
-                total_padding = sum(padding) if isinstance(padding, (list, tuple)) else padding
+            if rgb_meta[i]:
+                pad_x = rgb_meta[i].get('pad_x', 0)
+                pad_y = rgb_meta[i].get('pad_y', 0)
+                # Compute padding ratio relative to target size (default 256)
+                target_size = 256.0
+                total_padding_ratio = (pad_x + pad_y) / target_size
                 # If more than 50% padding, reduce attention weight
-                if total_padding > 0.5:
+                if total_padding_ratio > 0.5:
                     mask[i, 0] = 0.5
 
             # Sonar metadata: check if heavily padded
-            if sonar_meta[i] and 'padding' in sonar_meta[i]:
-                padding = sonar_meta[i]['padding']
-                total_padding = sum(padding) if isinstance(padding, (list, tuple)) else padding
-                if total_padding > 0.5:
+            if sonar_meta[i]:
+                pad_x = sonar_meta[i].get('pad_x', 0)
+                pad_y = sonar_meta[i].get('pad_y', 0)
+                # Compute padding ratio relative to target size (default 256)
+                target_size = 256.0
+                total_padding_ratio = (pad_x + pad_y) / target_size
+                if total_padding_ratio > 0.5:
                     mask[i, 1] = 0.5
 
         return mask

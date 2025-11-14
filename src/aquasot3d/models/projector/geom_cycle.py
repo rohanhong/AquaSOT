@@ -146,7 +146,8 @@ class GeometricCyclicProjector(BaseModule):
             cx_offset, cy_offset = self.principal_point
             sx, sy = self.size_scale
 
-            # CRITICAL FIX (Audit 2025111413 Finding 2): Apply metadata scale correction
+            # CRITICAL FIX (Audit 2025111414 Finding 2): Apply metadata scale correction
+            # Use scale_x/scale_y instead of unified 'scale_factor'
             if metadata is not None and len(metadata) > 0:
                 batch_size = center_3d.shape[0]
 
@@ -156,17 +157,24 @@ class GeometricCyclicProjector(BaseModule):
                 assert len(metadata) >= batch_size, \
                     f"Metadata list too short: {len(metadata)} < {batch_size}"
 
-                scale_correction = torch.ones(batch_size, device=center_3d.device)
+                scale_correction_x = torch.ones(batch_size, device=center_3d.device)
+                scale_correction_y = torch.ones(batch_size, device=center_3d.device)
 
                 for i in range(min(batch_size, len(metadata))):
-                    if metadata[i] and 'scale_factor' in metadata[i]:
-                        scale_correction[i] = metadata[i]['scale_factor']
+                    if metadata[i]:
+                        # Support both scale_factor (unified) and scale_x/scale_y (per-axis)
+                        if 'scale_factor' in metadata[i]:
+                            scale_correction_x[i] = metadata[i]['scale_factor']
+                            scale_correction_y[i] = metadata[i]['scale_factor']
+                        else:
+                            scale_correction_x[i] = metadata[i].get('scale_x', 1.0)
+                            scale_correction_y[i] = metadata[i].get('scale_y', 1.0)
 
                 # Adjust focal length and size scale based on crop rescaling
-                fx_adjusted = fx * scale_correction
-                fy_adjusted = fy * scale_correction
-                sx_adjusted = sx * scale_correction
-                sy_adjusted = sy * scale_correction
+                fx_adjusted = fx * scale_correction_x
+                fy_adjusted = fy * scale_correction_y
+                sx_adjusted = sx * scale_correction_x
+                sy_adjusted = sy * scale_correction_y
             else:
                 fx_adjusted = fx
                 fy_adjusted = fy
@@ -191,7 +199,8 @@ class GeometricCyclicProjector(BaseModule):
 
             bbox_2d = self.forward_projector(proj_input)
 
-            # CRITICAL FIX (Audit 2025111413 Finding 2): Apply metadata scale correction
+            # CRITICAL FIX (Audit 2025111414 Finding 2): Apply metadata scale correction
+            # Use scale_x/scale_y instead of unified 'scale_factor'
             if metadata is not None and len(metadata) > 0:
                 batch_size = center_3d.shape[0]
 
@@ -201,15 +210,26 @@ class GeometricCyclicProjector(BaseModule):
                 assert len(metadata) >= batch_size, \
                     f"Metadata list too short: {len(metadata)} < {batch_size}"
 
-                scale_correction = torch.ones(batch_size, 1, device=center_3d.device)
+                scale_correction_x = torch.ones(batch_size, 1, device=center_3d.device)
+                scale_correction_y = torch.ones(batch_size, 1, device=center_3d.device)
 
                 for i in range(min(batch_size, len(metadata))):
-                    if metadata[i] and 'scale_factor' in metadata[i]:
-                        scale_correction[i, 0] = metadata[i]['scale_factor']
+                    if metadata[i]:
+                        # Support both scale_factor (unified) and scale_x/scale_y (per-axis)
+                        if 'scale_factor' in metadata[i]:
+                            scale_correction_x[i, 0] = metadata[i]['scale_factor']
+                            scale_correction_y[i, 0] = metadata[i]['scale_factor']
+                        else:
+                            scale_correction_x[i, 0] = metadata[i].get('scale_x', 1.0)
+                            scale_correction_y[i, 0] = metadata[i].get('scale_y', 1.0)
 
-                # Adjust projected coordinates and sizes
-                bbox_2d_xy = bbox_2d[:, :2] * scale_correction
-                bbox_2d_wh = F.softplus(bbox_2d[:, 2:]) * scale_correction
+                # Adjust projected coordinates and sizes (separate x and y scaling)
+                bbox_2d_cx = bbox_2d[:, 0:1] * scale_correction_x
+                bbox_2d_cy = bbox_2d[:, 1:2] * scale_correction_y
+                bbox_2d_w = F.softplus(bbox_2d[:, 2:3]) * scale_correction_x
+                bbox_2d_h = F.softplus(bbox_2d[:, 3:4]) * scale_correction_y
+                bbox_2d_xy = torch.cat([bbox_2d_cx, bbox_2d_cy], dim=-1)
+                bbox_2d_wh = torch.cat([bbox_2d_w, bbox_2d_h], dim=-1)
             else:
                 # Ensure positive width and height (avoid inplace for gradient)
                 bbox_2d_xy = bbox_2d[:, :2]

@@ -208,6 +208,32 @@ model:
       use_cyclic_loss: true
       cycle_weight: 0.5
 
+  # CRITICAL FIX (Audit 2025111414 Finding 5): Quality and projector configs
+  # These sections are forwarded to the tracker whenever non-empty (no 'type' key required)
+
+  # Optional: Configure quality estimators (SNR, sharpness, gating thresholds)
+  # Uncomment and customize to tune quality-aware fusion behavior:
+  # quality:
+  #   rgb:
+  #     method: laplacian  # laplacian, gradient, entropy
+  #     threshold: 0.5
+  #   sonar:
+  #     method: snr  # snr, intensity_variance
+  #     snr_threshold: 10.0
+  #   adaptive_weighting:
+  #     temperature: 1.0
+  #     min_weight: 0.1
+
+  # Optional: Configure geometric projectors (3D→2D projection strategy)
+  # Uncomment and customize to tune weak-3D cyclic projection:
+  # projector:
+  #   rgb:
+  #     projection_type: perspective  # perspective, mlp, linear
+  #     hidden_dim: 256
+  #   sonar:
+  #     projection_type: mlp  # mlp recommended for sonar (non-standard geometry)
+  #     hidden_dim: 256
+
 
 # ------------------------------------------------------------------------------
 # Training Configuration
@@ -280,6 +306,10 @@ training:
     geometric_consistency: 0.1
     component_consistency: 0.1
     representation_consistency: 0.1
+
+    # CRITICAL FIX (Audit 2025111414 Finding 3): Quality fusion loss
+    # Supervises learned fusion weights against physical quality cues
+    quality_fusion_loss: 0.2
 
     # Temporal smoothness
     temporal_smooth: 0.05

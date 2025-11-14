@@ -181,9 +181,14 @@ class Trainer:
             # Train one epoch
             train_metrics = self.train_epoch(epoch)
 
-            # Always validate every epoch to determine best checkpoint
+            # CRITICAL FIX (Audit 2025111414 Finding 4): Respect eval_interval configuration
+            # Validate based on eval_interval, but always validate on final epoch
             val_metrics = None
-            if self.val_loader is not None:
+            should_validate = (
+                self.val_loader is not None and
+                ((epoch + 1) % self.eval_interval == 0 or epoch == self.max_epochs - 1)
+            )
+            if should_validate:
                 val_metrics = self.validate(epoch)
 
             # Update learning rate
@@ -207,7 +212,9 @@ class Trainer:
                     )
 
                 # 2. Save "best" checkpoint if metric improves (overwrite) - only if save_best is enabled
-                if self.save_best:
+                # CRITICAL FIX (Audit 2025111414 Finding 4 Regression): Only attempt best checkpoint
+                # saving when validation metrics are available (to avoid "metric not found" errors)
+                if self.save_best and val_metrics is not None:
                     current_metric = metrics.get(self.checkpoint_manager.metric_name, None)
 
                     # Metric fallback logic: if monitor metric not found, try val_total
