@@ -113,24 +113,30 @@ class EvaluationSequenceDataset(Dataset):
         self._load_template()
 
     def _load_template(self):
-        """Load and cache template frame data."""
+        """Load and cache template frame data with transformation metadata."""
         template_raw = self.base_dataset._get_frame_data(self.template_idx)
 
-        # Prepare template images
+        # Prepare template images and get transformation metadata
+        rgb_template, rgb_metadata = self._prepare_image(
+            template_raw['rgb_img'],
+            self.template_size,
+            is_sonar=False
+        )
+        sonar_template, sonar_metadata = self._prepare_image(
+            template_raw['sonar_img'],
+            self.template_size,
+            is_sonar=True
+        )
+
+        # Store template data with metadata
         self._template_data = {
-            'rgb_template': self._prepare_image(
-                template_raw['rgb_img'],
-                self.template_size,
-                is_sonar=False
-            ),
-            'sonar_template': self._prepare_image(
-                template_raw['sonar_img'],
-                self.template_size,
-                is_sonar=True
-            ),
+            'rgb_template': rgb_template,
+            'sonar_template': sonar_template,
             'template_bbox_rgb': template_raw['rgb_bbox'],
             'template_bbox_sonar': template_raw['sonar_bbox'],
             'template_frame_id': template_raw['frame_id'],
+            'template_rgb_metadata': rgb_metadata,
+            'template_sonar_metadata': sonar_metadata,
         }
 
     def __len__(self) -> int:
@@ -177,13 +183,13 @@ class EvaluationSequenceDataset(Dataset):
         # Get current (search) frame
         search_data = self.base_dataset._get_frame_data(index)
 
-        # Prepare search images
-        rgb_search = self._prepare_image(
+        # Prepare search images and get transformation metadata
+        rgb_search, rgb_search_metadata = self._prepare_image(
             search_data['rgb_img'],
             self.search_size,
             is_sonar=False
         )
-        sonar_search = self._prepare_image(
+        sonar_search, sonar_search_metadata = self._prepare_image(
             search_data['sonar_img'],
             self.search_size,
             is_sonar=True
@@ -219,15 +225,28 @@ class EvaluationSequenceDataset(Dataset):
             # Frame indices for tracking state
             'template_idx': self.template_idx,
             'search_idx': index,
+
+            # CRITICAL FIX (Audit 2025111409 Finding 1):
+            # Transformation metadata for physical coordinate reconstruction
+            # These allow the evaluator to convert predictions from the resized
+            # 255x256 plane back to original image coordinates for scoring
+            'rgb_search_metadata': rgb_search_metadata,
+            'sonar_search_metadata': sonar_search_metadata,
+            'template_rgb_metadata': self._template_data['template_rgb_metadata'],
+            'template_sonar_metadata': self._template_data['template_sonar_metadata'],
         }
 
         return sample
 
     def _prepare_image(self, img, target_size: int, is_sonar: bool = False):
         """
-        Prepare image for inference.
+        Prepare image for inference and return transformation metadata.
 
-        Converts HWC numpy array to CHW tensor and resizes to target_size.
+        CRITICAL FIX (Audit 2025111409 Finding 1):
+        Now returns scale/padding metadata needed to reconstruct physical pixel
+        coordinates during evaluation. This allows metrics to be computed in the
+        original image resolution (1920x1080 for RGB, 682x376 for sonar) instead
+        of the resized 255x256 plane.
 
         Args:
             img: Input image (numpy array, tensor, or None)
@@ -235,17 +254,32 @@ class EvaluationSequenceDataset(Dataset):
             is_sonar: If True, prepare as 1-channel grayscale; else 3-channel RGB
 
         Returns:
-            Tensor of shape (C, target_size, target_size)
+            Tuple of (img_tensor, metadata) where:
+                - img_tensor: Tensor of shape (C, target_size, target_size)
+                - metadata: Dict with keys:
+                    - 'original_height': Original image height
+                    - 'original_width': Original image width
+                    - 'scale_x': Horizontal scaling factor
+                    - 'scale_y': Vertical scaling factor (may differ from scale_x for letterbox)
+                    - 'pad_x': Left padding (pixels)
+                    - 'pad_y': Top padding (pixels)
 
         Note:
-            CRITICAL FIX (Audit 2025111408 Finding 2): For sonar images, use letterbox
-            padding to preserve aspect ratio and maintain sensor origin at cy=H-1.
-            This ensures training and evaluation use identical geometry.
+            For sonar images, uses letterbox padding to preserve aspect ratio
+            and maintain sensor origin at cy=H-1 (Audit 2025111408 Finding 2).
         """
         if img is None:
             # Return zeros for None images (occluded frames)
             num_channels = 1 if is_sonar else 3
-            return torch.zeros(num_channels, target_size, target_size)
+            dummy_metadata = {
+                'original_height': target_size,
+                'original_width': target_size,
+                'scale_x': 1.0,
+                'scale_y': 1.0,
+                'pad_x': 0,
+                'pad_y': 0,
+            }
+            return torch.zeros(num_channels, target_size, target_size), dummy_metadata
 
         # Convert to numpy array if tensor
         if isinstance(img, torch.Tensor):
@@ -262,6 +296,9 @@ class EvaluationSequenceDataset(Dataset):
         if not isinstance(img, np.ndarray):
             raise ValueError(f"Expected numpy array or tensor, got {type(img)}")
 
+        # Store original dimensions
+        original_height, original_width = img.shape[:2]
+
         # Branch based on modality
         if is_sonar:
             # Sonar: Use letterbox padding to preserve aspect ratio (Audit 2025111408 Finding 2)
@@ -269,10 +306,30 @@ class EvaluationSequenceDataset(Dataset):
             img_resized, (scale, pad_y, pad_x) = letterbox_resize(
                 img, (target_size, target_size), fill_value=0
             )
+            # Letterbox uses isotropic scaling, so scale_x = scale_y = scale
+            metadata = {
+                'original_height': original_height,
+                'original_width': original_width,
+                'scale_x': scale,
+                'scale_y': scale,
+                'pad_x': pad_x,
+                'pad_y': pad_y,
+            }
         else:
-            # RGB: Direct resize (no geometric constraints)
+            # RGB: Direct resize (anisotropic - can stretch)
             import cv2
             img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+            # Compute per-axis scaling factors
+            scale_x = target_size / original_width
+            scale_y = target_size / original_height
+            metadata = {
+                'original_height': original_height,
+                'original_width': original_width,
+                'scale_x': scale_x,
+                'scale_y': scale_y,
+                'pad_x': 0,
+                'pad_y': 0,
+            }
 
         # Convert to tensor and normalize
         # Handle different channel formats
@@ -289,7 +346,7 @@ class EvaluationSequenceDataset(Dataset):
         if img_tensor.max() > 1.0:
             img_tensor = img_tensor / 255.0
 
-        return img_tensor
+        return img_tensor, metadata
 
     def get_sequence_info(self) -> Dict:
         """

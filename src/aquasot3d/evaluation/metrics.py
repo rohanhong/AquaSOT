@@ -17,45 +17,64 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def compute_iou(bbox1: np.ndarray, bbox2: np.ndarray) -> float:
+def compute_iou(
+    bbox1: np.ndarray,
+    bbox2: np.ndarray,
+    format: str = 'cxcywh'
+) -> float:
     """
     Compute Intersection over Union (IoU) between two bounding boxes.
 
+    CRITICAL FIX (Audit 2025111409 Finding 2): Removed format guessing heuristics.
+    Format must be explicitly specified to avoid mis-parsing positive xyxy boxes as cxcywh.
+
     Args:
-        bbox1: First bounding box [x1, y1, x2, y2] or [cx, cy, w, h]
-        bbox2: Second bounding box [x1, y1, x2, y2] or [cx, cy, w, h]
+        bbox1: First bounding box
+        bbox2: Second bounding box
+        format: Box format - 'cxcywh' (center x, y, width, height) or 'xyxy' (x1, y1, x2, y2)
 
     Returns:
         IoU value in [0, 1]
 
     Example:
-        >>> bbox1 = np.array([10, 10, 50, 50])  # x1,y1,x2,y2
-        >>> bbox2 = np.array([20, 20, 60, 60])
-        >>> iou = compute_iou(bbox1, bbox2)
+        >>> bbox1 = np.array([50, 50, 40, 40])  # cx, cy, w, h
+        >>> bbox2 = np.array([55, 55, 40, 40])
+        >>> iou = compute_iou(bbox1, bbox2, format='cxcywh')
     """
     # Convert to xyxy format if needed
-    if bbox1.shape[-1] == 4 and bbox2.shape[-1] == 4:
-        # Check if format is cxcywh (values typically < image size)
-        if np.all(bbox1[2:] > 0) and np.all(bbox2[2:] > 0):
-            # Assume cxcywh, convert to xyxy
-            bbox1_xyxy = np.array([
-                bbox1[0] - bbox1[2] / 2,
-                bbox1[1] - bbox1[3] / 2,
-                bbox1[0] + bbox1[2] / 2,
-                bbox1[1] + bbox1[3] / 2
-            ])
-            bbox2_xyxy = np.array([
-                bbox2[0] - bbox2[2] / 2,
-                bbox2[1] - bbox2[3] / 2,
-                bbox2[0] + bbox2[2] / 2,
-                bbox2[1] + bbox2[3] / 2
-            ])
-        else:
-            bbox1_xyxy = bbox1
-            bbox2_xyxy = bbox2
-    else:
+    if format == 'cxcywh':
+        # Convert from [cx, cy, w, h] to [x1, y1, x2, y2]
+        bbox1_xyxy = np.array([
+            bbox1[0] - bbox1[2] / 2,
+            bbox1[1] - bbox1[3] / 2,
+            bbox1[0] + bbox1[2] / 2,
+            bbox1[1] + bbox1[3] / 2
+        ])
+        bbox2_xyxy = np.array([
+            bbox2[0] - bbox2[2] / 2,
+            bbox2[1] - bbox2[3] / 2,
+            bbox2[0] + bbox2[2] / 2,
+            bbox2[1] + bbox2[3] / 2
+        ])
+    elif format == 'xywh':
+        # Convert from [x, y, w, h] (top-left corner) to [x1, y1, x2, y2]
+        bbox1_xyxy = np.array([
+            bbox1[0],
+            bbox1[1],
+            bbox1[0] + bbox1[2],
+            bbox1[1] + bbox1[3]
+        ])
+        bbox2_xyxy = np.array([
+            bbox2[0],
+            bbox2[1],
+            bbox2[0] + bbox2[2],
+            bbox2[1] + bbox2[3]
+        ])
+    elif format == 'xyxy':
         bbox1_xyxy = bbox1
         bbox2_xyxy = bbox2
+    else:
+        raise ValueError(f"Unknown format: {format}. Must be 'cxcywh', 'xywh', or 'xyxy'")
 
     # Compute intersection
     x1_inter = max(bbox1_xyxy[0], bbox2_xyxy[0])
@@ -78,13 +97,21 @@ def compute_iou(bbox1: np.ndarray, bbox2: np.ndarray) -> float:
     return float(iou)
 
 
-def compute_center_error(bbox1: np.ndarray, bbox2: np.ndarray) -> float:
+def compute_center_error(
+    bbox1: np.ndarray,
+    bbox2: np.ndarray,
+    format: str = 'cxcywh'
+) -> float:
     """
     Compute center location error between two bounding boxes.
 
+    CRITICAL FIX (Audit 2025111409 Finding 2): Removed format guessing heuristics.
+    Format must be explicitly specified.
+
     Args:
-        bbox1: First bounding box [cx, cy, w, h] or [x1, y1, x2, y2]
-        bbox2: Second bounding box [cx, cy, w, h] or [x1, y1, x2, y2]
+        bbox1: First bounding box
+        bbox2: Second bounding box
+        format: Box format - 'cxcywh' or 'xyxy'
 
     Returns:
         Euclidean distance between centers
@@ -92,23 +119,23 @@ def compute_center_error(bbox1: np.ndarray, bbox2: np.ndarray) -> float:
     Example:
         >>> bbox1 = np.array([50, 50, 40, 40])  # cx, cy, w, h
         >>> bbox2 = np.array([55, 55, 40, 40])
-        >>> error = compute_center_error(bbox1, bbox2)
+        >>> error = compute_center_error(bbox1, bbox2, format='cxcywh')
     """
-    # Extract centers
-    if bbox1.shape[-1] == 4:
-        # Check format
-        if bbox1[2] > 0 and bbox1[3] > 0:  # Likely cxcywh
-            center1 = bbox1[:2]
-        else:  # xyxy format
-            center1 = np.array([(bbox1[0] + bbox1[2]) / 2, (bbox1[1] + bbox1[3]) / 2])
-
-        if bbox2[2] > 0 and bbox2[3] > 0:
-            center2 = bbox2[:2]
-        else:
-            center2 = np.array([(bbox2[0] + bbox2[2]) / 2, (bbox2[1] + bbox2[3]) / 2])
-    else:
+    # Extract centers based on format
+    if format == 'cxcywh':
+        # Centers are already at indices 0, 1
         center1 = bbox1[:2]
         center2 = bbox2[:2]
+    elif format == 'xywh':
+        # Compute centers from top-left corner + dimensions
+        center1 = np.array([bbox1[0] + bbox1[2] / 2, bbox1[1] + bbox1[3] / 2])
+        center2 = np.array([bbox2[0] + bbox2[2] / 2, bbox2[1] + bbox2[3] / 2])
+    elif format == 'xyxy':
+        # Compute centers from corners
+        center1 = np.array([(bbox1[0] + bbox1[2]) / 2, (bbox1[1] + bbox1[3]) / 2])
+        center2 = np.array([(bbox2[0] + bbox2[2]) / 2, (bbox2[1] + bbox2[3]) / 2])
+    else:
+        raise ValueError(f"Unknown format: {format}. Must be 'cxcywh', 'xywh', or 'xyxy'")
 
     # Compute Euclidean distance
     distance = np.sqrt(np.sum((center1 - center2) ** 2))
@@ -144,10 +171,12 @@ def compute_success_curve(
         return thresholds, np.zeros_like(thresholds)
 
     # Compute IoU for each frame
+    # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
+    # Dataset returns [x, y, w, h] (xywh format), not [cx, cy, w, h]
     ious = []
     for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
         if pred_box is not None and gt_box is not None:
-            iou = compute_iou(pred_box, gt_box)
+            iou = compute_iou(pred_box, gt_box, format='xywh')
             ious.append(iou)
 
     if len(ious) == 0:
@@ -217,10 +246,11 @@ def compute_precision_curve(
         return thresholds, np.zeros_like(thresholds, dtype=float)
 
     # Compute center error for each frame
+    # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
     errors = []
     for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
         if pred_box is not None and gt_box is not None:
-            error = compute_center_error(pred_box, gt_box)
+            error = compute_center_error(pred_box, gt_box, format='xywh')
             errors.append(error)
 
     if len(errors) == 0:
@@ -277,10 +307,11 @@ def compute_average_center_error(
     if len(pred_bboxes) == 0 or len(gt_bboxes) == 0:
         return float('inf')
 
+    # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
     errors = []
     for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
         if pred_box is not None and gt_box is not None:
-            error = compute_center_error(pred_box, gt_box)
+            error = compute_center_error(pred_box, gt_box, format='xywh')
             errors.append(error)
 
     if len(errors) == 0:
@@ -311,10 +342,11 @@ def compute_success_at_threshold(
     if len(pred_bboxes) == 0 or len(gt_bboxes) == 0:
         return 0.0
 
+    # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
     ious = []
     for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
         if pred_box is not None and gt_box is not None:
-            iou = compute_iou(pred_box, gt_box)
+            iou = compute_iou(pred_box, gt_box, format='xywh')
             ious.append(iou)
 
     if len(ious) == 0:
@@ -369,7 +401,8 @@ def compute_sequence_metrics(
 
     # Additional standard metrics
     # Mean IoU
-    ious = [compute_iou(pred, gt) for pred, gt in zip(pred_bboxes, gt_bboxes)
+    # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
+    ious = [compute_iou(pred, gt, format='xywh') for pred, gt in zip(pred_bboxes, gt_bboxes)
             if pred is not None and gt is not None]
     metrics['mean_iou'] = float(np.mean(ious)) if len(ious) > 0 else 0.0
 

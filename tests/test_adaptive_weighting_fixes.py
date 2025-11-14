@@ -1,9 +1,19 @@
 """
-Regression Tests for AdaptiveWeighting EMA Fixes (Audit 2025111406)
+Regression Tests for AdaptiveWeighting EMA Fixes
 
-Tests for critical bug fixes:
-1. EMA buffer dimension mismatch with variable batch sizes
-2. Temporal smoothing application during training
+UPDATED: This test suite has been revised to match Audit 2025111409 requirements.
+
+Previous approach (Audit 2025111406):
+- EMA buffers stored scalar batch averages (1, 1)
+- All samples in batch shared same smoothed quality
+
+Current approach (Audit 2025111409):
+- EMA buffers store per-sample states (B, 1)
+- Each sample has independent temporal smoothing
+
+Tests coverage:
+1. Per-sample EMA state management
+2. Temporal smoothing during training and evaluation
 3. Cross-sequence state leakage prevention via reset_state()
 
 Author: AquaSOT-3D Team
@@ -38,8 +48,10 @@ class TestAdaptiveWeightingEMAFixes:
         """
         Test that EMA buffers handle variable batch sizes without crashing.
 
-        This is the CRITICAL fix from Audit 2025111406 Issue 1.1:
-        EMA buffers must store scalar values (1, 1) instead of full batches (B, 1).
+        UPDATED (Audit 2025111409):
+        EMA buffers now store per-sample states (B, 1). When batch size changes
+        during training (B != prev_B), buffers are reset to current values.
+        During evaluation (batch_size=1), first EMA state is preserved.
         """
         # First batch: B=32
         rgb_feat_1 = torch.randn(32, 256, 14, 14)
@@ -52,13 +64,13 @@ class TestAdaptiveWeightingEMAFixes:
             rgb_feat_1, sonar_feat_1, q_rgb_1, q_sonar_1
         )
 
-        # Check buffer shapes after first batch
-        assert adaptive_weighting.ema_q_rgb.shape == (1, 1), \
-            f"EMA buffer should be (1, 1) but got {adaptive_weighting.ema_q_rgb.shape}"
-        assert adaptive_weighting.ema_q_sonar.shape == (1, 1), \
-            f"EMA buffer should be (1, 1) but got {adaptive_weighting.ema_q_sonar.shape}"
+        # Check buffer shapes after first batch (now per-sample)
+        assert adaptive_weighting.ema_q_rgb.shape == (32, 1), \
+            f"EMA buffer should be (32, 1) but got {adaptive_weighting.ema_q_rgb.shape}"
+        assert adaptive_weighting.ema_q_sonar.shape == (32, 1), \
+            f"EMA buffer should be (32, 1) but got {adaptive_weighting.ema_q_sonar.shape}"
 
-        # Second batch: B=23 (different size - this used to crash)
+        # Second batch: B=23 (different size - triggers reset in training mode)
         rgb_feat_2 = torch.randn(23, 256, 14, 14)
         sonar_feat_2 = torch.randn(23, 256, 14, 14)
         q_rgb_2 = torch.rand(23, 1) * 0.5 + 0.5
@@ -75,16 +87,19 @@ class TestAdaptiveWeightingEMAFixes:
         assert weights_2['q_rgb_smoothed'].shape == (23, 1)
         assert weights_2['q_sonar_smoothed'].shape == (23, 1)
 
-        # EMA buffers should remain (1, 1) throughout
-        assert adaptive_weighting.ema_q_rgb.shape == (1, 1)
-        assert adaptive_weighting.ema_q_sonar.shape == (1, 1)
+        # EMA buffers should match current batch size
+        assert adaptive_weighting.ema_q_rgb.shape == (23, 1), \
+            f"EMA buffer should match batch size (23, 1) but got {adaptive_weighting.ema_q_rgb.shape}"
+        assert adaptive_weighting.ema_q_sonar.shape == (23, 1), \
+            f"EMA buffer should match batch size (23, 1) but got {adaptive_weighting.ema_q_sonar.shape}"
 
     def test_ema_updates_during_training(self, adaptive_weighting):
         """
         Test that EMA buffers are updated during training mode.
 
-        This is the MAJOR fix from Audit 2025111406 Issue 1.2:
-        Temporal smoothing must be applied in both training and eval modes.
+        UPDATED (Audit 2025111409):
+        EMA now operates per-sample. Each sample in the batch has independent
+        smoothing: ema[i] = alpha * ema[i] + (1-alpha) * current[i]
         """
         adaptive_weighting.train()
 
@@ -93,18 +108,18 @@ class TestAdaptiveWeightingEMAFixes:
         q_rgb = torch.tensor([[0.8], [0.9], [0.7], [0.6], [0.85], [0.75], [0.65], [0.55]])
         q_sonar = torch.tensor([[0.6], [0.5], [0.7], [0.8], [0.55], [0.65], [0.75], [0.85]])
 
-        # First pass: buffers should initialize
+        # First pass: buffers should initialize with current values
         fused_1, weights_1 = adaptive_weighting(rgb_feat, sonar_feat, q_rgb, q_sonar)
 
-        # Get initial EMA values (should be batch mean)
+        # Get initial EMA values (should equal input on first pass)
         ema_rgb_init = adaptive_weighting.ema_q_rgb.clone()
         ema_sonar_init = adaptive_weighting.ema_q_sonar.clone()
 
-        # Verify initialization uses batch mean
-        expected_rgb_mean = q_rgb.mean()
-        expected_sonar_mean = q_sonar.mean()
-        assert torch.allclose(ema_rgb_init, expected_rgb_mean.view(1, 1), atol=1e-5)
-        assert torch.allclose(ema_sonar_init, expected_sonar_mean.view(1, 1), atol=1e-5)
+        # Verify initialization uses per-sample values (not batch mean)
+        assert torch.allclose(ema_rgb_init, q_rgb, atol=1e-5), \
+            "EMA should initialize with current per-sample values"
+        assert torch.allclose(ema_sonar_init, q_sonar, atol=1e-5), \
+            "EMA should initialize with current per-sample values"
 
         # Second pass with different quality scores
         q_rgb_2 = torch.tensor([[0.9], [0.95], [0.85], [0.8], [0.92], [0.88], [0.82], [0.78]])
@@ -116,14 +131,14 @@ class TestAdaptiveWeightingEMAFixes:
         ema_rgb_updated = adaptive_weighting.ema_q_rgb
         ema_sonar_updated = adaptive_weighting.ema_q_sonar
 
-        # Verify EMA update formula: new_ema = alpha * old_ema + (1 - alpha) * batch_mean
-        expected_rgb_ema = 0.9 * ema_rgb_init + 0.1 * q_rgb_2.mean()
-        expected_sonar_ema = 0.9 * ema_sonar_init + 0.1 * q_sonar_2.mean()
+        # Verify per-sample EMA update formula: new_ema[i] = alpha * old_ema[i] + (1-alpha) * current[i]
+        expected_rgb_ema = 0.9 * ema_rgb_init + 0.1 * q_rgb_2
+        expected_sonar_ema = 0.9 * ema_sonar_init + 0.1 * q_sonar_2
 
-        assert torch.allclose(ema_rgb_updated, expected_rgb_ema.view(1, 1), atol=1e-5), \
-            "EMA should update during training mode"
-        assert torch.allclose(ema_sonar_updated, expected_sonar_ema.view(1, 1), atol=1e-5), \
-            "EMA should update during training mode"
+        assert torch.allclose(ema_rgb_updated, expected_rgb_ema, atol=1e-5), \
+            "EMA should update per-sample during training mode"
+        assert torch.allclose(ema_sonar_updated, expected_sonar_ema, atol=1e-5), \
+            "EMA should update per-sample during training mode"
 
     def test_reset_state_clears_ema_buffers(self, adaptive_weighting):
         """
@@ -175,9 +190,9 @@ class TestAdaptiveWeightingEMAFixes:
         for _ in range(5):
             fused, weights = adaptive_weighting(rgb_feat, sonar_feat, q_rgb_seq1, q_sonar_seq1)
 
-        # EMA should reflect high RGB quality
-        ema_rgb_seq1 = adaptive_weighting.ema_q_rgb.item()
-        ema_sonar_seq1 = adaptive_weighting.ema_q_sonar.item()
+        # EMA should reflect high RGB quality (check first sample)
+        ema_rgb_seq1 = adaptive_weighting.ema_q_rgb[0, 0].item()
+        ema_sonar_seq1 = adaptive_weighting.ema_q_sonar[0, 0].item()
         assert ema_rgb_seq1 > 0.85, "EMA should reflect high RGB quality"
         assert ema_sonar_seq1 < 0.45, "EMA should reflect low Sonar quality"
 
@@ -242,36 +257,48 @@ class TestAdaptiveWeightingEMAFixes:
             assert abs(smoothed_rgb_history[-1] - 0.8) < 0.02, \
                 "EMA should converge close to constant value"
 
-    def test_broadcast_correctness(self, adaptive_weighting):
-        """Test that scalar EMA buffers broadcast correctly to batch dimensions."""
+    def test_per_sample_independence(self, adaptive_weighting):
+        """
+        Test that samples in a batch maintain independent EMA states.
+
+        UPDATED (Audit 2025111409):
+        Previous test checked that all samples shared same broadcast value.
+        Now test verifies that each sample has its own independent EMA state.
+        """
         rgb_feat = torch.randn(16, 256, 14, 14)
         sonar_feat = torch.randn(16, 256, 14, 14)
-        q_rgb = torch.rand(16, 1)
-        q_sonar = torch.rand(16, 1)
+
+        # First batch: Diverse quality scores
+        q_rgb = torch.linspace(0.3, 0.9, 16).unsqueeze(1)  # [0.3, ..., 0.9]
+        q_sonar = torch.linspace(0.9, 0.3, 16).unsqueeze(1)  # [0.9, ..., 0.3]
 
         # Forward pass
         fused, weights = adaptive_weighting(rgb_feat, sonar_feat, q_rgb, q_sonar)
 
-        # Second pass with different batch size
+        # First pass returns raw values
+        assert torch.allclose(weights['q_rgb_smoothed'], q_rgb, atol=1e-5)
+
+        # Second pass with different batch size but keep same quality pattern
         rgb_feat_2 = torch.randn(8, 256, 14, 14)
         sonar_feat_2 = torch.randn(8, 256, 14, 14)
-        q_rgb_2 = torch.rand(8, 1)
-        q_sonar_2 = torch.rand(8, 1)
+        q_rgb_2 = torch.linspace(0.3, 0.9, 8).unsqueeze(1)
+        q_sonar_2 = torch.linspace(0.9, 0.3, 8).unsqueeze(1)
 
         fused_2, weights_2 = adaptive_weighting(
             rgb_feat_2, sonar_feat_2, q_rgb_2, q_sonar_2
         )
 
-        # Smoothed values should be broadcasted to correct batch size
+        # Smoothed values should match batch size
         assert weights_2['q_rgb_smoothed'].shape == (8, 1)
         assert weights_2['q_sonar_smoothed'].shape == (8, 1)
 
-        # All samples in batch should have same smoothed value (broadcasted from scalar)
-        assert torch.allclose(
+        # Samples should have DIFFERENT smoothed values (per-sample EMA)
+        # Because each sample started with different quality in first batch
+        assert not torch.allclose(
             weights_2['q_rgb_smoothed'][0],
-            weights_2['q_rgb_smoothed'][1],
-            atol=1e-6
-        ), "Broadcasted values should be identical across batch"
+            weights_2['q_rgb_smoothed'][-1],
+            atol=0.1
+        ), "Per-sample EMA should yield different smoothed values across batch"
 
     def test_factory_function(self):
         """Test create_adaptive_weighting factory function."""

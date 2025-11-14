@@ -111,6 +111,9 @@ class TrackingEvaluator:
             'sonar_gt': []
         })
 
+        # CRITICAL FIX (Audit 2025111409 Finding 4): Track current sequence for temporal state reset
+        current_sequence = None
+
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(
                 self.dataloader,
@@ -135,6 +138,16 @@ class TrackingEvaluator:
                         sequence_name = f'seq_{batch_idx}'
                 else:
                     sequence_name = sequence_name_raw
+
+                # CRITICAL FIX (Audit 2025111409 Finding 4): Reset temporal state on sequence boundary
+                # This prevents Vision-Mamba state, EMA gates, and quality weights from leaking
+                # between sequences, ensuring benchmark protocol compliance
+                if current_sequence is None or sequence_name != current_sequence:
+                    logger.debug(f"Sequence boundary detected: {current_sequence} -> {sequence_name}")
+                    if hasattr(self.model, 'reset_temporal_state'):
+                        self.model.reset_temporal_state()
+                        logger.debug("Temporal state reset")
+                    current_sequence = sequence_name
 
                 # Track batch (returns per-frame predictions)
                 batch_results = self.track_sequence(batch)
@@ -181,27 +194,107 @@ class TrackingEvaluator:
             'sequences': self.sequence_results
         }
 
-    def _denormalize_bbox(self, bbox: np.ndarray, image_size: int) -> np.ndarray:
+    def _denormalize_bbox(
+        self,
+        bbox: np.ndarray,
+        image_size: int,
+        scale_x: float = None,
+        scale_y: float = None,
+        pad_x: int = 0,
+        pad_y: int = 0,
+        original_size: tuple = None,
+        output_format: str = 'xywh'
+    ) -> np.ndarray:
         """
-        Convert normalized bbox [0, 1] to pixel coordinates.
+        Convert normalized bbox [cx, cy, w, h] in [0,1] to PHYSICAL pixel coordinates.
+
+        CRITICAL FIX (Audit 2025111409 Finding 1 & 2):
+        - Properly reconstruct physical coordinates by undoing letterbox padding and per-axis scaling
+        - Convert output to [x, y, w, h] format to match ground truth (Finding 2)
 
         Args:
-            bbox: Bounding box in normalized coordinates [cx, cy, w, h]
-            image_size: Image size in pixels
+            bbox: Bounding box in normalized coordinates [cx, cy, w, h] in [0, 1]
+            image_size: Resized image size (e.g., 255, 256)
+            scale_x: X-axis scale factor (target_size / original_width), if None uses image_size
+            scale_y: Y-axis scale factor (target_size / original_height), if None uses image_size
+            pad_x: Left padding offset from letterbox (pixels)
+            pad_y: Top padding offset from letterbox (pixels)
+            original_size: Original image size (H, W) for final reconstruction
+            output_format: Output format - 'xywh' (top-left x, y, width, height) or
+                          'cxcywh' (center x, y, width, height). Default: 'xywh' to match
+                          ground truth format from dataset
 
         Returns:
-            Bounding box in pixel coordinates
+            Bounding box in PHYSICAL pixel coordinates [x, y, w, h] (default) or [cx, cy, w, h]
+
+        Example:
+            >>> # Sonar 682×376 → letterbox to 256×256 (scale=0.375, pad_top=115, pad_left=0)
+            >>> # Then normalized to [0, 1] during collation
+            >>> # Prediction: [0.5, 0.6, 0.15, 0.12] in [0, 1]
+            >>> bbox_phys = _denormalize_bbox(
+            ...     np.array([0.5, 0.6, 0.15, 0.12]),
+            ...     image_size=256,
+            ...     scale_x=0.375, scale_y=0.375,
+            ...     pad_x=0, pad_y=115,
+            ...     original_size=(376, 682)
+            ... )
+            >>> # Result: physical coordinates in 682×376 space
         """
         if bbox is None:
             return None
 
         # Check if bbox needs denormalization (max value < 2 suggests normalized coords)
-        if np.max(np.abs(bbox)) < 2.0:
-            # Denormalize: multiply by image_size
-            return bbox * image_size
-        else:
+        if np.max(np.abs(bbox)) >= 2.0:
             # Already in pixel coordinates
             return bbox
+
+        # Step 1: Denormalize from [0, 1] to resized image coordinates
+        # [cx, cy, w, h] in [0,1] → [cx, cy, w, h] in pixels (0 to image_size)
+        bbox_resized = bbox * image_size
+
+        # Step 2: Remove letterbox padding offsets
+        # Subtract padding to get coordinates in the scaled (but not padded) image
+        cx_scaled = bbox_resized[0] - pad_x
+        cy_scaled = bbox_resized[1] - pad_y
+        w_scaled = bbox_resized[2]  # Width/height not affected by padding offset
+        h_scaled = bbox_resized[3]
+
+        # Step 3: Undo per-axis scaling to reconstruct original resolution
+        # If scale factors not provided, assume isotropic scaling
+        if scale_x is None:
+            scale_x = 1.0
+        if scale_y is None:
+            scale_y = 1.0
+
+        # Inverse scaling: divide by scale factor
+        # (scaled * scale_factor = resized) → (scaled / scale_factor = original)
+        cx_orig = cx_scaled / scale_x
+        cy_orig = cy_scaled / scale_y
+        w_orig = w_scaled / scale_x
+        h_orig = h_scaled / scale_y
+
+        # Step 4: Clip to original image boundaries (if provided)
+        if original_size is not None:
+            orig_h, orig_w = original_size
+            # Clamp center and dimensions
+            cx_orig = np.clip(cx_orig, 0, orig_w)
+            cy_orig = np.clip(cy_orig, 0, orig_h)
+            w_orig = np.clip(w_orig, 0, orig_w)
+            h_orig = np.clip(h_orig, 0, orig_h)
+
+        # Step 5: Convert to requested output format
+        # CRITICAL FIX (Audit 2025111409 Finding 2):
+        # Convert to [x, y, w, h] format to match ground truth from dataset
+        if output_format == 'xywh':
+            # Convert from [cx, cy, w, h] to [x, y, w, h]
+            x = cx_orig - w_orig / 2
+            y = cy_orig - h_orig / 2
+            return np.array([x, y, w_orig, h_orig], dtype=np.float32)
+        elif output_format == 'cxcywh':
+            # Keep center format
+            return np.array([cx_orig, cy_orig, w_orig, h_orig], dtype=np.float32)
+        else:
+            raise ValueError(f"Unknown output_format: {output_format}. Expected 'xywh' or 'cxcywh'")
 
     def track_sequence(self, batch: Dict[str, torch.Tensor]) -> Dict[str, List[np.ndarray]]:
         """
@@ -234,46 +327,112 @@ class TrackingEvaluator:
             'sonar_gt': []
         }
 
+        # CRITICAL FIX (Audit 2025111409 Finding 1):
+        # Extract metadata for physical coordinate reconstruction
+        rgb_metadata = batch.get('rgb_search_metadata', {})
+        sonar_metadata = batch.get('sonar_search_metadata', {})
+
         # Get predictions (model outputs plural keys: rgb_boxes, sonar_boxes, fusion_boxes)
-        # Denormalize boxes from [0,1] to pixel coordinates
+        # Denormalize boxes from [0,1] to physical pixel coordinates using metadata
         if 'rgb_boxes' in outputs:
             rgb_boxes = outputs['rgb_boxes'].cpu().numpy()
             predictions['rgb_pred'] = [
-                self._denormalize_bbox(rgb_boxes[i], self.search_size)
+                self._denormalize_bbox(
+                    rgb_boxes[i],
+                    self.search_size,
+                    scale_x=rgb_metadata.get('scale_x'),
+                    scale_y=rgb_metadata.get('scale_y'),
+                    pad_x=rgb_metadata.get('pad_x', 0),
+                    pad_y=rgb_metadata.get('pad_y', 0),
+                    original_size=(rgb_metadata.get('original_height'), rgb_metadata.get('original_width'))
+                )
                 for i in range(len(rgb_boxes))
             ]
 
         if 'sonar_boxes' in outputs:
             sonar_boxes = outputs['sonar_boxes'].cpu().numpy()
             predictions['sonar_pred'] = [
-                self._denormalize_bbox(sonar_boxes[i], self.search_size)
+                self._denormalize_bbox(
+                    sonar_boxes[i],
+                    self.search_size,
+                    scale_x=sonar_metadata.get('scale_x'),
+                    scale_y=sonar_metadata.get('scale_y'),
+                    pad_x=sonar_metadata.get('pad_x', 0),
+                    pad_y=sonar_metadata.get('pad_y', 0),
+                    original_size=(sonar_metadata.get('original_height'), sonar_metadata.get('original_width'))
+                )
                 for i in range(len(sonar_boxes))
             ]
 
         if 'fusion_boxes' in outputs:
             fusion_boxes = outputs['fusion_boxes'].cpu().numpy()
+            # Fusion uses RGB coordinate space by convention
             predictions['fusion_pred'] = [
-                self._denormalize_bbox(fusion_boxes[i], self.search_size)
+                self._denormalize_bbox(
+                    fusion_boxes[i],
+                    self.search_size,
+                    scale_x=rgb_metadata.get('scale_x'),
+                    scale_y=rgb_metadata.get('scale_y'),
+                    pad_x=rgb_metadata.get('pad_x', 0),
+                    pad_y=rgb_metadata.get('pad_y', 0),
+                    original_size=(rgb_metadata.get('original_height'), rgb_metadata.get('original_width'))
+                )
                 for i in range(len(fusion_boxes))
             ]
 
-        # Get ground truth (support both singular and plural forms)
-        # Also denormalize ground truth boxes
-        rgb_gt_key = 'rgb_box' if 'rgb_box' in batch else 'rgb_boxes'
-        if rgb_gt_key in batch:
-            rgb_gt = batch[rgb_gt_key].cpu().numpy()
-            predictions['rgb_gt'] = [
-                self._denormalize_bbox(rgb_gt[i], self.search_size)
-                for i in range(len(rgb_gt))
-            ]
+        # Get ground truth boxes
+        # CRITICAL FIX (Audit 2025111409 Finding 1): Use *_pixels keys if available (training),
+        # otherwise use direct bbox keys (evaluation - already in physical pixels)
 
-        sonar_gt_key = 'sonar_box' if 'sonar_box' in batch else 'sonar_boxes'
-        if sonar_gt_key in batch:
-            sonar_gt = batch[sonar_gt_key].cpu().numpy()
-            predictions['sonar_gt'] = [
-                self._denormalize_bbox(sonar_gt[i], self.search_size)
-                for i in range(len(sonar_gt))
-            ]
+        # RGB ground truth
+        if 'search_bbox_rgb_pixels' in batch:
+            # Training mode: use pixel coordinates directly
+            rgb_gt = batch['search_bbox_rgb_pixels'].cpu().numpy()
+            predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
+        elif 'rgb_boxes_pixels' in batch:
+            # Training mode: alternative key
+            rgb_gt = batch['rgb_boxes_pixels'].cpu().numpy()
+            predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
+        else:
+            # Evaluation mode: boxes already in physical pixels, no denormalization needed
+            rgb_gt_key = 'search_bbox_rgb' if 'search_bbox_rgb' in batch else 'rgb_boxes'
+            if rgb_gt_key in batch:
+                rgb_gt = batch[rgb_gt_key].cpu().numpy()
+                # Check if already in pixel coordinates (values > 2)
+                if np.max(np.abs(rgb_gt[0])) >= 2.0:
+                    # Already physical pixels - use directly
+                    predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
+                else:
+                    # Normalized coordinates - denormalize
+                    predictions['rgb_gt'] = [
+                        self._denormalize_bbox(rgb_gt[i], self.search_size)
+                        for i in range(len(rgb_gt))
+                    ]
+
+        # Sonar ground truth
+        if 'search_bbox_sonar_pixels' in batch:
+            # Training mode: use pixel coordinates directly
+            sonar_gt = batch['search_bbox_sonar_pixels'].cpu().numpy()
+            predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
+        elif 'sonar_boxes_pixels' in batch:
+            # Training mode: alternative key
+            sonar_gt = batch['sonar_boxes_pixels'].cpu().numpy()
+            predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
+        else:
+            # Evaluation mode: boxes already in physical pixels
+            sonar_gt_key = 'search_bbox_sonar' if 'search_bbox_sonar' in batch else 'sonar_boxes'
+            if sonar_gt_key in batch:
+                sonar_gt = batch[sonar_gt_key].cpu().numpy()
+                # Check if already in pixel coordinates
+                if np.max(np.abs(sonar_gt[0])) >= 2.0:
+                    # Already physical pixels - use directly
+                    predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
+                else:
+                    # Normalized coordinates - denormalize
+                    predictions['sonar_gt'] = [
+                        self._denormalize_bbox(sonar_gt[i], self.search_size)
+                        for i in range(len(sonar_gt))
+                    ]
 
         return predictions
 

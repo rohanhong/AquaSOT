@@ -89,39 +89,69 @@ class AdaptiveWeighting(BaseModule):
         q_sonar: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Apply exponential moving average (EMA) temporal smoothing.
+        Apply exponential moving average (EMA) temporal smoothing per sample.
+
+        CRITICAL FIX (Audit 2025111409 Finding 3):
+        Previous implementation averaged the entire batch into a single scalar
+        and broadcast it back to all samples, causing all frames to share identical
+        smoothed quality. This defeated quality-aware fusion and mixed states across
+        different sequences.
+
+        New implementation maintains per-sample EMA state:
+        - Each sample in the batch has independent smoothing: ema = alpha * prev + (1-alpha) * current
+        - Initialization uses current quality values (no batch averaging)
+        - During evaluation (batch_size=1), this naturally provides per-frame smoothing
+        - During training, each sample in the batch maintains independent state
 
         Args:
             q_rgb: Current RGB quality (B, 1)
             q_sonar: Current Sonar quality (B, 1)
 
         Returns:
-            Smoothed quality scores (B, 1)
+            Smoothed quality scores (B, 1), each sample independently smoothed
         """
-        # Compute batch mean (detached to prevent gradient flow)
-        mean_rgb = q_rgb.detach().mean(dim=0, keepdim=True)  # (1, 1)
-        mean_sonar = q_sonar.detach().mean(dim=0, keepdim=True)  # (1, 1)
+        batch_size = q_rgb.shape[0]
 
         # Initialize buffers on first call
         if self.ema_q_rgb is None:
-            self.ema_q_rgb = mean_rgb
-            self.ema_q_sonar = mean_sonar
+            # Initialize with current quality values (no averaging)
+            # Detach to prevent gradient flow through EMA state
+            self.ema_q_rgb = q_rgb.detach().clone()  # (B, 1)
+            self.ema_q_sonar = q_sonar.detach().clone()  # (B, 1)
             # Return original values on initialization
             return q_rgb, q_sonar
 
-        # Apply EMA update (both training and inference)
+        # Handle batch size mismatch (can happen during training with varying batch sizes)
+        if self.ema_q_rgb.shape[0] != batch_size:
+            if batch_size == 1:
+                # Evaluation mode (batch_size=1): Use only the first EMA state
+                # This allows continuous per-frame smoothing across the sequence
+                prev_rgb = self.ema_q_rgb[0:1].clone()
+                prev_sonar = self.ema_q_sonar[0:1].clone()
+            else:
+                # Training mode with varying batch size: Reset to current values
+                self.ema_q_rgb = q_rgb.detach().clone()
+                self.ema_q_sonar = q_sonar.detach().clone()
+                return q_rgb, q_sonar
+
+            # Update buffers to new batch size for evaluation
+            self.ema_q_rgb = prev_rgb
+            self.ema_q_sonar = prev_sonar
+
+        # Apply per-sample EMA update
+        # ema_t = alpha * ema_{t-1} + (1 - alpha) * current_t
         self.ema_q_rgb = (
             self.ema_alpha * self.ema_q_rgb +
-            (1 - self.ema_alpha) * mean_rgb
+            (1 - self.ema_alpha) * q_rgb.detach()
         )
         self.ema_q_sonar = (
             self.ema_alpha * self.ema_q_sonar +
-            (1 - self.ema_alpha) * mean_sonar
+            (1 - self.ema_alpha) * q_sonar.detach()
         )
 
-        # Broadcast scalar buffers to match batch size
-        q_rgb_smoothed = self.ema_q_rgb.expand_as(q_rgb)
-        q_sonar_smoothed = self.ema_q_sonar.expand_as(q_sonar)
+        # Return smoothed values (each sample has its own smoothed quality)
+        q_rgb_smoothed = self.ema_q_rgb.clone()
+        q_sonar_smoothed = self.ema_q_sonar.clone()
 
         return q_rgb_smoothed, q_sonar_smoothed
 
