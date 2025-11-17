@@ -142,6 +142,60 @@ class TestRGBQualityEstimator:
         assert isinstance(estimator, RGBQualityEstimator)
         assert estimator.method == 'laplacian'
 
+    def test_rgb_forward_with_metadata(self, rgb_quality_estimator):
+        """
+        Test RGB quality estimation with metadata parameter.
+
+        CRITICAL FIX (Audit 2025111706 Finding 1 & 3):
+        Unit test that RGBQualityEstimator accepts metadata in forward().
+        """
+        rgb_frame = torch.randn(2, 3, 256, 256)
+        bbox = torch.tensor([[64, 64, 128, 128], [32, 32, 64, 64]], dtype=torch.float32)
+
+        # Test with None metadata
+        quality_none = rgb_quality_estimator(rgb_frame, bbox, metadata=None)
+        assert quality_none.shape == (2, 1)
+        assert torch.all((quality_none >= 0) & (quality_none <= 1))
+
+        # Test with dict metadata (legacy)
+        metadata_dict = {'pad_x': 10, 'pad_y': 20, 'scale_x': 0.5, 'scale_y': 0.5}
+        quality_dict = rgb_quality_estimator(rgb_frame, bbox, metadata=metadata_dict)
+        assert quality_dict.shape == (2, 1)
+
+        # Test with list metadata (per-sample)
+        metadata_list = [
+            {'pad_x': 10, 'pad_y': 20},
+            {'pad_x': 5, 'pad_y': 10}
+        ]
+        quality_list = rgb_quality_estimator(rgb_frame, bbox, metadata=metadata_list)
+        assert quality_list.shape == (2, 1)
+
+    def test_rgb_crop_roi_with_metadata(self, rgb_quality_estimator):
+        """
+        Test ROI cropping with padding metadata.
+
+        CRITICAL FIX (Audit 2025111706 Finding 2):
+        Verify that crop_roi() respects padding information.
+        """
+        rgb_frame = torch.randn(2, 3, 256, 256)
+        bbox = torch.tensor([[64, 64, 128, 128], [32, 32, 64, 64]], dtype=torch.float32)
+
+        # Test without metadata
+        roi_none = rgb_quality_estimator.crop_roi(rgb_frame, bbox, metadata=None)
+        assert roi_none.shape == (2, 3, 64, 64)
+
+        # Test with metadata
+        metadata = [
+            {'pad_x': 10, 'pad_y': 20},
+            {'pad_x': 5, 'pad_y': 10}
+        ]
+        roi_meta = rgb_quality_estimator.crop_roi(rgb_frame, bbox, metadata=metadata)
+        assert roi_meta.shape == (2, 3, 64, 64)
+
+        # Both should return valid ROIs (no exceptions)
+        assert torch.all(torch.isfinite(roi_none))
+        assert torch.all(torch.isfinite(roi_meta))
+
 
 class TestSonarQualityEstimator:
     """Tests for Sonar Quality Estimator."""

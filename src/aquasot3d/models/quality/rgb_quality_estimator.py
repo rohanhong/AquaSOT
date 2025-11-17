@@ -12,7 +12,7 @@ Date: 2025-11-06
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List, Union
 import numpy as np
 
 from aquasot3d.core import BaseModule
@@ -213,27 +213,70 @@ class RGBQualityEstimator(BaseModule):
 
         return quality
 
-    def crop_roi(self, image: torch.Tensor, bbox: torch.Tensor) -> torch.Tensor:
+    def crop_roi(
+        self,
+        image: torch.Tensor,
+        bbox: torch.Tensor,
+        metadata: Optional[Union[Dict, List[Dict]]] = None
+    ) -> torch.Tensor:
         """
         Crop region of interest from image.
 
+        CRITICAL FIX (Audit 2025111706 Finding 2):
+        Now padding-aware to avoid including padded zeros in quality estimation.
+        RGB letterbox padding artificially depresses sharpness/gradient scores.
+
         Args:
             image: Input image (B, C, H, W)
-            bbox: Bounding boxes (B, 4) in format [x, y, w, h]
+            bbox: Bounding boxes (B, 4) in pixel coordinates [x, y, w, h]
+            metadata: Optional dict or list of dicts with padding info:
+                      - pad_x: left padding offset
+                      - pad_y: top padding offset
+                      - scale_x: horizontal scale factor
+                      - scale_y: vertical scale factor
+                      - original_height, original_width: pre-letterbox dimensions
 
         Returns:
-            List of cropped ROIs
+            Cropped ROIs (B, C, 64, 64)
         """
         B = image.shape[0]
+        H, W = image.shape[2], image.shape[3]
         rois = []
+
+        # Handle metadata format (dict for legacy, list for per-sample)
+        if metadata is None:
+            metadata_list = [{}] * B
+        elif isinstance(metadata, dict):
+            metadata_list = [metadata] * B
+        else:
+            metadata_list = metadata
 
         for i in range(B):
             x, y, w, h = bbox[i].long()
-            # Clamp to image boundaries
-            x = torch.clamp(x, 0, image.shape[3] - 1)
-            y = torch.clamp(y, 0, image.shape[2] - 1)
-            w = torch.clamp(w, 1, image.shape[3] - x)
-            h = torch.clamp(h, 1, image.shape[2] - y)
+
+            # CRITICAL FIX (Audit 2025111706 Finding 2):
+            # Adjust bbox to exclude letterbox padding
+            meta = metadata_list[i] if i < len(metadata_list) else {}
+            pad_x = int(meta.get('pad_x', 0))
+            pad_y = int(meta.get('pad_y', 0))
+
+            # Clamp bbox to valid (non-padded) region
+            # For RGB, padding can be on any side depending on aspect ratio
+            valid_y_min = pad_y
+            valid_y_max = H - pad_y  # Assume symmetric padding for RGB
+            valid_x_min = pad_x
+            valid_x_max = W - pad_x
+
+            # Clamp bbox coordinates to valid region
+            x = torch.clamp(x, valid_x_min, max(valid_x_min, valid_x_max - 1))
+            y = torch.clamp(y, valid_y_min, max(valid_y_min, valid_y_max - 1))
+
+            # Ensure bbox doesn't extend into padded region
+            x_max = min(x + w, valid_x_max)
+            y_max = min(y + h, valid_y_max)
+
+            w = torch.clamp(x_max - x, 1, W)
+            h = torch.clamp(y_max - y, 1, H)
 
             roi = image[i:i+1, :, y:y+h, x:x+w]
 
@@ -250,22 +293,34 @@ class RGBQualityEstimator(BaseModule):
     def forward(
         self,
         rgb_frame: torch.Tensor,
-        bbox: Optional[torch.Tensor] = None
+        bbox: Optional[torch.Tensor] = None,
+        metadata: Optional[Union[Dict, List[Dict]]] = None
     ) -> torch.Tensor:
         """
         Estimate RGB frame quality.
 
+        CRITICAL FIX (Audit 2025111706 Finding 1):
+        Now accepts metadata to handle letterbox padding correctly. RGB ROIs
+        are cropped from the valid (non-padded) region only to prevent artificially
+        depressed sharpness/gradient scores from padded regions.
+
         Args:
             rgb_frame: RGB frames (B, 3, H, W)
-            bbox: Bounding boxes (B, 4) for ROI-based quality estimation
+            bbox: Bounding boxes (B, 4) for ROI-based quality estimation.
                   If None, use entire frame
+            metadata: Optional dict or list of dicts containing padding info:
+                      - pad_x: left padding offset
+                      - pad_y: top padding offset
+                      - scale_x: horizontal scale factor
+                      - scale_y: vertical scale factor
+                      - original_height, original_width: pre-letterbox dimensions
 
         Returns:
             Quality scores (B, 1) in range [0, 1]
         """
         # Extract ROI if bbox provided
         if bbox is not None:
-            roi = self.crop_roi(rgb_frame, bbox)
+            roi = self.crop_roi(rgb_frame, bbox, metadata=metadata)
         else:
             roi = rgb_frame
 
