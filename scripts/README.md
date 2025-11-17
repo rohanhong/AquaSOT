@@ -10,18 +10,18 @@ Main training script for AquaSOT-3D.
 **Usage:**
 ```bash
 # Full training on UUV2
-python scripts/train.py --config configs/train/train_multiseq.yaml
+python scripts/train.py --config configs/train/train.yaml
 
 # RGB-only pretraining
 python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
 
 # Training with overrides
-python scripts/train.py --config configs/train/train_multiseq.yaml \
+python scripts/train.py --config configs/train/train.yaml \
     --opts training.lr=0.001 training.batch_size=32
 
 # Resume training
-python scripts/train.py --config configs/train/train_multiseq.yaml \
-    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
+python scripts/train.py --config configs/train/train.yaml \
+    --resume outputs/train/checkpoints/checkpoint_epoch_20.pth
 ```
 
 **Features:**
@@ -41,12 +41,12 @@ Evaluate trained model on test set.
 ```bash
 # Evaluate on UUV3 test set
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/best_model.pth
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/best_model.pth
 
 # Custom output directory
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint model.pth \
     --output custom_eval_output/
 ```
@@ -105,11 +105,11 @@ configs/
 ├── base/
 │   └── default.yaml              # Base configuration
 ├── train/
-│   ├── train_multiseq.yaml      # Full multi-sequence training
+│   ├── train.yaml      # Full multi-sequence training
 │   ├── pretrain_rgb_only.yaml   # RGB pretraining
 │   └── pretrain_sonar_only.yaml # Sonar pretraining
 ├── eval/
-│   └── eval_multiseq.yaml       # Multi-sequence evaluation config
+│   └── eval.yaml       # Multi-sequence evaluation config
 └── ablation/
     ├── ablation_no_mamba.yaml
     ├── ablation_no_gating.yaml
@@ -153,12 +153,12 @@ python -m torch.distributed.launch \
     --nproc_per_node=4 \
     --master_port=29500 \
     scripts/train.py \
-    --config configs/train/train_multiseq.yaml
+    --config configs/train/train.yaml
 
 # Using torchrun (PyTorch >= 1.10)
 torchrun --nproc_per_node=4 \
     scripts/train.py \
-    --config configs/train/train_multiseq.yaml
+    --config configs/train/train.yaml
 ```
 
 ## Common Issues
@@ -178,7 +178,7 @@ export PYTHONPATH="${PYTHONPATH}:/path/to/AquaSOT-3D/src"
 **Configuration file not found**
 ```bash
 # Use absolute path or run from project root
-python scripts/train.py --config $(pwd)/configs/train/train_multiseq.yaml
+python scripts/train.py --config $(pwd)/configs/train/train.yaml
 ```
 
 ---

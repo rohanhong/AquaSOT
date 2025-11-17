@@ -23,6 +23,24 @@ AquaSOT-3D evaluation follows **RGBS50 benchmark protocol** with three evaluatio
 
 **Metrics**: Success (AUC), Precision@20, Average Center Error, Mean IoU
 
+### Multi-Frame Temporal Evaluation
+
+**Important:** Evaluation uses **multi-frame sequences** to properly test Vision-Mamba temporal modeling:
+
+- `search_sequence_length=5`: Evaluation processes 5 consecutive frames per step
+- `use_sequence_grouping=true`: Maintains temporal continuity during evaluation
+- Vision-Mamba state persists across frames within each sequence
+
+This configuration ensures that temporal components (Vision-Mamba, EMA aggregation) are evaluated correctly, matching the training setup from Stage 3.
+
+**Configuration** (`configs/eval/eval.yaml`):
+
+```yaml
+data:
+  search_sequence_length: 5  # Match training configuration
+  use_sequence_grouping: true  # Ensure proper sequence-based evaluation
+```
+
 ---
 
 ## Quick Start
@@ -34,8 +52,8 @@ Evaluate on all 3 test sequences:
 ```bash
 # Full multi-modal model
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth
 ```
 
 ### Single-Sequence Evaluation (For Debugging)
@@ -44,8 +62,8 @@ Evaluate on UUV3 only:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth
 ```
 
 ### Single-Modality Evaluation
@@ -53,12 +71,12 @@ python scripts/eval.py \
 ```bash
 # RGB-only model (multi-sequence)
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/pretrain_rgb/checkpoints/checkpoint_best.pth
 
 # Sonar-only model (multi-sequence)
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/pretrain_sonar/checkpoints/checkpoint_best.pth
 ```
 
@@ -78,7 +96,7 @@ Available configs in `configs/eval/` directory:
 
 ```
 configs/eval/
-└── eval_multiseq.yaml          # Multi-sequence: All 3 test sequences
+└── eval.yaml          # Multi-sequence: All 3 test sequences
 ```
 
 ### Per-Sequence Resolution Detection
@@ -110,8 +128,8 @@ python scripts/eval.py --config <config_file> --checkpoint <checkpoint_path>
 ```bash
 # Multi-sequence evaluation with custom settings
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
     --opts evaluation.batch_size=1 evaluation.visualization.enabled=true
 ```
 
@@ -119,18 +137,37 @@ python scripts/eval.py \
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
     --output outputs/custom_eval
 ```
+
+### Single-Frame vs Multi-Frame Evaluation
+
+By default, evaluation uses multi-frame sequences. To evaluate in single-frame mode (for ablation studies):
+
+```bash
+# Single-frame evaluation (disables temporal modeling)
+python scripts/eval.py \
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
+    --opts data.search_sequence_length=1
+```
+
+**Note:** Single-frame evaluation is only recommended for:
+- Ablation studies comparing single-frame vs multi-frame performance
+- Debugging temporal components
+- Evaluating Stage 1/2 pretrained models (which were trained on single frames)
+
+Production evaluation should always use multi-frame sequences (`search_sequence_length=5`) to properly test the full system capabilities.
 
 ### Evaluate Specific Sequences
 
 ```bash
 # Override to evaluate only specific test sequences
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --config configs/eval/eval.yaml \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
     --opts data.test_sequences=[uuv3,uuv6]
 ```
 
@@ -217,7 +254,7 @@ outputs/eval_multiseq/
 
 ### Default Behavior
 
-**Visualization is enabled by default** in all evaluation configs (`eval_multiseq.yaml`).
+**Visualization is enabled by default** in all evaluation configs (`eval.yaml`).
 
 The evaluation script will automatically generate visualizations and save them to the output directory unless explicitly disabled.
 
@@ -228,24 +265,24 @@ Use CLI flags to override config settings:
 ```bash
 # Use default (visualization enabled)
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint>
 
 # Explicitly disable for faster evaluation
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --no-visualize
 
 # Force enable (override config if disabled)
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --visualize
 
 # Alternative: via config override
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --opts evaluation.visualization.enabled=false
 ```
@@ -281,17 +318,17 @@ Evaluate ablation models on all test sequences:
 ```bash
 # Without Vision-Mamba temporal module
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/ablation_no_mamba/checkpoints/checkpoint_best.pth
 
 # Without geometric gating
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/ablation_no_gating/checkpoints/checkpoint_best.pth
 
 # Without weak 3D cycle
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/ablation_no_cycle3d/checkpoints/checkpoint_best.pth
 ```
 
@@ -299,7 +336,7 @@ python scripts/eval.py \
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/ablation_no_mamba/checkpoints/checkpoint_best.pth
 ```
 
@@ -313,7 +350,7 @@ For quick validation on subset of frames per sequence:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --opts debug.max_frames_per_sequence=100
 ```
@@ -323,7 +360,7 @@ python scripts/eval.py \
 ```bash
 # Evaluate only first test sequence
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --opts data.test_sequences=[uuv3]
 ```
@@ -381,13 +418,13 @@ Evaluate sequences one at a time:
 ```bash
 # Evaluate only UUV3
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --opts data.test_sequences=[uuv3]
 
 # Evaluate only UUV6
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --opts data.test_sequences=[uuv6]
 ```
@@ -398,10 +435,10 @@ Ensure checkpoint path is correct:
 
 ```bash
 # For multi-sequence training
-ls outputs/train_multiseq/checkpoints/
+ls outputs/train/checkpoints/
 
 # For single-sequence training
-ls outputs/train_multiseq/checkpoints/
+ls outputs/train/checkpoints/
 ```
 
 ### Slow Evaluation
@@ -426,7 +463,7 @@ Use frame subset for quick validation:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint <checkpoint> \
     --opts debug.max_frames_per_sequence=100
 ```
@@ -435,7 +472,7 @@ python scripts/eval.py \
 
 ## Best Practices
 
-✓ Use multi-sequence evaluation (`eval_multiseq.yaml`) for final benchmark results
+✓ Use multi-sequence evaluation (`eval.yaml`) for final benchmark results
 ✓ Use `checkpoint_best.pth` for final evaluation
 ✓ Disable augmentation for evaluation (default in eval configs)
 ✓ Run full evaluation on complete test set (all 3 sequences) before reporting results

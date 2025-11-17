@@ -17,9 +17,18 @@ AquaSOT-3D supports **multi-sequence training** across the full AquaSOT-3D datas
 
 AquaSOT-3D uses a **three-stage training approach**:
 
-1. **Stage 1:** RGB-only pretraining (40 epochs)
-2. **Stage 2:** Sonar-only pretraining (40 epochs)
-3. **Stage 3:** Multi-modal fusion training (60 epochs)
+1. **Stage 1:** RGB-only pretraining (40 epochs, single-frame pairs)
+2. **Stage 2:** Sonar-only pretraining (40 epochs, single-frame pairs)
+3. **Stage 3:** Multi-modal fusion training (60 epochs, **multi-frame sequences**)
+
+**Key Difference: Multi-Frame Temporal Training**
+
+Stage 3 operates on **multi-frame sequences** rather than single-frame pairs:
+
+- **Stages 1 & 2**: `search_sequence_length=1` (traditional template-search pairs)
+- **Stage 3**: `search_sequence_length=5` (5 consecutive search frames per template)
+
+This enables Vision-Mamba to learn temporal dependencies across frames, improving tracking robustness under occlusions and motion blur.
 
 ---
 
@@ -37,7 +46,7 @@ python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
 python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 
 # Stage 3: Fusion Training (multi-sequence)
-python scripts/train.py --config configs/train/train_multiseq.yaml
+python scripts/train.py --config configs/train/train.yaml
 ```
 
 ---
@@ -61,7 +70,45 @@ configs/
 └── train/
     ├── pretrain_rgb_only.yaml     # Stage 1: RGB pretraining
     ├── pretrain_sonar_only.yaml   # Stage 2: Sonar pretraining
-    └── train_multiseq.yaml        # Stage 3: All 9 sequences
+    └── train.yaml        # Stage 3: All 9 sequences
+```
+
+### Multi-Frame Temporal Training Configuration
+
+**Stage 3 Configuration** (`configs/train/train.yaml`):
+
+```yaml
+data:
+  # Multi-frame temporal training (required for Vision-Mamba)
+  search_sequence_length: 5  # 5 consecutive search frames
+  use_sequence_grouping: true  # Prevent cross-sequence contamination in batches
+
+model:
+  temporal:
+    type: mamba
+    enabled: true  # Vision-Mamba temporal modeling
+```
+
+**Key Parameters:**
+
+- `search_sequence_length`: Number of consecutive search frames (4-6 recommended)
+  - Stage 1/2 (pretraining): 1 (single-frame pairs, default)
+  - Stage 3 (fusion): 5 (multi-frame sequences, **required for temporal training**)
+
+- `use_sequence_grouping`: Ensures batches contain samples from the same sequence
+  - Prevents Vision-Mamba from seeing discontinuous frames within a batch
+  - Critical for training temporal state management correctly
+
+**Adjusting Sequence Length:**
+
+```bash
+# Use shorter sequences (faster, less memory)
+python scripts/train.py --config configs/train/train.yaml \
+    --opts data.search_sequence_length=3
+
+# Use longer sequences (better temporal context, more memory)
+python scripts/train.py --config configs/train/train.yaml \
+    --opts data.search_sequence_length=7
 ```
 
 ### Per-Sequence Resolution Detection
@@ -90,7 +137,7 @@ python scripts/train.py --config <config_file>
 
 ```bash
 python scripts/train.py \
-    --config configs/train/train_multiseq.yaml \
+    --config configs/train/train.yaml \
     --opts training.batch_size=4 training.num_epochs=80
 ```
 
@@ -98,8 +145,8 @@ python scripts/train.py \
 
 ```bash
 python scripts/train.py \
-    --config configs/train/train_multiseq.yaml \
-    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
+    --config configs/train/train.yaml \
+    --resume outputs/train/checkpoints/checkpoint_epoch_20.pth
 ```
 
 ---
@@ -113,13 +160,13 @@ python scripts/train.py \
 python -m torch.distributed.launch \
     --nproc_per_node=2 \
     scripts/train.py \
-    --config configs/train/train_multiseq.yaml
+    --config configs/train/train.yaml
 
 # 4 GPUs
 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch \
     --nproc_per_node=4 \
     scripts/train.py \
-    --config configs/train/train_multiseq.yaml
+    --config configs/train/train.yaml
 ```
 
 ---
@@ -154,13 +201,13 @@ Checkpoints are saved based on `save_interval` in config:
 ```bash
 # Resume from specific epoch
 python scripts/train.py \
-    --config configs/train/train_multiseq.yaml \
-    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
+    --config configs/train/train.yaml \
+    --resume outputs/train/checkpoints/checkpoint_epoch_20.pth
 
 # Resume from best model
 python scripts/train.py \
-    --config configs/train/train_multiseq.yaml \
-    --resume outputs/train_multiseq/checkpoints/checkpoint_best.pth
+    --config configs/train/train.yaml \
+    --resume outputs/train/checkpoints/checkpoint_best.pth
 ```
 
 ---

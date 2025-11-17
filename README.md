@@ -330,7 +330,7 @@ data/
 Train on all 9 training sequences:
 
 ```bash
-python scripts/train.py --config configs/train/train_multiseq.yaml
+python scripts/train.py --config configs/train/train.yaml
 ```
 
 **Single-Sequence Training** (Legacy):
@@ -338,7 +338,7 @@ python scripts/train.py --config configs/train/train_multiseq.yaml
 Train on UUV2 only (for compatibility or debugging):
 
 ```bash
-python scripts/train.py --config configs/train/train_multiseq.yaml
+python scripts/train.py --config configs/train/train.yaml
 ```
 
 **Training Options**:
@@ -350,7 +350,7 @@ python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
 python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 
 # Resume training from checkpoint
-python scripts/train.py --config configs/train/train_multiseq.yaml \
+python scripts/train.py --config configs/train/train.yaml \
     --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
 
 # Override sequences dynamically
@@ -361,7 +361,7 @@ python scripts/train.py --config configs/base/default.yaml \
            training.batch_size=4
 
 # Override configuration parameters
-python scripts/train.py --config configs/train/train_multiseq.yaml \
+python scripts/train.py --config configs/train/train.yaml \
     --opts training.lr=0.001 training.batch_size=8
 ```
 
@@ -373,7 +373,7 @@ Evaluate on all 3 validation sequences:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
@@ -383,7 +383,7 @@ Evaluate on UUV3 only:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
@@ -405,13 +405,13 @@ Visualization is **enabled by default** in evaluation configs. To control it:
 ```bash
 # Disable visualization for faster evaluation
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
     --no-visualize
 
 # Force enable visualization (override config)
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
     --visualize
 ```
@@ -519,12 +519,12 @@ python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 Train the complete system with G²-DCMA fusion and temporal modules (60 epochs):
 
 ```bash
-python scripts/train.py --config configs/train/train_multiseq.yaml
+python scripts/train.py --config configs/train/train.yaml
 ```
 
 **Quick Testing** (5 epochs for validation):
 ```bash
-python scripts/train.py --config configs/train/train_multiseq.yaml
+python scripts/train.py --config configs/train/train.yaml
 ```
 
 **Key Training Settings**:
@@ -583,14 +583,14 @@ For multi-GPU training:
 # Using torchrun (recommended)
 torchrun --nproc_per_node=4 \
     scripts/train.py \
-    --config configs/train/train_multiseq.yaml
+    --config configs/train/train.yaml
 
 # Using torch.distributed.launch (older PyTorch)
 python -m torch.distributed.launch \
     --nproc_per_node=4 \
     --master_port=29500 \
     scripts/train.py \
-    --config configs/train/train_multiseq.yaml
+    --config configs/train/train.yaml
 ```
 
 **Distributed Features**:
@@ -619,7 +619,7 @@ Metrics are reported separately for:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_multiseq.yaml \
+    --config configs/eval/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/best_model.pth \
     --output eval_results/
 ```
@@ -693,11 +693,11 @@ configs/
 ├── base/
 │   └── default.yaml              # Base configuration with all defaults
 ├── train/
-│   ├── train_multiseq.yaml      # Full multi-sequence training (60 epochs)
+│   ├── train.yaml      # Full multi-sequence training (60 epochs)
 │   ├── pretrain_rgb_only.yaml   # RGB-only pretraining (40 epochs)
 │   └── pretrain_sonar_only.yaml # Sonar-only pretraining (40 epochs)
 ├── eval/
-│   └── eval_multiseq.yaml       # Multi-sequence evaluation configuration
+│   └── eval.yaml       # Multi-sequence evaluation configuration
 └── ablation/
     ├── ablation_no_mamba.yaml
     ├── ablation_no_gating.yaml
@@ -721,7 +721,7 @@ Refer to actual configuration files in `configs/` directory for detailed paramet
 Override any configuration parameter at runtime:
 
 ```bash
-python scripts/train.py --config configs/train/train_multiseq.yaml \
+python scripts/train.py --config configs/train/train.yaml \
     --opts \
     training.lr=0.001 \
     training.batch_size=16 \

@@ -59,7 +59,7 @@ data:
   pin_memory: true
   prefetch_factor: 2
   persistent_workers: true
-  use_sequence_grouping: true  # CRITICAL: Group same-sequence samples in batches for EMA aggregator training
+  use_sequence_grouping: true  # Group same-sequence samples in batches (required for temporal training)
 
   # Image sizes (must be divisible by patch_size=16 for ViT)
   template_size: 128  # 128 = 16 * 8
@@ -68,11 +68,10 @@ data:
   # Template-search pair sampling
   template_search_gap: 30  # Maximum frame gap between template and search
 
-  # CRITICAL FIX (Audit 2025111703 Finding 1): Sequence-based training for Vision-Mamba
-  # search_sequence_length: Number of consecutive search frames for temporal modeling
-  # - search_sequence_length=1: Traditional pair sampling (backward compatible, default)
-  # - search_sequence_length>1: Sample T consecutive frames for Vision-Mamba temporal training
-  search_sequence_length: 1  # Set to 3-5 for temporal training
+  # Temporal sequence sampling for Vision-Mamba
+  # - 1: Single-frame pairs (backward compatible, for pretraining stages)
+  # - 3-5: Multi-frame sequences (required for Stage 3 fusion/temporal training)
+  search_sequence_length: 1  # Override to 3-5 in Stage 3 configs
 
   # Data augmentation (training)
   augmentation:
@@ -169,8 +168,8 @@ model:
   temporal:
     type: mamba  # mamba, transformer, or artrack
     enabled: true
-    # CRITICAL FIX (Audit 2025111702 Finding 1): Enable temporal aggregation (EMA smoothing)
-    aggregation: false  # Enable EMA aggregator on top of Vision-Mamba for long-range stability
+    # EMA aggregation for long-range temporal stability (optional enhancement)
+    aggregation: false  # Set true to add EMA smoothing on top of Vision-Mamba
     # Module parameters (passed to VisionMambaHead.__init__)
     num_layers: 4
     d_state: 16

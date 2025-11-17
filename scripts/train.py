@@ -9,8 +9,8 @@ Main training script that integrates all components:
 - Checkpointing and logging
 
 Usage:
-    python scripts/train.py --config configs/train/train_multiseq.yaml
-    python scripts/train.py --config configs/train/train_multiseq.yaml \\
+    python scripts/train.py --config configs/train/train.yaml
+    python scripts/train.py --config configs/train/train.yaml \\
         --opts training.lr=0.001 training.batch_size=32
 
 Author: AquaSOT-3D Team

@@ -5,8 +5,8 @@ Evaluation Script for AquaSOT-3D
 Evaluate trained model on test set using Phase 9 evaluation module.
 
 Usage:
-    python scripts/eval.py --config configs/eval/eval_multiseq.yaml \\
-        --checkpoint outputs/train_multiseq/checkpoints/best_model.pth
+    python scripts/eval.py --config configs/eval/eval.yaml \\
+        --checkpoint outputs/train/checkpoints/best_model.pth
 
 Author: AquaSOT-3D Team
 Date: 2025-11-10

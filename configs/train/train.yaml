@@ -34,6 +34,11 @@ data:
   train_root: null
   val_root: null
 
+  # CRITICAL FIX (Audit 2025111705 Finding 1): Enable multi-frame temporal training
+  # Stage 3 must use sequences (not pairs) to train Vision-Mamba temporal modeling
+  search_sequence_length: 5  # Number of consecutive search frames (4-6 recommended)
+  use_sequence_grouping: true  # Prevent cross-sequence contamination in batches
+
   num_workers: 4
   prefetch_factor: 2
 

@@ -6,8 +6,8 @@
 #
 # Usage:
 #   python scripts/eval.py \
-#     --config configs/eval/eval_multiseq.yaml \
-#     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+#     --config configs/eval/eval.yaml \
+#     --checkpoint outputs/train/checkpoints/checkpoint_best.pth
 #
 # Author: AquaSOT-3D Team
 # Date: 2025-11-14
@@ -36,6 +36,11 @@ data:
 
   # Legacy paths set to null (not used)
   test_root: null
+
+  # CRITICAL FIX (Audit 2025111705 Finding 2): Enable multi-frame temporal inference
+  # Evaluation must use sequences to properly test Vision-Mamba/state management
+  search_sequence_length: 5  # Match training length for consistent temporal behavior
+  use_sequence_grouping: true  # Ensure proper sequence-based batching
 
   num_workers: 4
   prefetch_factor: 2

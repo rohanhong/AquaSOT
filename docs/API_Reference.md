@@ -1879,7 +1879,7 @@ from aquasot3d.evaluation import evaluate_model
 
 results = evaluate_model(
     model=tracker,
-    config_path='configs/eval/eval_multiseq.yaml',
+    config_path='configs/eval/eval.yaml',
     checkpoint_path='outputs/checkpoints/best_model.pth',
     device='cuda'
 )
@@ -2143,11 +2143,11 @@ Load YAML configuration with inheritance and overrides.
 from aquasot3d.utils.config import load_config
 
 # Load with inheritance
-config = load_config('configs/train/train_multiseq.yaml')
+config = load_config('configs/train/train.yaml')
 
 # Load with command-line overrides
 config = load_config(
-    'configs/train/train_multiseq.yaml',
+    'configs/train/train.yaml',
     overrides=[
         'training.lr=0.001',
         'training.batch_size=64',
@@ -2173,7 +2173,7 @@ training:
   lr: 0.0002
   batch_size: 32
 
-# configs/train/train_multiseq.yaml
+# configs/train/train.yaml
 _base_: ../base/default.yaml
 training:
   epochs: 60
