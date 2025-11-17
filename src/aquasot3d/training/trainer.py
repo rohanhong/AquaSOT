@@ -340,6 +340,12 @@ class Trainer:
                             f"entries but batch_size={batch_size}. Loader bug detected!"
                         )
 
+            # CRITICAL FIX (Audit 2025111702 Finding 2): Reset temporal state before each batch
+            # TrackingDataset samples independent template/search pairs in random order,
+            # so Vision-Mamba must not carry state across unrelated samples
+            if hasattr(self.model, 'reset_temporal_state'):
+                self.model.reset_temporal_state()
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():

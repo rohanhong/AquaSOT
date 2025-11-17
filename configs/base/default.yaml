@@ -162,6 +162,8 @@ model:
   temporal:
     type: mamba  # mamba, transformer, or artrack
     enabled: true
+    # CRITICAL FIX (Audit 2025111702 Finding 1): Enable temporal aggregation (EMA smoothing)
+    aggregation: false  # Enable EMA aggregator on top of Vision-Mamba for long-range stability
     # Module parameters (passed to VisionMambaHead.__init__)
     num_layers: 4
     d_state: 16
@@ -171,6 +173,10 @@ model:
     use_occlusion_gating: true
     dropout: 0.1
     max_spatial_size: 32
+    # Aggregator parameters (used when aggregation=true)
+    aggregator:
+      alpha: 0.9  # EMA smoothing factor
+      visibility_threshold: 0.5  # Quality threshold for gating
 
   # Prediction heads
   heads:

@@ -136,6 +136,9 @@ def build_model(cfg):
     # Determine use_weak3d
     use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
 
+    # CRITICAL FIX (Audit 2025111702 Finding 1): Extract temporal_aggregation from config
+    temporal_aggregation = cfg.model.temporal.get('aggregation', False)
+
     # Build model
     model = AquaSOT3DTracker(
         rgb_backbone_config=rgb_backbone_cfg,
@@ -148,7 +151,8 @@ def build_model(cfg):
         quality_config=quality_cfg,
         projector_config=projector_cfg,
         use_temporal=cfg.model.temporal.get('enabled', True),
-        use_weak3d=use_weak3d
+        use_weak3d=use_weak3d,
+        temporal_aggregation=temporal_aggregation  # CRITICAL FIX (Audit 2025111702 Finding 1)
     )
 
     logger.info(f"Model built successfully")

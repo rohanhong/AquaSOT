@@ -192,10 +192,28 @@ class GeometricCyclicProjector(BaseModule):
             bbox_2d = torch.stack([cx, cy, w, h], dim=-1)
         else:
             # MLP or linear projection
+            # CRITICAL FIX (Audit 2025111702 Finding 3): Normalize center_3d with metadata
+            # before feeding into MLP, so the network operates in a canonicalized coordinate space
+            batch_size = center_3d.shape[0]
+            center_3d_normalized = center_3d.clone()
+
+            if metadata is not None and len(metadata) > 0:
+                # Normalize center_3d by scale factors to undo crop distortion
+                # This allows MLP to learn in canonical geometric space
+                for i in range(min(batch_size, len(metadata))):
+                    if metadata[i]:
+                        scale_x = metadata[i].get('scale_x', 1.0)
+                        scale_y = metadata[i].get('scale_y', 1.0)
+                        # Normalize X and Y by their respective scale factors
+                        # Z remains unchanged as it's not affected by 2D crop scaling
+                        center_3d_normalized[i, 0] = center_3d[i, 0] / scale_x
+                        center_3d_normalized[i, 1] = center_3d[i, 1] / scale_y
+
+            # Feed normalized center_3d into MLP
             if self.use_context and context is not None:
-                proj_input = torch.cat([center_3d, context], dim=-1)
+                proj_input = torch.cat([center_3d_normalized, context], dim=-1)
             else:
-                proj_input = center_3d
+                proj_input = center_3d_normalized
 
             bbox_2d = self.forward_projector(proj_input)
 

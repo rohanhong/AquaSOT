@@ -177,6 +177,7 @@ class AquaSOT3DTracker(BaseModule):
             temporal_config_copy.pop('enabled', None)
             temporal_config_copy.pop('feature_dim', None)  # Remove to avoid conflict
             temporal_config_copy.pop('aggregator', None)  # Remove aggregator config (handled separately)
+            temporal_config_copy.pop('aggregation', None)  # Remove aggregation flag (handled separately)
 
             if temporal_type == 'mamba':
                 self.temporal_head = build_vision_mamba_head(
