@@ -338,7 +338,7 @@ python scripts/train.py --config configs/train/train_multiseq.yaml
 Train on UUV2 only (for compatibility or debugging):
 
 ```bash
-python scripts/train.py --config configs/train/train_uuv2.yaml
+python scripts/train.py --config configs/train/train_multiseq.yaml
 ```
 
 **Training Options**:
@@ -383,8 +383,8 @@ Evaluate on UUV3 only:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_uuv3.yaml \
-    --checkpoint outputs/train_uuv2/checkpoints/checkpoint_best.pth
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
 **Custom Evaluation**:
@@ -510,8 +510,8 @@ python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 
 **Quick Testing** (5 epochs for validation):
 ```bash
-python scripts/train.py --config configs/train_test/test_pretrain_rgb.yaml
-python scripts/train.py --config configs/train_test/test_pretrain_sonar.yaml
+python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
+python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 ```
 
 #### Stage 2: Multi-Modal Fusion Training
@@ -519,12 +519,12 @@ python scripts/train.py --config configs/train_test/test_pretrain_sonar.yaml
 Train the complete system with G²-DCMA fusion and temporal modules (60 epochs):
 
 ```bash
-python scripts/train.py --config configs/train/train_uuv2.yaml
+python scripts/train.py --config configs/train/train_multiseq.yaml
 ```
 
 **Quick Testing** (5 epochs for validation):
 ```bash
-python scripts/train.py --config configs/train_test/test_fusion.yaml
+python scripts/train.py --config configs/train/train_multiseq.yaml
 ```
 
 **Key Training Settings**:
@@ -583,14 +583,14 @@ For multi-GPU training:
 # Using torchrun (recommended)
 torchrun --nproc_per_node=4 \
     scripts/train.py \
-    --config configs/train/train_uuv2.yaml
+    --config configs/train/train_multiseq.yaml
 
 # Using torch.distributed.launch (older PyTorch)
 python -m torch.distributed.launch \
     --nproc_per_node=4 \
     --master_port=29500 \
     scripts/train.py \
-    --config configs/train/train_uuv2.yaml
+    --config configs/train/train_multiseq.yaml
 ```
 
 **Distributed Features**:
@@ -619,8 +619,8 @@ Metrics are reported separately for:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_uuv3.yaml \
-    --checkpoint outputs/train_uuv2/checkpoints/best_model.pth \
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/best_model.pth \
     --output eval_results/
 ```
 
@@ -693,15 +693,11 @@ configs/
 ├── base/
 │   └── default.yaml              # Base configuration with all defaults
 ├── train/
-│   ├── train_uuv2.yaml          # Full training (60 epochs)
+│   ├── train_multiseq.yaml      # Full multi-sequence training (60 epochs)
 │   ├── pretrain_rgb_only.yaml   # RGB-only pretraining (40 epochs)
 │   └── pretrain_sonar_only.yaml # Sonar-only pretraining (40 epochs)
-├── train_test/
-│   ├── test_pretrain_rgb.yaml   # Quick RGB test (5 epochs)
-│   ├── test_pretrain_sonar.yaml # Quick Sonar test (5 epochs)
-│   └── test_fusion.yaml         # Quick fusion test (5 epochs)
 ├── eval/
-│   └── eval_uuv3.yaml           # Evaluation configuration
+│   └── eval_multiseq.yaml       # Multi-sequence evaluation configuration
 └── ablation/
     ├── ablation_no_mamba.yaml
     ├── ablation_no_gating.yaml
@@ -725,7 +721,7 @@ Refer to actual configuration files in `configs/` directory for detailed paramet
 Override any configuration parameter at runtime:
 
 ```bash
-python scripts/train.py --config configs/train/train_uuv2.yaml \
+python scripts/train.py --config configs/train/train_multiseq.yaml \
     --opts \
     training.lr=0.001 \
     training.batch_size=16 \
@@ -743,7 +739,7 @@ Export trained model for deployment:
 
 ```bash
 python scripts/export.py \
-    --checkpoint outputs/train_uuv2/checkpoints/best_model.pth \
+    --checkpoint outputs/train_multiseq/checkpoints/best_model.pth \
     --output model.onnx \
     --format onnx \
     --input_shape 1,3,224,224

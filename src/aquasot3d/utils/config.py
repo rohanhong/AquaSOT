@@ -196,7 +196,7 @@ def load_config(
         Configuration object
 
     Example:
-        >>> cfg = load_config('configs/train/train_uuv2.yaml',
+        >>> cfg = load_config('configs/train/train_multiseq.yaml',
         ...                  overrides=['training.lr=0.001'])
         >>> print(cfg.training.lr)  # 0.001
     """

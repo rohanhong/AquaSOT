@@ -25,7 +25,7 @@ AquaSOT-3D uses a **three-stage training approach**:
 
 ## Quick Start
 
-### Multi-Sequence Training (Recommended)
+### Multi-Sequence Training
 
 Train on all 9 training sequences:
 
@@ -38,14 +38,6 @@ python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 
 # Stage 3: Fusion Training (multi-sequence)
 python scripts/train.py --config configs/train/train_multiseq.yaml
-```
-
-### Single-Sequence Training (For Debugging)
-
-Train on UUV2 only:
-
-```bash
-python scripts/train.py --config configs/train/train_uuv2.yaml
 ```
 
 ---
@@ -66,15 +58,10 @@ Available configs in `configs/` directory:
 ```
 configs/
 ├── base/default.yaml              # Base configuration (multi-sequence defaults)
-├── train/
-│   ├── pretrain_rgb_only.yaml     # Stage 1: RGB pretraining
-│   ├── pretrain_sonar_only.yaml   # Stage 2: Sonar pretraining
-│   ├── train_multiseq.yaml        # Stage 3: All 9 sequences
-│   └── train_uuv2.yaml            # Stage 3: Single sequence (debugging)
-└── train_test/
-    ├── test_pretrain_rgb.yaml     # Stage 1: Quick test (5 epochs)
-    ├── test_pretrain_sonar.yaml   # Stage 2: Quick test (5 epochs)
-    └── test_fusion.yaml           # Stage 3: Quick test (5 epochs)
+└── train/
+    ├── pretrain_rgb_only.yaml     # Stage 1: RGB pretraining
+    ├── pretrain_sonar_only.yaml   # Stage 2: Sonar pretraining
+    └── train_multiseq.yaml        # Stage 3: All 9 sequences
 ```
 
 ### Per-Sequence Resolution Detection
@@ -103,7 +90,7 @@ python scripts/train.py --config <config_file>
 
 ```bash
 python scripts/train.py \
-    --config configs/train/train_uuv2.yaml \
+    --config configs/train/train_multiseq.yaml \
     --opts training.batch_size=4 training.num_epochs=80
 ```
 
@@ -111,25 +98,8 @@ python scripts/train.py \
 
 ```bash
 python scripts/train.py \
-    --config configs/train/train_uuv2.yaml \
-    --resume outputs/train_uuv2/checkpoints/checkpoint_epoch_20.pth
-```
-
----
-
-## Testing Configuration
-
-Quick validation tests (5 epochs each):
-
-```bash
-# Stage 1 test
-python scripts/train.py --config configs/train_test/test_pretrain_rgb.yaml
-
-# Stage 2 test
-python scripts/train.py --config configs/train_test/test_pretrain_sonar.yaml
-
-# Stage 3 test
-python scripts/train.py --config configs/train_test/test_fusion.yaml
+    --config configs/train/train_multiseq.yaml \
+    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
 ```
 
 ---
@@ -143,13 +113,13 @@ python scripts/train.py --config configs/train_test/test_fusion.yaml
 python -m torch.distributed.launch \
     --nproc_per_node=2 \
     scripts/train.py \
-    --config configs/train/train_uuv2.yaml
+    --config configs/train/train_multiseq.yaml
 
 # 4 GPUs
 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch \
     --nproc_per_node=4 \
     scripts/train.py \
-    --config configs/train/train_uuv2.yaml
+    --config configs/train/train_multiseq.yaml
 ```
 
 ---
@@ -184,13 +154,13 @@ Checkpoints are saved based on `save_interval` in config:
 ```bash
 # Resume from specific epoch
 python scripts/train.py \
-    --config configs/train/train_uuv2.yaml \
-    --resume outputs/train_uuv2/checkpoints/checkpoint_epoch_20.pth
+    --config configs/train/train_multiseq.yaml \
+    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
 
 # Resume from best model
 python scripts/train.py \
-    --config configs/train/train_uuv2.yaml \
-    --resume outputs/train_uuv2/checkpoints/checkpoint_best.pth
+    --config configs/train/train_multiseq.yaml \
+    --resume outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
 ---

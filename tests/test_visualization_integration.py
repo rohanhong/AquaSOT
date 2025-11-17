@@ -214,8 +214,8 @@ class TestVisualizationIntegration:
         """
         from aquasot3d.utils.config import load_config
 
-        # Test eval_uuv3.yaml has visualization enabled
-        config_path = Path('configs/eval/eval_uuv3.yaml')
+        # Test eval_multiseq.yaml has visualization enabled
+        config_path = Path('configs/eval/eval_multiseq.yaml')
         if config_path.exists():
             cfg = load_config(str(config_path))
 
@@ -224,21 +224,12 @@ class TestVisualizationIntegration:
             assert hasattr(cfg.evaluation.visualization, 'enabled'), \
                 "Visualization section should have enabled flag"
 
-            # After fixes, default should be enabled
-            assert cfg.evaluation.visualization.enabled == True, \
-                "Visualization should be enabled by default in eval_uuv3.yaml"
-
-            assert hasattr(cfg.evaluation.visualization, 'save_dir'), \
-                "Should specify visualization save directory"
-
-        # Test eval_multiseq.yaml has visualization enabled
-        config_path = Path('configs/eval/eval_multiseq.yaml')
-        if config_path.exists():
-            cfg = load_config(str(config_path))
-
             # After fixes, should be enabled
             assert cfg.evaluation.visualization.enabled == True, \
                 "Visualization should be enabled by default in eval_multiseq.yaml"
+
+            assert hasattr(cfg.evaluation.visualization, 'save_dir'), \
+                "Should specify visualization save directory"
 
 
 class TestVisualizationCLIFlags:

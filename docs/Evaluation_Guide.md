@@ -44,8 +44,8 @@ Evaluate on UUV3 only:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_uuv3.yaml \
-    --checkpoint outputs/train_uuv2/checkpoints/checkpoint_best.pth
+    --config configs/eval/eval_multiseq.yaml \
+    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
 ### Single-Modality Evaluation
@@ -78,8 +78,7 @@ Available configs in `configs/eval/` directory:
 
 ```
 configs/eval/
-├── eval_multiseq.yaml          # Multi-sequence: All 3 test sequences
-└── eval_uuv3.yaml              # Single sequence: UUV3 only (debugging)
+└── eval_multiseq.yaml          # Multi-sequence: All 3 test sequences
 ```
 
 ### Per-Sequence Resolution Detection
@@ -198,7 +197,7 @@ outputs/eval_multiseq/
 ### Single-Sequence Evaluation
 
 ```
-outputs/eval_uuv3/
+outputs/eval_multiseq/
 ├── overall_metrics.json        # Metrics for single sequence
 ├── evaluation_report.txt
 ├── eval_config.yaml
@@ -218,7 +217,7 @@ outputs/eval_uuv3/
 
 ### Default Behavior
 
-**Visualization is enabled by default** in all evaluation configs (`eval_multiseq.yaml`, `eval_uuv3.yaml`).
+**Visualization is enabled by default** in all evaluation configs (`eval_multiseq.yaml`).
 
 The evaluation script will automatically generate visualizations and save them to the output directory unless explicitly disabled.
 
@@ -300,7 +299,7 @@ python scripts/eval.py \
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval_uuv3.yaml \
+    --config configs/eval/eval_multiseq.yaml \
     --checkpoint outputs/ablation_no_mamba/checkpoints/checkpoint_best.pth
 ```
 
@@ -402,7 +401,7 @@ Ensure checkpoint path is correct:
 ls outputs/train_multiseq/checkpoints/
 
 # For single-sequence training
-ls outputs/train_uuv2/checkpoints/
+ls outputs/train_multiseq/checkpoints/
 ```
 
 ### Slow Evaluation
