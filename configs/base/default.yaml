@@ -252,6 +252,13 @@ model:
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
+  # CRITICAL FIX (Audit 2025111704 Finding 2): Stage 1/2 checkpoint initialization
+  # When set, these checkpoints are loaded into backbones BEFORE training starts
+  # This enables the three-stage curriculum: pretrain RGB → pretrain Sonar → fusion
+  init_backbones:
+    rgb: null  # Path to Stage 1 RGB checkpoint (e.g., outputs/pretrain_rgb/checkpoints/checkpoint_best.pth)
+    sonar: null  # Path to Stage 2 Sonar checkpoint (e.g., outputs/pretrain_sonar/checkpoints/checkpoint_best.pth)
+
   # Total training epochs
   num_epochs: 60
 

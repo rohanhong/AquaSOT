@@ -33,6 +33,8 @@ def build_optimizer(
     betas: tuple = (0.9, 0.999),
     parameter_groups: Optional[List[Dict[str, Any]]] = None,
     layer_decay: Optional[float] = None,
+    backbone_lr_multiplier: float = 0.1,
+    head_lr_multiplier: float = 1.0,
     filter_bias_and_bn: bool = True,
     **kwargs
 ) -> optim.Optimizer:
@@ -48,6 +50,8 @@ def build_optimizer(
         betas: Betas for Adam/AdamW
         parameter_groups: Custom parameter groups (overrides automatic grouping)
         layer_decay: Layer-wise learning rate decay factor (optional)
+        backbone_lr_multiplier: Learning rate multiplier for backbone parameters (default: 0.1)
+        head_lr_multiplier: Learning rate multiplier for head parameters (default: 1.0)
         filter_bias_and_bn: If True, no weight decay for bias and BatchNorm params
         **kwargs: Additional optimizer arguments
 
@@ -57,6 +61,9 @@ def build_optimizer(
     Example:
         >>> # Simple usage
         >>> optimizer = build_optimizer(model, 'adamw', base_lr=2e-4)
+        >>>
+        >>> # With custom backbone LR multiplier
+        >>> optimizer = build_optimizer(model, 'adamw', base_lr=2e-4, backbone_lr_multiplier=0.05)
         >>>
         >>> # With parameter grouping
         >>> groups = [
@@ -77,7 +84,9 @@ def build_optimizer(
             )
         else:
             parameter_groups = _get_default_parameter_groups(
-                model, base_lr, weight_decay, filter_bias_and_bn
+                model, base_lr, weight_decay, filter_bias_and_bn,
+                backbone_lr_multiplier=backbone_lr_multiplier,
+                head_lr_multiplier=head_lr_multiplier
             )
 
     # Build optimizer
@@ -118,7 +127,9 @@ def _get_default_parameter_groups(
     model: nn.Module,
     base_lr: float,
     weight_decay: float,
-    filter_bias_and_bn: bool
+    filter_bias_and_bn: bool,
+    backbone_lr_multiplier: float = 0.1,
+    head_lr_multiplier: float = 1.0
 ) -> List[Dict[str, Any]]:
     """
     Get default parameter groups with backbone/fusion/heads separation.
@@ -128,6 +139,8 @@ def _get_default_parameter_groups(
         base_lr: Base learning rate
         weight_decay: Weight decay factor
         filter_bias_and_bn: Filter bias and BatchNorm parameters
+        backbone_lr_multiplier: Learning rate multiplier for backbone (default: 0.1)
+        head_lr_multiplier: Learning rate multiplier for heads (default: 1.0)
 
     Returns:
         List of parameter groups
@@ -161,7 +174,7 @@ def _get_default_parameter_groups(
     if backbone_params:
         groups.append({
             'params': backbone_params,
-            'lr': base_lr * 0.1,  # Lower LR for pretrained backbones
+            'lr': base_lr * backbone_lr_multiplier,  # Configurable LR multiplier for backbones
             'weight_decay': weight_decay,
             'name': 'backbone'
         })
@@ -185,7 +198,7 @@ def _get_default_parameter_groups(
     if head_params:
         groups.append({
             'params': head_params,
-            'lr': base_lr,
+            'lr': base_lr * head_lr_multiplier,  # Configurable LR multiplier for heads
             'weight_decay': weight_decay,
             'name': 'heads'
         })
@@ -202,7 +215,7 @@ def _get_default_parameter_groups(
     if filter_bias_and_bn:
         groups = _split_weight_decay_groups(groups)
 
-    logger.info(f"Created {len(groups)} default parameter groups:")
+    logger.info(f"Created {len(groups)} default parameter groups (backbone_lr_mult={backbone_lr_multiplier}, head_lr_mult={head_lr_multiplier}):")
     for group in groups:
         logger.info(f"  - {group.get('name', 'unnamed')}: {len(group['params'])} params, lr={group['lr']}")
 

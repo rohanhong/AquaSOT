@@ -92,6 +92,25 @@ def build_model(cfg):
     rgb_backbone_cfg = _config_to_dict(cfg.model.backbone.rgb) if cfg.model.backbone.rgb.get('type') not in [None, 'null'] else None
     sonar_backbone_cfg = _config_to_dict(cfg.model.backbone.sonar) if cfg.model.backbone.sonar.get('type') not in [None, 'null'] else None
 
+    # CRITICAL FIX (Audit 2025111704 Finding 2): Apply init_backbones checkpoint paths
+    # If training.init_backbones is set, override backbone pretrained_path for Stage 3
+    if hasattr(cfg.training, 'init_backbones') and cfg.training.init_backbones:
+        init_backbones = cfg.training.init_backbones
+
+        # Apply RGB checkpoint path
+        if rgb_backbone_cfg and init_backbones.get('rgb'):
+            rgb_checkpoint_path = init_backbones.rgb
+            if rgb_checkpoint_path not in [None, 'null', '']:
+                rgb_backbone_cfg['pretrained_path'] = rgb_checkpoint_path
+                logger.info(f"Setting RGB backbone pretrained_path: {rgb_checkpoint_path}")
+
+        # Apply Sonar checkpoint path
+        if sonar_backbone_cfg and init_backbones.get('sonar'):
+            sonar_checkpoint_path = init_backbones.sonar
+            if sonar_checkpoint_path not in [None, 'null', '']:
+                sonar_backbone_cfg['pretrained_path'] = sonar_checkpoint_path
+                logger.info(f"Setting Sonar encoder pretrained_path: {sonar_checkpoint_path}")
+
     # Prepare fusion config
     fusion_cfg = _config_to_dict(cfg.model.fusion) if cfg.model.fusion.get('type') not in [None, 'null'] else None
 
@@ -478,6 +497,14 @@ def main():
         'betas': cfg.training.optimizer.betas,
     }
 
+    # Add backbone_lr_multiplier if specified in config
+    if cfg.training.optimizer.get('backbone_lr_multiplier') is not None:
+        optimizer_params['backbone_lr_multiplier'] = cfg.training.optimizer.backbone_lr_multiplier
+
+    # Add head_lr_multiplier if specified in config
+    if cfg.training.optimizer.get('head_lr_multiplier') is not None:
+        optimizer_params['head_lr_multiplier'] = cfg.training.optimizer.head_lr_multiplier
+
     # Add layer_decay only if use_layer_decay is enabled
     if cfg.training.optimizer.get('use_layer_decay', False):
         optimizer_params['layer_decay'] = cfg.training.optimizer.get('layer_decay_rate', 0.75)
@@ -504,6 +531,23 @@ def main():
     )
     logger.info(f"CheckpointManager created: dir={cfg.paths.checkpoint_dir}, metric={checkpoint_manager.metric_name}")
 
+    # Prepare checkpoint metadata (CRITICAL FIX: Audit 2025111704 Finding 4)
+    # Tag checkpoints with stage/modality info for classification and automation
+    modalities = []
+    if cfg.model.backbone.rgb.get('type') not in [None, 'null']:
+        modalities.append('rgb')
+    if cfg.model.backbone.sonar.get('type') not in [None, 'null']:
+        modalities.append('sonar')
+
+    checkpoint_metadata = {
+        'stage': cfg.experiment.get('group', 'unknown'),
+        'modalities': modalities,
+        'config_path': args.config,
+        'experiment_name': cfg.experiment.name,
+        'tags': cfg.experiment.get('tags', [])
+    }
+    logger.info(f"Checkpoint metadata: {checkpoint_metadata}")
+
     # Create trainer
     trainer = Trainer(
         model=model,
@@ -522,7 +566,8 @@ def main():
         eval_interval=cfg.training.val_interval,
         checkpoint_save_interval=cfg.training.checkpoint.get('save_interval', 1),
         save_best=cfg.training.checkpoint.get('save_best', True),
-        save_last=cfg.training.checkpoint.get('save_last', True)
+        save_last=cfg.training.checkpoint.get('save_last', True),
+        checkpoint_metadata=checkpoint_metadata
     )
     
     # Resume from checkpoint if specified

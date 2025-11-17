@@ -16,18 +16,18 @@ _base_: ../base/default.yaml
 # ------------------------------------------------------------------------------
 experiment:
   name: aquasot3d_pretrain_sonar
-  tags: [uuv2, sonar_only, pretrain, single_modal]
-  notes: "Sonar-only pretraining with log-polar preprocessing"
+  tags: [multiseq, sonar_only, pretrain, single_modal]
+  notes: "Sonar-only pretraining with log-polar preprocessing across 9 training sequences"
   group: pretraining
 
 
 # ------------------------------------------------------------------------------
-# Data Configuration
+# Data Configuration (Multi-Sequence)
 # ------------------------------------------------------------------------------
 data:
   data_root: data
-  train_sequences: [uuv2]
-  val_sequences: [uuv3]
+  train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
+  val_sequences: [uuv3, uuv6, uuv10]
 
   # Augmentation for Sonar-only (acoustic-specific transforms)
   augmentation:

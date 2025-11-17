@@ -60,6 +60,7 @@ class SonarEncoder(BaseModule):
         encoder_type: Literal['vit', 'conv'] = 'vit',
         model_name: str = 'vit_tiny_patch16_224',
         pretrained: bool = False,
+        pretrained_path: Optional[str] = None,
         use_logpolar: bool = True,
         learnable_logpolar: bool = True,
         img_size: Tuple[int, int] = (376, 682),
@@ -76,6 +77,7 @@ class SonarEncoder(BaseModule):
         self.encoder_type = encoder_type
         self.model_name = model_name
         self.pretrained = pretrained
+        self.pretrained_path = pretrained_path
         self.use_logpolar = use_logpolar
         self.learnable_logpolar = learnable_logpolar
         self.img_size = img_size
@@ -139,10 +141,15 @@ class SonarEncoder(BaseModule):
                 num_bins=50,
             )
 
+        # Load pretrained checkpoint if specified (Stage 2 Sonar-only weights)
+        if pretrained_path is not None:
+            self._load_pretrained_checkpoint(pretrained_path)
+
         self.logger.info(
             f"Initialized SonarEncoder: encoder_type={encoder_type}, "
             f"model={model_name}, use_logpolar={use_logpolar}, "
-            f"learnable_logpolar={learnable_logpolar}"
+            f"learnable_logpolar={learnable_logpolar}, "
+            f"pretrained_path={pretrained_path}"
         )
 
     def _create_vit_encoder(self, model_name: str, pretrained: bool) -> nn.Module:
@@ -196,6 +203,95 @@ class SonarEncoder(BaseModule):
             in_channels=3,
             embed_dim=self.embed_dim,
         )
+
+    def _load_pretrained_checkpoint(self, checkpoint_path: str):
+        """
+        Load pretrained sonar encoder weights from Stage 2 checkpoint.
+
+        Args:
+            checkpoint_path: Path to checkpoint file (.pth)
+        """
+        import os
+        if not os.path.exists(checkpoint_path):
+            self.logger.warning(f"Pretrained checkpoint not found: {checkpoint_path}")
+            return
+
+        try:
+            # Load checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+            # Extract state dict
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            else:
+                state_dict = checkpoint
+
+            # Filter Sonar encoder keys
+            # Expected format: 'backbone.sonar_encoder.encoder.*'
+            sonar_encoder_keys = {}
+            for key, value in state_dict.items():
+                if 'sonar_encoder.encoder.' in key:
+                    # Remove prefix to match local encoder module
+                    new_key = key.split('sonar_encoder.encoder.')[-1]
+                    sonar_encoder_keys[new_key] = value
+                elif 'sonar_encoder.input_adapter.' in key:
+                    # Also load input adapter weights
+                    new_key = key.split('sonar_encoder.')[-1]
+                    sonar_encoder_keys[new_key] = value
+                elif 'sonar_encoder.logpolar_transform.' in key:
+                    # Also load logpolar transform weights if learnable
+                    new_key = key.split('sonar_encoder.')[-1]
+                    sonar_encoder_keys[new_key] = value
+                elif key.startswith('encoder.'):
+                    # Direct encoder key (if saved without model wrapper)
+                    new_key = key[8:]  # Remove 'encoder.' prefix
+                    sonar_encoder_keys[new_key] = value
+
+            if not sonar_encoder_keys:
+                self.logger.warning(
+                    f"No Sonar encoder keys found in checkpoint {checkpoint_path}. "
+                    f"Available keys: {list(state_dict.keys())[:5]}..."
+                )
+                return
+
+            # Load encoder state dict
+            encoder_keys = {k.replace('input_adapter.', '').replace('logpolar_transform.', ''): v
+                           for k, v in sonar_encoder_keys.items()
+                           if not k.startswith('input_adapter.') and not k.startswith('logpolar_transform.')}
+
+            if encoder_keys:
+                missing_keys, unexpected_keys = self.encoder.load_state_dict(
+                    encoder_keys, strict=False
+                )
+                if missing_keys:
+                    self.logger.debug(f"Missing encoder keys: {missing_keys[:5]}...")
+                if unexpected_keys:
+                    self.logger.debug(f"Unexpected encoder keys: {unexpected_keys[:5]}...")
+
+            # Load input adapter and logpolar transform
+            adapter_keys = {k.replace('input_adapter.', ''): v
+                           for k, v in sonar_encoder_keys.items()
+                           if k.startswith('input_adapter.')}
+            if adapter_keys:
+                self.input_adapter.load_state_dict(adapter_keys, strict=False)
+
+            logpolar_keys = {k.replace('logpolar_transform.', ''): v
+                            for k, v in sonar_encoder_keys.items()
+                            if k.startswith('logpolar_transform.')}
+            if logpolar_keys and self.use_logpolar and self.learnable_logpolar:
+                self.logpolar_transform.load_state_dict(logpolar_keys, strict=False)
+
+            self.logger.info(
+                f"Loaded pretrained Sonar encoder from {checkpoint_path}"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to load pretrained checkpoint {checkpoint_path}: {e}"
+            )
+            raise
 
     def forward_encoder(self, x: torch.Tensor) -> torch.Tensor:
         """

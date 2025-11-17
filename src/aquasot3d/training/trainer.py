@@ -107,6 +107,7 @@ class Trainer:
         tensorboard_dir: Optional[Union[str, Path]] = None,
         distributed: bool = False,
         rank: int = 0,
+        checkpoint_metadata: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         self.model = model
@@ -116,6 +117,7 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.checkpoint_manager = checkpoint_manager
+        self.checkpoint_metadata = checkpoint_metadata or {}
 
         self.device = torch.device(device) if isinstance(device, str) else device
         self.max_epochs = max_epochs
@@ -212,7 +214,8 @@ class Trainer:
                         scheduler=self.scheduler,
                         epoch=epoch,
                         metrics=metrics,
-                        filename='checkpoint_last.pth'
+                        filename='checkpoint_last.pth',
+                        metadata=self.checkpoint_metadata
                     )
 
                 # 2. Save "best" checkpoint if metric improves (overwrite) - only if save_best is enabled
@@ -256,7 +259,8 @@ class Trainer:
                                 epoch=epoch,
                                 metrics=metrics,
                                 is_best=True,
-                                filename='checkpoint_best.pth'
+                                filename='checkpoint_best.pth',
+                                metadata=self.checkpoint_metadata
                             )
                             logger.info(f"Saved best checkpoint at epoch {epoch + 1} with {self.checkpoint_manager.metric_name}={current_metric:.4f}")
 
@@ -268,7 +272,8 @@ class Trainer:
                         scheduler=self.scheduler,
                         epoch=epoch,
                         metrics=metrics,
-                        filename=f'checkpoint_epoch_{epoch + 1}.pth'
+                        filename=f'checkpoint_epoch_{epoch + 1}.pth',
+                        metadata=self.checkpoint_metadata
                     )
 
             # Log epoch summary
@@ -684,7 +689,8 @@ class Trainer:
             epoch=epoch,
             metrics=metrics,
             is_best=is_best,
-            filename=filename
+            filename=filename,
+            metadata=self.checkpoint_metadata
         )
 
     def load_checkpoint(

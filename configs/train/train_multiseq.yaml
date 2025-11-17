@@ -84,11 +84,13 @@ model:
       type: vit_rgb
       model_name: vit_base_patch16_224
       pretrained: true
+      # Note: pretrained_path is auto-set from training.init_backbones.rgb
       output_dim: 768
     sonar:
       type: sonar
       encoder_type: vit
       use_logpolar: true
+      # Note: pretrained_path is auto-set from training.init_backbones.sonar
       output_dim: 768
 
   fusion:
@@ -138,6 +140,12 @@ model:
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
+  # CRITICAL FIX (Audit 2025111704 Finding 2): Load Stage 1/2 pretrained weights
+  # Set these paths to enable the three-stage curriculum
+  init_backbones:
+    rgb: outputs/pretrain_rgb/checkpoints/checkpoint_best.pth
+    sonar: outputs/pretrain_sonar/checkpoints/checkpoint_best.pth
+
   num_epochs: 60
 
   batch_size: 2  # Adjust based on GPU memory
