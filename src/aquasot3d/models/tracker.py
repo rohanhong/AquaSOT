@@ -176,6 +176,7 @@ class AquaSOT3DTracker(BaseModule):
             # Remove control parameters and feature_dim (we override it)
             temporal_config_copy.pop('enabled', None)
             temporal_config_copy.pop('feature_dim', None)  # Remove to avoid conflict
+            temporal_config_copy.pop('aggregator', None)  # Remove aggregator config (handled separately)
 
             if temporal_type == 'mamba':
                 self.temporal_head = build_vision_mamba_head(
@@ -199,14 +200,15 @@ class AquaSOT3DTracker(BaseModule):
         else:
             logger.info("Temporal modeling disabled")
 
-            # Optional temporal aggregation
-            if self.temporal_aggregation:
-                # Guard against None temporal_config
-                aggregator_config = (temporal_config or {}).get('aggregator', {})
-                self.temporal_aggregator = build_temporal_aggregator(
-                    feature_dim=self.fused_feat_dim,
-                    **aggregator_config
-                )
+        # Optional temporal aggregation (independent of temporal head)
+        if self.temporal_aggregation:
+            # Guard against None temporal_config
+            aggregator_config = (temporal_config or {}).get('aggregator', {})
+            self.temporal_aggregator = build_temporal_aggregator(
+                feature_dim=self.fused_feat_dim,
+                **aggregator_config
+            )
+            logger.info("Initialized temporal aggregator")
 
         # =====================================================
         # 4. Prediction Heads

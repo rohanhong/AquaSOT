@@ -248,6 +248,8 @@ def create_dataloader(
     drop_last: bool = False,
     collate_fn: Optional[callable] = None,
     distributed: bool = False,
+    prefetch_factor: Optional[int] = None,
+    persistent_workers: Optional[bool] = None,
 ) -> DataLoader:
     """
     Create DataLoader with standard configurations.
@@ -261,6 +263,8 @@ def create_dataloader(
         drop_last: Drop last incomplete batch
         collate_fn: Custom collate function (default: collate_fn_tracking)
         distributed: Use distributed sampler for multi-GPU training
+        prefetch_factor: Number of batches to prefetch (default: 2 if num_workers > 0, else None)
+        persistent_workers: Keep workers alive between epochs (default: True if num_workers > 0, else False)
 
     Returns:
         DataLoader instance
@@ -278,17 +282,30 @@ def create_dataloader(
     else:
         sampler = None
 
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        drop_last=drop_last,
-        persistent_workers=num_workers > 0,  # Keep workers alive
-    )
+    # Set defaults for prefetch_factor and persistent_workers
+    if prefetch_factor is None:
+        prefetch_factor = 2 if num_workers > 0 else None
+    if persistent_workers is None:
+        persistent_workers = num_workers > 0
+
+    # Build DataLoader kwargs (only include prefetch_factor if num_workers > 0)
+    loader_kwargs = {
+        'dataset': dataset,
+        'batch_size': batch_size,
+        'shuffle': shuffle,
+        'sampler': sampler,
+        'num_workers': num_workers,
+        'collate_fn': collate_fn,
+        'pin_memory': pin_memory,
+        'drop_last': drop_last,
+        'persistent_workers': persistent_workers,
+    }
+
+    # Only add prefetch_factor if num_workers > 0 (required by PyTorch)
+    if num_workers > 0 and prefetch_factor is not None:
+        loader_kwargs['prefetch_factor'] = prefetch_factor
+
+    loader = DataLoader(**loader_kwargs)
 
     return loader
 

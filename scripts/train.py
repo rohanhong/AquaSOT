@@ -349,16 +349,8 @@ def build_dataloaders(cfg):
         search_size=search_size,
         augmentation=train_augmentation
     )
-    val_dataset = TrackingDataset(
-        base_dataset=val_base_dataset,
-        template_search_gap=template_search_gap,
-        template_size=template_size,
-        search_size=search_size,
-        augmentation=None  # No augmentation for validation
-    )
 
     logger.info(f"Train dataset: {len(train_dataset)} samples")
-    logger.info(f"Val dataset: {len(val_dataset)} samples")
 
     # Create dataloaders with template-search collate function
     train_loader = create_dataloader(
@@ -368,20 +360,39 @@ def build_dataloaders(cfg):
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
         collate_fn=collate_fn_template_search,
-        distributed=cfg.system.distributed
+        distributed=cfg.system.distributed,
+        prefetch_factor=cfg.data.get('prefetch_factor', None),
+        persistent_workers=cfg.data.get('persistent_workers', None)
     )
 
-    val_loader = create_dataloader(
-        dataset=val_dataset,
-        batch_size=cfg.training.val_batch_size,
-        shuffle=False,
-        num_workers=cfg.data.num_workers,
-        pin_memory=cfg.data.pin_memory,
-        collate_fn=collate_fn_template_search,
-        distributed=False  # No distributed for validation
-    )
+    # Only create validation dataset/loader if base dataset exists
+    if val_base_dataset is not None:
+        val_dataset = TrackingDataset(
+            base_dataset=val_base_dataset,
+            template_search_gap=template_search_gap,
+            template_size=template_size,
+            search_size=search_size,
+            augmentation=None  # No augmentation for validation
+        )
 
-    logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+        logger.info(f"Val dataset: {len(val_dataset)} samples")
+
+        val_loader = create_dataloader(
+            dataset=val_dataset,
+            batch_size=cfg.training.val_batch_size,
+            shuffle=False,
+            num_workers=cfg.data.num_workers,
+            pin_memory=cfg.data.pin_memory,
+            collate_fn=collate_fn_template_search,
+            distributed=False,  # No distributed for validation
+            prefetch_factor=cfg.data.get('prefetch_factor', None),
+            persistent_workers=cfg.data.get('persistent_workers', None)
+        )
+
+        logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    else:
+        val_loader = None
+        logger.info(f"Train batches: {len(train_loader)}, Val disabled")
 
     return train_loader, val_loader
 

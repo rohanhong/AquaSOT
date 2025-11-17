@@ -139,8 +139,13 @@ class LossManager(nn.Module):
             return self._compute_from_model_losses(predictions['losses'], epoch)
 
         # Priority 1.2: Add fusion GT fallback (use RGB GT if fusion GT missing)
-        if targets.get('fusion_box') is None and targets.get('rgb_box') is not None:
-            targets = {**targets, 'fusion_box': targets['rgb_box']}
+        # CRITICAL FIX (Audit 2025111701 Finding 6): Support both singular and plural forms
+        fusion_box_exists = targets.get('fusion_box') is not None or targets.get('fusion_boxes') is not None
+        rgb_box_fallback = targets.get('rgb_box') if targets.get('rgb_box') is not None else targets.get('rgb_boxes')
+
+        if not fusion_box_exists and rgb_box_fallback is not None:
+            # Use RGB GT as fusion GT fallback (handles both 'rgb_box' and 'rgb_boxes')
+            targets = {**targets, 'fusion_box': rgb_box_fallback}
 
         loss_dict = {}
 

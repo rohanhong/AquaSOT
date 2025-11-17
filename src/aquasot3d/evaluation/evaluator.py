@@ -82,6 +82,14 @@ class TrackingEvaluator:
         self.sequence_results = {}
         self.overall_metrics = {}
 
+        # CRITICAL FIX (Audit 2025111701 Finding 5): Enforce batch_size=1 for evaluation
+        # Batched evaluation corrupts temporal state when sequences span multiple batches
+        if dataloader.batch_size is not None and dataloader.batch_size > 1:
+            raise ValueError(
+                f"Evaluation requires batch_size=1 to prevent temporal state leakage across sequences. "
+                f"Got batch_size={dataloader.batch_size}. Set evaluation.batch_size=1 in config."
+            )
+
         logger.info(f"TrackingEvaluator initialized: device={device}, output_dir={output_dir}")
         if self.additional_metrics:
             logger.info(f"Additional metrics: {self.additional_metrics}")
