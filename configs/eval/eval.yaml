@@ -95,7 +95,13 @@ evaluation:
 # ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
-# Model config is inherited from base, should match training config
+# Override temporal aggregation to match training (Stage 3 fusion inference)
+model:
+  temporal:
+    aggregation: true
+    aggregator:
+      alpha: 0.9  # EMA smoothing factor (match training)
+      visibility_threshold: 0.5  # Quality threshold for gating (match training)
 
 
 # ------------------------------------------------------------------------------

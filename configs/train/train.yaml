@@ -115,6 +115,11 @@ model:
     use_occlusion_gating: true
     dropout: 0.1
     max_spatial_size: 32
+    # Enable EMA aggregation for fusion training (Stage 3)
+    aggregation: true
+    aggregator:
+      alpha: 0.9  # EMA smoothing factor
+      visibility_threshold: 0.5  # Quality threshold for gating
 
   heads:
     rgb_box:
