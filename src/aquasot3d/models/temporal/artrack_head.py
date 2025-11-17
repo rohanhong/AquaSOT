@@ -396,7 +396,7 @@ class ARTrackTemporalHead(BaseTemporalHead):
         x = self.output_norm(x)
 
         # Reshape back to spatial: [B, T*H*W, C] -> [B, T, H, W, C] -> [B, T, C, H, W]
-        x = x.view(B, T, H, W, C).permute(0, 1, 4, 2, 3)
+        x = x.reshape(B, T, H, W, C).permute(0, 1, 4, 2, 3)
 
         # Aggregate temporal dimension (use last frame)
         aggregated_features = x[:, -1]  # [B, C, H, W]

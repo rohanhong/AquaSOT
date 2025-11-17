@@ -428,7 +428,7 @@ class TransformerTemporalHead(BaseTemporalHead):
         features_seq = self.output_norm(features_seq)
 
         # Reshape back to spatial: [B, T*H*W, C] -> [B, T, H, W, C] -> [B, T, C, H, W]
-        features_out = features_seq.view(B, T, H, W, C).permute(0, 1, 4, 2, 3)
+        features_out = features_seq.reshape(B, T, H, W, C).permute(0, 1, 4, 2, 3)
 
         # Aggregate temporal dimension (use last frame)
         # For more sophisticated aggregation, can use attention pooling

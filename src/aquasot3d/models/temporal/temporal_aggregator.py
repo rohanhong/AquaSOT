@@ -129,7 +129,7 @@ class EMASmoothing(nn.Module):
         if self.adaptive:
             momentum = self.compute_adaptive_momentum(feat_current, feat_prev)
             # Expand momentum to [B, 1, 1, 1] for broadcasting
-            momentum = momentum.view(-1, 1, 1, 1)
+            momentum = momentum.reshape(-1, 1, 1, 1)
         else:
             momentum = self.base_momentum
 
@@ -472,7 +472,7 @@ class TemporalAggregator(BaseTemporalHead):
             features_smoothed = self.ema(features, prev_features)
 
             # Apply gating: use smoothed for high-quality, keep previous for low-quality
-            gate_weights_expanded = gate_weights.view(-1, 1, 1, 1)
+            gate_weights_expanded = gate_weights.reshape(-1, 1, 1, 1)
             aggregated_features = (
                 gate_weights_expanded * features_smoothed +
                 (1 - gate_weights_expanded) * prev_features

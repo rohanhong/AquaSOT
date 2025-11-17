@@ -168,7 +168,7 @@ class OcclusionAwareGating(nn.Module):
             B, T, C, H, W = features.shape
             has_temporal = True
             # Reshape for processing
-            features_flat = features.view(B * T, C, H, W)
+            features_flat = features.reshape(B * T, C, H, W)
         else:  # [B, C, H, W]
             B, C, H, W = features.shape
             has_temporal = False
@@ -178,9 +178,9 @@ class OcclusionAwareGating(nn.Module):
         if quality_scores is not None:
             # Use provided quality scores
             if has_temporal:
-                quality_scores_flat = quality_scores.view(B * T, 1)
+                quality_scores_flat = quality_scores.reshape(B * T, 1)
             else:
-                quality_scores_flat = quality_scores.view(B, 1)
+                quality_scores_flat = quality_scores.reshape(B, 1)
             gate_weights = self.quality_encoder(quality_scores_flat).squeeze(-1)
         else:
             # Predict visibility from features
@@ -195,11 +195,11 @@ class OcclusionAwareGating(nn.Module):
 
         # Reshape gate weights and apply to features
         if has_temporal:
-            gate_weights = gate_weights.view(B, T)
-            gate_weights_expanded = gate_weights.view(B, T, 1, 1, 1)
+            gate_weights = gate_weights.reshape(B, T)
+            gate_weights_expanded = gate_weights.reshape(B, T, 1, 1, 1)
             gated_features = features * gate_weights_expanded
         else:
-            gate_weights_expanded = gate_weights.view(B, 1, 1, 1)
+            gate_weights_expanded = gate_weights.reshape(B, 1, 1, 1)
             gated_features = features * gate_weights_expanded
 
         return gated_features, gate_weights
@@ -433,9 +433,17 @@ class VisionMambaHead(BaseTemporalHead):
             )
 
         # CRITICAL FIX (Audit 2025111703 Finding 2): Use temporal_state for streaming
-        if is_single_frame and temporal_state is not None:
+        # Only use temporal buffer in inference mode to avoid batch size mismatch in training
+        if is_single_frame and temporal_state is not None and not self.training:
             # Streaming inference: append current frame to history
             frame_buffer = temporal_state  # List of (feat, qual) tuples
+
+            # Check batch size consistency: if buffer has frames with different batch size, reset
+            if len(frame_buffer) > 0:
+                buffer_batch_size = frame_buffer[0][0].shape[0]
+                if buffer_batch_size != B:
+                    # Batch size mismatch: clear buffer and start fresh
+                    frame_buffer = []
 
             # Add current frame
             current_feat = features[:, 0]  # [B, C, H, W]
@@ -491,7 +499,7 @@ class VisionMambaHead(BaseTemporalHead):
         # Bidirectional processing if enabled
         if self.bidirectional:
             # Reverse temporal dimension
-            features_reversed = features_seq.view(B, T, H * W, C)
+            features_reversed = features_seq.reshape(B, T, H * W, C)
             features_reversed = torch.flip(features_reversed, dims=[1])
             features_reversed = features_reversed.reshape(B, T * H * W, C)
 
@@ -501,7 +509,7 @@ class VisionMambaHead(BaseTemporalHead):
                 features_backward = block(features_backward)
 
             # Reverse back to original temporal order
-            features_backward = features_backward.view(B, T, H * W, C)
+            features_backward = features_backward.reshape(B, T, H * W, C)
             features_backward = torch.flip(features_backward, dims=[1])
             features_backward = features_backward.reshape(B, T * H * W, C)
 
@@ -517,7 +525,7 @@ class VisionMambaHead(BaseTemporalHead):
         features_out = self.output_norm(features_out)
 
         # Reshape back to spatial: [B, T*H*W, C] -> [B, T, H, W, C] -> [B, T, C, H, W]
-        features_out = features_out.view(B, T, H, W, C).permute(0, 1, 4, 2, 3)
+        features_out = features_out.reshape(B, T, H, W, C).permute(0, 1, 4, 2, 3)
 
         # Aggregate temporal dimension (use last frame for single-frame output)
         # For more sophisticated aggregation, can use attention or pooling
