@@ -276,13 +276,18 @@ def main():
                 return_occluded=True
             )
 
+            # CRITICAL FIX (Audit 2025111703 Finding 4): Read template_update config
+            template_update_enabled = cfg.evaluation.get('template_update', {}).get('enabled', False)
+            template_update_interval = cfg.evaluation.get('template_update', {}).get('interval', 10)
+
             # Create evaluation dataset for this sequence
             seq_eval_dataset = EvaluationSequenceDataset(
                 base_dataset=seq_base_dataset,
                 template_size=cfg.data.get('template_size', 128),
                 search_size=cfg.data.get('search_size', 256),
                 template_frame='first',
-                enable_update=False,
+                enable_update=template_update_enabled,
+                update_interval=template_update_interval,
             )
 
             eval_datasets.append(seq_eval_dataset)
@@ -299,6 +304,10 @@ def main():
 
         logger.info(f"Total evaluation frames across {len(test_sequences)} sequences: {total_frames}")
         logger.info(f"Using sequential evaluation (template=first frame per sequence)")
+        if template_update_enabled:
+            logger.info(f"Template update: ENABLED (interval={template_update_interval} frames)")
+        else:
+            logger.info(f"Template update: DISABLED (fixed template)")
 
     else:
         # Legacy single-sequence evaluation mode (backward compatibility)
@@ -330,6 +339,10 @@ def main():
             return_occluded=True
         )
 
+        # CRITICAL FIX (Audit 2025111703 Finding 4): Read template_update config
+        template_update_enabled = cfg.evaluation.get('template_update', {}).get('enabled', False)
+        template_update_interval = cfg.evaluation.get('template_update', {}).get('interval', 10)
+
         # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
         # This ensures reproducible, protocol-compliant evaluation
         eval_dataset = EvaluationSequenceDataset(
@@ -337,11 +350,16 @@ def main():
             template_size=cfg.data.get('template_size', 128),
             search_size=cfg.data.get('search_size', 256),
             template_frame='first',  # Use first frame as template (RGBS50 protocol)
-            enable_update=False,     # No template update during evaluation
+            enable_update=template_update_enabled,
+            update_interval=template_update_interval,
         )
 
         logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")
         logger.info(f"Using sequential evaluation (template=first frame)")
+        if template_update_enabled:
+            logger.info(f"Template update: ENABLED (interval={template_update_interval} frames)")
+        else:
+            logger.info(f"Template update: DISABLED (fixed template)")
 
     # Create dataloader
     eval_loader = create_dataloader(

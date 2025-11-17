@@ -59,6 +59,7 @@ data:
   pin_memory: true
   prefetch_factor: 2
   persistent_workers: true
+  use_sequence_grouping: true  # CRITICAL: Group same-sequence samples in batches for EMA aggregator training
 
   # Image sizes (must be divisible by patch_size=16 for ViT)
   template_size: 128  # 128 = 16 * 8
@@ -66,6 +67,12 @@ data:
 
   # Template-search pair sampling
   template_search_gap: 30  # Maximum frame gap between template and search
+
+  # CRITICAL FIX (Audit 2025111703 Finding 1): Sequence-based training for Vision-Mamba
+  # search_sequence_length: Number of consecutive search frames for temporal modeling
+  # - search_sequence_length=1: Traditional pair sampling (backward compatible, default)
+  # - search_sequence_length>1: Sample T consecutive frames for Vision-Mamba temporal training
+  search_sequence_length: 1  # Set to 3-5 for temporal training
 
   # Data augmentation (training)
   augmentation:
@@ -377,6 +384,12 @@ evaluation:
   evaluate_rgb: true
   evaluate_sonar: true
   evaluate_fusion: true
+
+  # CRITICAL FIX (Audit 2025111703 Finding 4): Template update strategy
+  # Enable evaluation of template-update protocols (OSTrack, TrDiMP baselines)
+  template_update:
+    enabled: false  # Enable template update during tracking
+    interval: 10  # Frames between template updates (typical: 10-20)
 
   # Visualization
   visualization:

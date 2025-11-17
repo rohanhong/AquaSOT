@@ -14,8 +14,89 @@ Date: 2025-11-06
 
 from typing import Dict, List, Optional
 import torch
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Sampler
 import numpy as np
+import random
+from collections import defaultdict
+
+
+class SequenceGroupedBatchSampler(Sampler):
+    """
+    Sampler that groups samples by sequence to enable temporal state persistence.
+
+    CRITICAL FIX (Audit 2025111703 Finding 3):
+    Groups samples from the same sequence into consecutive batches, so the trainer's
+    smart reset strategy can maintain temporal state across multiple batches from
+    the same sequence.
+
+    Without this sampler, random shuffling mixes sequences in every batch, causing
+    the trainer to reset temporal state before each optimizer step, preventing
+    the EMA aggregator from learning.
+
+    Args:
+        dataset: Dataset with sequence_name metadata
+        batch_size: Number of samples per batch
+        shuffle: Whether to shuffle sequences (default: True)
+        drop_last: Drop last incomplete batch (default: False)
+    """
+
+    def __init__(self, dataset, batch_size: int, shuffle: bool = True, drop_last: bool = False):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+
+        # Group indices by sequence
+        self.sequence_to_indices = defaultdict(list)
+
+        # Check if dataset has sequence information
+        if hasattr(dataset, 'get_sequence_name'):
+            # TrackingDataset with get_sequence_name method
+            for idx in range(len(dataset)):
+                try:
+                    seq_name = dataset.get_sequence_name(idx)
+                    self.sequence_to_indices[seq_name].append(idx)
+                except (AttributeError, IndexError, KeyError) as e:
+                    # Fallback: put in default sequence
+                    self.sequence_to_indices['default'].append(idx)
+        else:
+            # Single sequence or unknown: treat all as one sequence
+            self.sequence_to_indices['default'] = list(range(len(dataset)))
+
+    def __iter__(self):
+        # Get sequence names
+        sequences = list(self.sequence_to_indices.keys())
+
+        if self.shuffle:
+            # Shuffle sequence order
+            random.shuffle(sequences)
+
+        # Generate batches by iterating through sequences
+        for seq_name in sequences:
+            indices = self.sequence_to_indices[seq_name].copy()
+
+            if self.shuffle:
+                # Shuffle within sequence
+                random.shuffle(indices)
+
+            # Generate batches from this sequence
+            for i in range(0, len(indices), self.batch_size):
+                batch = indices[i:i + self.batch_size]
+
+                # Skip incomplete batches if drop_last
+                if len(batch) < self.batch_size and self.drop_last:
+                    continue
+
+                yield batch
+
+    def __len__(self):
+        total_batches = 0
+        for indices in self.sequence_to_indices.values():
+            num_batches = len(indices) // self.batch_size
+            if not self.drop_last and len(indices) % self.batch_size != 0:
+                num_batches += 1
+            total_batches += num_batches
+        return total_batches
 
 
 def collate_fn_tracking(batch: List[Dict]) -> Dict:
@@ -91,7 +172,10 @@ def collate_fn_tracking(batch: List[Dict]) -> Dict:
 
 def collate_fn_template_search(batch: List[Dict]) -> Dict:
     """
-    Collate function for template-search pairs.
+    Collate function for template-search pairs and sequences.
+
+    CRITICAL FIX (Audit 2025111703 Finding 1):
+    Now supports sequence mode where rgb_search/sonar_search are [T, C, H, W].
 
     Args:
         batch: List of template-search sample dictionaries
@@ -100,18 +184,18 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
         Batched dictionary with stacked tensors
 
     Sample structure (TrackingDataset format):
-        batch[i] = {
-            'rgb_template': Tensor (C, H_t, W_t),
-            'rgb_search': Tensor (C, H_s, W_s),
-            'sonar_template': Tensor (C, H_t, W_t),
-            'sonar_search': Tensor (C, H_s, W_s),
-            'template_bbox_rgb': ndarray [x, y, w, h],
-            'template_bbox_sonar': ndarray [x, y, w, h],
-            'search_bbox_rgb': ndarray [x, y, w, h],
-            'search_bbox_sonar': ndarray [x, y, w, h],
-            'is_valid': bool,
-            ...
-        }
+        Pair mode (T=1):
+            batch[i] = {
+                'rgb_search': Tensor (C, H_s, W_s),
+                ...
+            }
+
+        Sequence mode (T>1):
+            batch[i] = {
+                'rgb_search': Tensor (T, C, H_s, W_s),
+                'is_sequence': True,
+                ...
+            }
     """
     # Filter out None samples
     batch = [sample for sample in batch if sample is not None]
@@ -121,6 +205,9 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
 
     batched = {}
 
+    # Detect if this is a sequence batch
+    is_sequence_batch = batch[0].get('is_sequence', False)
+
     # Handle image tensors (trainer expects: rgb_template, rgb_search, sonar_template, sonar_search)
     image_keys = ['rgb_template', 'rgb_search', 'sonar_template', 'sonar_search']
     for key in image_keys:
@@ -129,11 +216,22 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
 
             # Stack tensors (already in CHW format from TrackingDataset)
             if isinstance(imgs[0], torch.Tensor):
-                batched[key] = torch.stack(imgs, dim=0)
+                # CRITICAL FIX (Audit 2025111703 Finding 1): Handle sequence stacking
+                if is_sequence_batch and 'search' in key:
+                    # Sequence mode: imgs[i] has shape [T, C, H, W]
+                    # Stack to [B, T, C, H, W]
+                    batched[key] = torch.stack(imgs, dim=0)  # [B, T, C, H, W]
+                else:
+                    # Pair mode or template: imgs[i] has shape [C, H, W]
+                    # Stack to [B, C, H, W]
+                    batched[key] = torch.stack(imgs, dim=0)  # [B, C, H, W]
             elif isinstance(imgs[0], np.ndarray):
                 # Convert numpy arrays to tensors
                 imgs_tensor = [torch.from_numpy(img) for img in imgs]
-                batched[key] = torch.stack(imgs_tensor, dim=0)
+                if is_sequence_batch and 'search' in key:
+                    batched[key] = torch.stack(imgs_tensor, dim=0)  # [B, T, C, H, W]
+                else:
+                    batched[key] = torch.stack(imgs_tensor, dim=0)  # [B, C, H, W]
 
     # Handle bounding boxes with normalization
     # Critical fix: Normalize pixel coordinates to [0, 1] range for numerical stability
@@ -250,6 +348,7 @@ def create_dataloader(
     distributed: bool = False,
     prefetch_factor: Optional[int] = None,
     persistent_workers: Optional[bool] = None,
+    use_sequence_grouping: bool = False,
 ) -> DataLoader:
     """
     Create DataLoader with standard configurations.
@@ -265,22 +364,19 @@ def create_dataloader(
         distributed: Use distributed sampler for multi-GPU training
         prefetch_factor: Number of batches to prefetch (default: 2 if num_workers > 0, else None)
         persistent_workers: Keep workers alive between epochs (default: True if num_workers > 0, else False)
+        use_sequence_grouping: Use SequenceGroupedBatchSampler for temporal training (default: False)
 
     Returns:
         DataLoader instance
+
+    CRITICAL FIX (Audit 2025111703 Finding 3):
+    When use_sequence_grouping=True, uses SequenceGroupedBatchSampler to ensure
+    samples from the same sequence are grouped into consecutive batches. This
+    enables the trainer's smart reset strategy to work correctly, allowing
+    the EMA aggregator to learn from consecutive frames.
     """
     if collate_fn is None:
         collate_fn = collate_fn_tracking
-
-    # Create sampler for distributed training
-    if distributed:
-        sampler = DistributedSampler(
-            dataset,
-            shuffle=shuffle,
-        )
-        shuffle = False  # Sampler handles shuffling
-    else:
-        sampler = None
 
     # Set defaults for prefetch_factor and persistent_workers
     if prefetch_factor is None:
@@ -288,18 +384,49 @@ def create_dataloader(
     if persistent_workers is None:
         persistent_workers = num_workers > 0
 
-    # Build DataLoader kwargs (only include prefetch_factor if num_workers > 0)
-    loader_kwargs = {
-        'dataset': dataset,
-        'batch_size': batch_size,
-        'shuffle': shuffle,
-        'sampler': sampler,
-        'num_workers': num_workers,
-        'collate_fn': collate_fn,
-        'pin_memory': pin_memory,
-        'drop_last': drop_last,
-        'persistent_workers': persistent_workers,
-    }
+    # CRITICAL FIX (Audit 2025111703 Finding 3):
+    # Use sequence-grouped batch sampler for temporal training
+    if use_sequence_grouping and not distributed:
+        batch_sampler = SequenceGroupedBatchSampler(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last
+        )
+
+        # Build DataLoader kwargs for batch_sampler mode
+        # Note: batch_size, shuffle, sampler, drop_last must NOT be specified with batch_sampler
+        loader_kwargs = {
+            'dataset': dataset,
+            'batch_sampler': batch_sampler,
+            'num_workers': num_workers,
+            'collate_fn': collate_fn,
+            'pin_memory': pin_memory,
+            'persistent_workers': persistent_workers,
+        }
+    else:
+        # Standard mode: use sampler for distributed training
+        if distributed:
+            sampler = DistributedSampler(
+                dataset,
+                shuffle=shuffle,
+            )
+            shuffle = False  # Sampler handles shuffling
+        else:
+            sampler = None
+
+        # Build DataLoader kwargs (standard mode)
+        loader_kwargs = {
+            'dataset': dataset,
+            'batch_size': batch_size,
+            'shuffle': shuffle,
+            'sampler': sampler,
+            'num_workers': num_workers,
+            'collate_fn': collate_fn,
+            'pin_memory': pin_memory,
+            'drop_last': drop_last,
+            'persistent_workers': persistent_workers,
+        }
 
     # Only add prefetch_factor if num_workers > 0 (required by PyTorch)
     if num_workers > 0 and prefetch_factor is not None:

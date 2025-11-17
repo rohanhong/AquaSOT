@@ -50,6 +50,7 @@ class TrackingDataset(Dataset):
         template_size: int = 127,
         search_size: int = 255,
         augmentation=None,
+        search_sequence_length: int = 1,  # CRITICAL FIX (Audit 2025111703 Finding 1): Support T>1 training
     ):
         self.base_dataset = base_dataset
         self.template_search_gap = template_search_gap
@@ -58,6 +59,11 @@ class TrackingDataset(Dataset):
         self.template_size = template_size
         self.search_size = search_size
         self.augmentation = augmentation
+
+        # CRITICAL FIX (Audit 2025111703 Finding 1): Sequence length for temporal training
+        # search_sequence_length=1: traditional pair sampling (backward compatible)
+        # search_sequence_length>1: sample T consecutive search frames for Vision-Mamba
+        self.search_sequence_length = search_sequence_length
 
         # Check if base_dataset is multi-sequence
         self.is_multi_sequence = isinstance(base_dataset, MultiSequenceRGBSonarDataset)
@@ -92,28 +98,56 @@ class TrackingDataset(Dataset):
     def __len__(self):
         return self.num_frames
 
+    def get_sequence_name(self, index: int) -> str:
+        """
+        Get the sequence name for a given dataset index.
+
+        This method is used by SequenceGroupedBatchSampler to group samples
+        from the same sequence into consecutive batches.
+
+        Args:
+            index: Dataset index (0 to num_frames-1)
+
+        Returns:
+            Sequence name string. For multi-sequence datasets, returns the actual
+            sequence name. For single-sequence datasets, returns 'default'.
+
+        CRITICAL FIX (Audit 2025111703 Finding 3):
+        Enables sequence-aware batching for EMA aggregator training.
+        """
+        if self.is_multi_sequence:
+            # Multi-sequence: use base_dataset's get_frame_sequence
+            # Note: index here is already a valid frame index
+            return self.base_dataset.get_frame_sequence(index)
+        else:
+            # Single sequence: all frames belong to 'default'
+            return 'default'
+
     def __getitem__(self, index: int) -> Dict:
         """
-        Sample a template-search pair.
+        Sample a template-search pair or sequence.
 
         For multi-sequence datasets, ensures template and search frames
         come from the same sequence to maintain temporal consistency.
 
+        CRITICAL FIX (Audit 2025111703 Finding 1):
+        When search_sequence_length > 1, samples T consecutive search frames.
+
         Returns:
             Dictionary with keys:
                 - rgb_template: Template RGB image, shape (C, H, W)
-                - rgb_search: Search RGB image, shape (C, H, W)
+                - rgb_search: Search RGB image(s), shape (C, H, W) or (T, C, H, W)
                 - sonar_template: Template sonar image, shape (C, H, W)
-                - sonar_search: Search sonar image, shape (C, H, W)
+                - sonar_search: Search sonar image(s), shape (C, H, W) or (T, C, H, W)
                 - template_bbox_rgb: Template RGB bbox [x, y, w, h]
                 - template_bbox_sonar: Template sonar bbox [x, y, w, h]
-                - search_bbox_rgb: Search RGB bbox [x, y, w, h]
-                - search_bbox_sonar: Search sonar bbox [x, y, w, h]
+                - search_bbox_rgb: Search RGB bbox(es) [x, y, w, h] or (T, 4)
+                - search_bbox_sonar: Search sonar bbox(es) [x, y, w, h] or (T, 4)
                 - template_idx: Template frame index
-                - search_idx: Search frame index
+                - search_idx: Search frame index or list of indices
                 - sequence_name: Name of the sequence
                 - template_frame_id: 1-based template frame ID
-                - search_frame_id: 1-based search frame ID
+                - search_frame_id: 1-based search frame ID or list
         """
         if self.is_multi_sequence:
             # Multi-sequence case: enforce intra-sequence temporal constraints
@@ -122,6 +156,25 @@ class TrackingDataset(Dataset):
             # Single-sequence case: use original logic
             template_idx, search_idx = self._sample_single_sequence_pair(index)
 
+        # CRITICAL FIX (Audit 2025111703 Finding 1): Full sequence sampling implementation
+        if isinstance(search_idx, list):
+            # T > 1: Load all T search frames and stack them
+            return self._get_sequence_sample(template_idx, search_idx)
+        else:
+            # T = 1: Traditional pair sampling (backward compatible)
+            return self._get_pair_sample(template_idx, search_idx)
+
+    def _get_pair_sample(self, template_idx: int, search_idx: int) -> Dict:
+        """
+        Get template-search pair (T=1, traditional mode).
+
+        Args:
+            template_idx: Template frame index
+            search_idx: Search frame index
+
+        Returns:
+            Dictionary with template and search data
+        """
         # Get frame data
         template_data = self.base_dataset[template_idx]
         search_data = self.base_dataset[search_idx]
@@ -273,6 +326,196 @@ class TrackingDataset(Dataset):
 
         return pair
 
+    def _get_sequence_sample(self, template_idx: int, search_indices: list) -> Dict:
+        """
+        Get template and T consecutive search frames (T>1, sequence mode).
+
+        CRITICAL FIX (Audit 2025111703 Finding 1):
+        Full implementation of sequence sampling for Vision-Mamba temporal training.
+
+        Args:
+            template_idx: Template frame index
+            search_indices: List of T consecutive search frame indices
+
+        Returns:
+            Dictionary with template and stacked search sequences
+                - rgb_search: [T, C, H, W]
+                - sonar_search: [T, C, H, W]
+                - search_bbox_rgb: [T, 4]
+                - search_bbox_sonar: [T, 4]
+                - rgb_search_metadata: List[Dict] of length T
+                - sonar_search_metadata: List[Dict] of length T
+        """
+        T = len(search_indices)
+
+        # Get template data (single frame)
+        template_data = self.base_dataset[template_idx]
+
+        # Get sequence metadata
+        if self.is_multi_sequence:
+            sequence_name = template_data.get('sequence_name')
+        else:
+            seq_info = self.base_dataset.get_sequence_info()
+            sequence_name = seq_info['sequence_name']
+
+        # Prepare template (same as pair mode)
+        if self.augmentation is not None:
+            template_aug_input = {
+                'rgb_img': template_data['rgb_img'],
+                'sonar_img': template_data['sonar_img'],
+                'rgb_bbox': template_data['rgb_bbox'],
+                'sonar_bbox': template_data['sonar_bbox'],
+            }
+            template_aug_output = self.augmentation(template_aug_input)
+            template_data['rgb_img'] = template_aug_output.get('rgb_img', template_data['rgb_img'])
+            template_data['sonar_img'] = template_aug_output.get('sonar_img', template_data['sonar_img'])
+            template_data['rgb_bbox'] = template_aug_output.get('rgb_bbox', template_data['rgb_bbox'])
+            template_data['sonar_bbox'] = template_aug_output.get('sonar_bbox', template_data['sonar_bbox'])
+
+        rgb_template, rgb_template_scale_x, rgb_template_scale_y, rgb_t_pad_x, rgb_t_pad_y = self._prepare_image(template_data['rgb_img'], self.template_size, is_sonar=False)
+        sonar_template, sonar_template_scale_x, sonar_template_scale_y, sonar_t_pad_x, sonar_t_pad_y = self._prepare_image(template_data['sonar_img'], self.template_size, is_sonar=True)
+
+        template_bbox_rgb_scaled = self._scale_bbox(template_data['rgb_bbox'], rgb_template_scale_x, rgb_template_scale_y)
+        template_bbox_sonar_scaled = self._scale_bbox_with_padding(
+            template_data['sonar_bbox'], sonar_template_scale_x, sonar_template_scale_y,
+            sonar_t_pad_x, sonar_t_pad_y
+        )
+
+        template_rgb_h, template_rgb_w = template_data['rgb_img'].shape[:2] if template_data['rgb_img'] is not None else (self.template_size, self.template_size)
+        template_sonar_h, template_sonar_w = template_data['sonar_img'].shape[:2] if template_data['sonar_img'] is not None else (self.template_size, self.template_size)
+
+        # Process each search frame
+        rgb_search_list = []
+        sonar_search_list = []
+        rgb_bbox_list = []
+        sonar_bbox_list = []
+        rgb_metadata_list = []
+        sonar_metadata_list = []
+
+        for search_idx in search_indices:
+            search_data = self.base_dataset[search_idx]
+
+            # Verify sequence consistency
+            if self.is_multi_sequence:
+                search_seq = search_data.get('sequence_name')
+                if search_seq != sequence_name:
+                    raise RuntimeError(
+                        f"Sequence mismatch in temporal sampling: template={sequence_name}, search={search_seq}"
+                    )
+
+            # Apply augmentation
+            if self.augmentation is not None:
+                search_aug_input = {
+                    'rgb_img': search_data['rgb_img'],
+                    'sonar_img': search_data['sonar_img'],
+                    'rgb_bbox': search_data['rgb_bbox'],
+                    'sonar_bbox': search_data['sonar_bbox'],
+                }
+                search_aug_output = self.augmentation(search_aug_input)
+                search_data['rgb_img'] = search_aug_output.get('rgb_img', search_data['rgb_img'])
+                search_data['sonar_img'] = search_aug_output.get('sonar_img', search_data['sonar_img'])
+                search_data['rgb_bbox'] = search_aug_output.get('rgb_bbox', search_data['rgb_bbox'])
+                search_data['sonar_bbox'] = search_aug_output.get('sonar_bbox', search_data['sonar_bbox'])
+
+            # Prepare images
+            rgb_search, rgb_search_scale_x, rgb_search_scale_y, rgb_s_pad_x, rgb_s_pad_y = self._prepare_image(search_data['rgb_img'], self.search_size, is_sonar=False)
+            sonar_search, sonar_search_scale_x, sonar_search_scale_y, sonar_s_pad_x, sonar_s_pad_y = self._prepare_image(search_data['sonar_img'], self.search_size, is_sonar=True)
+
+            # Scale bboxes
+            search_bbox_rgb_scaled = self._scale_bbox(search_data['rgb_bbox'], rgb_search_scale_x, rgb_search_scale_y)
+            search_bbox_sonar_scaled = self._scale_bbox_with_padding(
+                search_data['sonar_bbox'], sonar_search_scale_x, sonar_search_scale_y,
+                sonar_s_pad_x, sonar_s_pad_y
+            )
+
+            # Get original dimensions
+            search_rgb_h, search_rgb_w = search_data['rgb_img'].shape[:2] if search_data['rgb_img'] is not None else (self.search_size, self.search_size)
+            search_sonar_h, search_sonar_w = search_data['sonar_img'].shape[:2] if search_data['sonar_img'] is not None else (self.search_size, self.search_size)
+
+            # Collect frame data
+            rgb_search_list.append(rgb_search)
+            sonar_search_list.append(sonar_search)
+            rgb_bbox_list.append(search_bbox_rgb_scaled)
+            sonar_bbox_list.append(search_bbox_sonar_scaled)
+
+            rgb_metadata_list.append({
+                'original_height': search_rgb_h,
+                'original_width': search_rgb_w,
+                'scale_x': rgb_search_scale_x,
+                'scale_y': rgb_search_scale_y,
+                'pad_x': rgb_s_pad_x,
+                'pad_y': rgb_s_pad_y,
+            })
+            sonar_metadata_list.append({
+                'original_height': search_sonar_h,
+                'original_width': search_sonar_w,
+                'scale_x': sonar_search_scale_x,
+                'scale_y': sonar_search_scale_y,
+                'pad_x': sonar_s_pad_x,
+                'pad_y': sonar_s_pad_y,
+            })
+
+        # Stack sequences: [T, C, H, W]
+        import torch
+        rgb_search_stacked = torch.stack(rgb_search_list, dim=0)  # [T, C, H, W]
+        sonar_search_stacked = torch.stack(sonar_search_list, dim=0)  # [T, C, H, W]
+        rgb_bbox_stacked = torch.stack(rgb_bbox_list, dim=0)  # [T, 4]
+        sonar_bbox_stacked = torch.stack(sonar_bbox_list, dim=0)  # [T, 4]
+
+        # Build sequence sample
+        sequence = {
+            # Template (single frame)
+            'rgb_template': rgb_template,
+            'sonar_template': sonar_template,
+            'template_bbox_rgb': template_bbox_rgb_scaled,
+            'template_bbox_sonar': template_bbox_sonar_scaled,
+
+            # Search sequence (T frames)
+            'rgb_search': rgb_search_stacked,  # [T, C, H, W]
+            'sonar_search': sonar_search_stacked,  # [T, C, H, W]
+            'search_bbox_rgb': rgb_bbox_stacked,  # [T, 4]
+            'search_bbox_sonar': sonar_bbox_stacked,  # [T, 4]
+
+            # For trainer compatibility, use last frame as primary bbox
+            'rgb_boxes': rgb_bbox_stacked[-1],  # [4]
+            'sonar_boxes': sonar_bbox_stacked[-1],  # [4]
+
+            # Metadata
+            'sequence_name': sequence_name,
+            'template_frame_id': template_data['frame_id'],
+            'search_frame_id': [self.base_dataset[idx]['frame_id'] for idx in search_indices],
+            'frame_id': search_indices[-1],  # Use last frame ID for compatibility
+            'template_idx': template_idx,
+            'search_idx': search_indices,
+            'is_valid': all([self.base_dataset[idx]['is_valid'] for idx in search_indices]),
+
+            # Transformation metadata
+            'template_rgb_metadata': {
+                'original_height': template_rgb_h,
+                'original_width': template_rgb_w,
+                'scale_x': rgb_template_scale_x,
+                'scale_y': rgb_template_scale_y,
+                'pad_x': rgb_t_pad_x,
+                'pad_y': rgb_t_pad_y,
+            },
+            'template_sonar_metadata': {
+                'original_height': template_sonar_h,
+                'original_width': template_sonar_w,
+                'scale_x': sonar_template_scale_x,
+                'scale_y': sonar_template_scale_y,
+                'pad_x': sonar_t_pad_x,
+                'pad_y': sonar_t_pad_y,
+            },
+            'rgb_search_metadata': rgb_metadata_list,  # List[Dict] of length T
+            'sonar_search_metadata': sonar_metadata_list,  # List[Dict] of length T
+
+            # Sequence-specific flag
+            'is_sequence': True,
+            'sequence_length': T,
+        }
+
+        return sequence
+
     def _sample_single_sequence_pair(self, index: int):
         """
         Sample template-search pair for single-sequence dataset.
@@ -281,7 +524,11 @@ class TrackingDataset(Dataset):
             index: Current sample index
 
         Returns:
-            Tuple of (template_idx, search_idx)
+            Tuple of (template_idx, search_idx) for T=1
+            OR Tuple of (template_idx, list[search_indices]) for T>1
+
+        CRITICAL FIX (Audit 2025111703 Finding 1):
+        Now supports sampling T>1 consecutive search frames for temporal training.
         """
         # Decide template frame
         if random.random() < self.search_first_prob:
@@ -291,7 +538,7 @@ class TrackingDataset(Dataset):
             # Random template from current index vicinity
             template_idx = index
 
-        # Sample search frame with gap
+        # Sample search frame(s) with gap
         max_search_idx = min(
             template_idx + self.template_search_gap,
             self.num_frames - 1
@@ -303,11 +550,25 @@ class TrackingDataset(Dataset):
 
         # Ensure valid range
         if min_search_idx > max_search_idx:
-            search_idx = template_idx
-        else:
-            search_idx = random.randint(min_search_idx, max_search_idx)
+            if self.search_sequence_length == 1:
+                return template_idx, template_idx
+            else:
+                # Not enough frames, repeat the template
+                return template_idx, [template_idx] * self.search_sequence_length
 
-        return template_idx, search_idx
+        if self.search_sequence_length == 1:
+            # Traditional pair sampling
+            search_idx = random.randint(min_search_idx, max_search_idx)
+            return template_idx, search_idx
+        else:
+            # CRITICAL FIX (Audit 2025111703 Finding 1): Sample T consecutive frames
+            # Ensure we have enough frames for the sequence
+            start_idx = random.randint(
+                min_search_idx,
+                min(max_search_idx, self.num_frames - self.search_sequence_length)
+            )
+            search_indices = list(range(start_idx, start_idx + self.search_sequence_length))
+            return template_idx, search_indices
 
     def _sample_intra_sequence_pair(self, index: int):
         """
@@ -319,7 +580,11 @@ class TrackingDataset(Dataset):
             index: Global frame index
 
         Returns:
-            Tuple of (template_idx, search_idx) where both are in the same sequence
+            Tuple of (template_idx, search_idx) for T=1
+            OR Tuple of (template_idx, list[search_indices]) for T>1
+
+        CRITICAL FIX (Audit 2025111703 Finding 1):
+        Now supports sampling T>1 consecutive search frames for temporal training.
         """
         # Get sequence name for this index
         sequence_name = self.base_dataset.get_frame_sequence(index)
@@ -336,7 +601,7 @@ class TrackingDataset(Dataset):
             # Use current frame as template
             local_template_idx = local_index
 
-        # Sample search frame with gap (ensuring it stays within sequence)
+        # Sample search frame(s) with gap (ensuring it stays within sequence)
         local_max_search_idx = min(
             local_template_idx + self.template_search_gap,
             seq_range['num_frames'] - 1
@@ -349,20 +614,51 @@ class TrackingDataset(Dataset):
         # Ensure valid range
         if local_min_search_idx > local_max_search_idx:
             local_search_idx = local_template_idx
-        else:
-            local_search_idx = random.randint(local_min_search_idx, local_max_search_idx)
+            if self.search_sequence_length > 1:
+                # Not enough frames, repeat the template
+                template_idx = seq_range['start'] + local_template_idx
+                return template_idx, [template_idx] * self.search_sequence_length
+            else:
+                template_idx = seq_range['start'] + local_template_idx
+                search_idx = seq_range['start'] + local_search_idx
+                return template_idx, search_idx
 
-        # Convert back to global indices
+        # Convert template to global
         template_idx = seq_range['start'] + local_template_idx
-        search_idx = seq_range['start'] + local_search_idx
 
-        # Sanity check: ensure indices are within sequence boundaries
-        assert seq_range['start'] <= template_idx < seq_range['end'], \
-            f"Template index {template_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
-        assert seq_range['start'] <= search_idx < seq_range['end'], \
-            f"Search index {search_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+        if self.search_sequence_length == 1:
+            # Traditional pair sampling
+            local_search_idx = random.randint(local_min_search_idx, local_max_search_idx)
+            search_idx = seq_range['start'] + local_search_idx
 
-        return template_idx, search_idx
+            # Sanity check: ensure indices are within sequence boundaries
+            assert seq_range['start'] <= template_idx < seq_range['end'], \
+                f"Template index {template_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+            assert seq_range['start'] <= search_idx < seq_range['end'], \
+                f"Search index {search_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+
+            return template_idx, search_idx
+        else:
+            # CRITICAL FIX (Audit 2025111703 Finding 1): Sample T consecutive frames
+            # Ensure we have enough frames for the sequence within this sequence boundary
+            local_start_idx = random.randint(
+                local_min_search_idx,
+                min(local_max_search_idx, seq_range['num_frames'] - self.search_sequence_length)
+            )
+            # Generate consecutive local indices
+            local_search_indices = list(range(local_start_idx, local_start_idx + self.search_sequence_length))
+
+            # Convert to global indices
+            search_indices = [seq_range['start'] + local_idx for local_idx in local_search_indices]
+
+            # Sanity check: ensure all indices are within sequence boundaries
+            assert seq_range['start'] <= template_idx < seq_range['end'], \
+                f"Template index {template_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+            for search_idx in search_indices:
+                assert seq_range['start'] <= search_idx < seq_range['end'], \
+                    f"Search index {search_idx} out of sequence range [{seq_range['start']}, {seq_range['end']})"
+
+            return template_idx, search_indices
 
     def _prepare_image(self, img, target_size, is_sonar=False):
         """

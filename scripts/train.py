@@ -346,13 +346,24 @@ def build_dataloaders(cfg):
     template_size = cfg.data.get('template_size', 127)
     search_size = cfg.data.get('search_size', 255)
 
+    # CRITICAL FIX (Audit 2025111703 Finding 1): Enable sequence-based training
+    search_sequence_length = cfg.data.get('search_sequence_length', 1)
+
     train_dataset = TrackingDataset(
         base_dataset=train_base_dataset,
         template_search_gap=template_search_gap,
         template_size=template_size,
         search_size=search_size,
-        augmentation=train_augmentation
+        augmentation=train_augmentation,
+        search_sequence_length=search_sequence_length
     )
+
+    logger.info(f"Search sequence length: {search_sequence_length} ({'temporal training' if search_sequence_length > 1 else 'pair sampling'})")
+
+    # CRITICAL FIX (Audit 2025111703 Finding 3):
+    # Enable sequence grouping for temporal training to prevent constant resets
+    use_sequence_grouping = cfg.data.get('use_sequence_grouping', True)
+    logger.info(f"Sequence-grouped batching: {use_sequence_grouping} ({'enabled' if use_sequence_grouping else 'disabled'})")
 
     logger.info(f"Train dataset: {len(train_dataset)} samples")
 
@@ -366,7 +377,8 @@ def build_dataloaders(cfg):
         collate_fn=collate_fn_template_search,
         distributed=cfg.system.distributed,
         prefetch_factor=cfg.data.get('prefetch_factor', None),
-        persistent_workers=cfg.data.get('persistent_workers', None)
+        persistent_workers=cfg.data.get('persistent_workers', None),
+        use_sequence_grouping=use_sequence_grouping
     )
 
     # Only create validation dataset/loader if base dataset exists
@@ -376,7 +388,8 @@ def build_dataloaders(cfg):
             template_search_gap=template_search_gap,
             template_size=template_size,
             search_size=search_size,
-            augmentation=None  # No augmentation for validation
+            augmentation=None,  # No augmentation for validation
+            search_sequence_length=search_sequence_length  # Use same sequence length for validation
         )
 
         logger.info(f"Val dataset: {len(val_dataset)} samples")

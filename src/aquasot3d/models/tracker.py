@@ -570,19 +570,26 @@ class AquaSOT3DTracker(BaseModule):
         rgb_features: torch.Tensor,
         sonar_features: torch.Tensor,
         fused_features: torch.Tensor,
-        gt_boxes: Optional[Dict[str, torch.Tensor]] = None
+        gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
+        is_temporal_sequence: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
         Predict 2D bounding boxes for all modalities.
 
         Args:
-            rgb_features: RGB features, shape (B, C_rgb, H, W)
-            sonar_features: Sonar features, shape (B, C_sonar, H, W)
+            rgb_features: RGB features, shape (B, C_rgb, H, W) or (B*T, C_rgb, H, W)
+            sonar_features: Sonar features, shape (B, C_sonar, H, W) or (B*T, C_sonar, H, W)
             fused_features: Fused features, shape (B, C_fused, H, W)
             gt_boxes: Optional ground truth boxes for loss computation
+            is_temporal_sequence: If True, skip RGB/Sonar loss (shape mismatch in temporal mode)
 
         Returns:
             Dictionary containing box predictions and losses
+
+        CRITICAL FIX (Audit 2025111703 Finding 1 - RGB/Sonar loss mismatch):
+        In temporal mode, RGB/Sonar features remain [B*T, ...] but fused features
+        are [B, ...] after aggregation. Since gt_boxes are [B, 4], we cannot compute
+        RGB/Sonar loss (shape mismatch). We only compute fusion loss in temporal mode.
         """
         # Ensure features are tensors (extract from list if needed)
         if rgb_features is not None and isinstance(rgb_features, list):
@@ -600,7 +607,8 @@ class AquaSOT3DTracker(BaseModule):
             outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
             outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
 
-            if gt_boxes is not None and 'rgb' in gt_boxes:
+            # CRITICAL FIX: Skip RGB loss in temporal mode (shape mismatch)
+            if gt_boxes is not None and 'rgb' in gt_boxes and not is_temporal_sequence:
                 rgb_loss = self.rgb_box_head.compute_loss(
                     rgb_box_outputs,
                     gt_boxes['rgb']
@@ -613,7 +621,8 @@ class AquaSOT3DTracker(BaseModule):
             outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
             outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
 
-            if gt_boxes is not None and 'sonar' in gt_boxes:
+            # CRITICAL FIX: Skip Sonar loss in temporal mode (shape mismatch)
+            if gt_boxes is not None and 'sonar' in gt_boxes and not is_temporal_sequence:
                 sonar_loss = self.sonar_box_head.compute_loss(
                     sonar_box_outputs,
                     gt_boxes['sonar']
@@ -751,10 +760,10 @@ class AquaSOT3DTracker(BaseModule):
         Complete forward pass of AquaSOT-3D tracker.
 
         Args:
-            rgb_template: RGB template frame, shape (B, 3, H_t, W_t)
-            rgb_search: RGB search frame, shape (B, 3, H_s, W_s)
-            sonar_template: Sonar template frame, shape (B, 1, H_t, W_t)
-            sonar_search: Sonar search frame, shape (B, 1, H_s, W_s)
+            rgb_template: RGB template frame, shape (B, 3, H_t, W_t) OR (B, 1, 3, H_t, W_t) for sequence mode
+            rgb_search: RGB search frame, shape (B, 3, H_s, W_s) OR (B, T, 3, H_s, W_s) for sequence mode
+            sonar_template: Sonar template frame, shape (B, 1, H_t, W_t) OR (B, 1, 1, H_t, W_t) for sequence mode
+            sonar_search: Sonar search frame, shape (B, 1, H_s, W_s) OR (B, T, 1, H_s, W_s) for sequence mode
             gt_boxes: Optional ground truth boxes for loss computation
                 Expected format: {'rgb': (B, 4), 'sonar': (B, 4), 'fusion': (B, 4)}
             return_losses: Whether to compute and return losses
@@ -772,13 +781,69 @@ class AquaSOT3DTracker(BaseModule):
                 - 'center_3d': 3D center (X, Y, Z) (B, 3) [if use_weak3d=True]
                 - Various losses [if return_losses=True]
                 - Intermediate features [if return_intermediate=True]
+
+        CRITICAL FIX (Audit 2025111703 Finding 1):
+        Now supports temporal sequence input with shape [B, T, C, H, W] for search frames.
+        When T>1, we reshape to [B*T, C, H, W] for backbone processing, then reshape back
+        to [B, T, C, H, W] before temporal aggregation.
         """
         # =====================================================
-        # Stage 0: Metadata Validation (Audit 2025111412 Finding 4)
+        # Stage 0a: Temporal Dimension Handling (Audit 2025111703 Finding 1)
         # =====================================================
-        batch_size = rgb_template.shape[0]
+        # Detect if we have temporal sequences (5D tensors)
+        is_temporal_sequence = rgb_search.ndim == 5
 
-        # CRITICAL: Validate metadata list lengths match batch size
+        if is_temporal_sequence:
+            # Input: [B, T, C, H, W]
+            batch_size = rgb_search.shape[0]
+            T = rgb_search.shape[1]
+
+            # Reshape search frames from [B, T, C, H, W] to [B*T, C, H, W]
+            rgb_search = rgb_search.reshape(batch_size * T, *rgb_search.shape[2:])
+            sonar_search = sonar_search.reshape(batch_size * T, *sonar_search.shape[2:])
+
+            # Repeat template T times to match: [B, C, H, W] -> [B*T, C, H, W]
+            rgb_template = rgb_template.unsqueeze(1).expand(-1, T, -1, -1, -1).reshape(batch_size * T, *rgb_template.shape[1:])
+            sonar_template = sonar_template.unsqueeze(1).expand(-1, T, -1, -1, -1).reshape(batch_size * T, *sonar_template.shape[1:])
+
+            # CRITICAL FIX (Audit 2025111703 Finding 1 - gt_boxes shape mismatch):
+            # Store original gt_boxes [B, 4] for loss computation after temporal aggregation
+            # We DON'T expand gt_boxes because temporal aggregation outputs [B, 4], not [B*T, 4]
+            gt_boxes_original = gt_boxes  # Keep original [B, 4] for loss after aggregation
+
+            # Expand metadata if provided
+            if metadata is not None:
+                metadata_expanded = {}
+                for key, meta_list in metadata.items():
+                    if meta_list is not None:
+                        # CRITICAL FIX (Audit 2025111703 Finding 1 - metadata expansion bug):
+                        # For temporal sequences, dataset returns List[List[Dict]] (length B, each List[Dict] has length T)
+                        # After collate: metadata[key] = [[dict_0, dict_1, dict_2], [dict_3, dict_4, dict_5]]
+                        # We need to flatten: [dict_0, dict_1, dict_2, dict_3, dict_4, dict_5]
+                        expanded_list = []
+                        for item in meta_list:
+                            if isinstance(item, list):
+                                # Temporal sequence: item is a List[Dict] of length T
+                                expanded_list.extend(item)
+                            else:
+                                # Pair mode: item is a Dict, repeat it T times (T=1 here)
+                                expanded_list.extend([item] * T)
+                        metadata_expanded[key] = expanded_list
+                    else:
+                        metadata_expanded[key] = None
+                metadata = metadata_expanded
+        else:
+            # Traditional pair mode: [B, C, H, W]
+            batch_size = rgb_template.shape[0]
+            T = 1
+            gt_boxes_original = gt_boxes  # No expansion needed in pair mode
+
+        # =====================================================
+        # Stage 0b: Metadata Validation (Audit 2025111412 Finding 4)
+        # =====================================================
+        effective_batch_size = batch_size * T
+
+        # CRITICAL: Validate metadata list lengths match effective batch size
         if metadata is not None:
             for key in ['rgb_search_metadata', 'sonar_search_metadata',
                        'template_rgb_metadata', 'template_sonar_metadata']:
@@ -788,10 +853,10 @@ class AquaSOT3DTracker(BaseModule):
                     if isinstance(meta_list, dict):
                         meta_list = [meta_list]
 
-                    if len(meta_list) != batch_size:
+                    if len(meta_list) != effective_batch_size:
                         raise ValueError(
                             f"Metadata length mismatch at tracker forward: "
-                            f"{key} has {len(meta_list)} entries but batch_size={batch_size}. "
+                            f"{key} has {len(meta_list)} entries but effective_batch_size={effective_batch_size} (B={batch_size}, T={T}). "
                             f"This indicates a loader bug. Check collate_fn_template_search()."
                         )
 
@@ -992,6 +1057,18 @@ class AquaSOT3DTracker(BaseModule):
                 pass  # Keep spatial for now, heads expect spatial
 
         # =====================================================
+        # Stage 3b: Reshape for Temporal Modeling (Audit 2025111703 Finding 1)
+        # =====================================================
+        if is_temporal_sequence and self.use_temporal:
+            # Reshape from [B*T, C, H, W] back to [B, T, C, H, W] for temporal head
+            C, H, W = fused_features.shape[1:]
+            fused_features = fused_features.reshape(batch_size, T, C, H, W)
+
+            # Reshape quality scores if present
+            if fusion_quality is not None:
+                fusion_quality = fusion_quality.reshape(batch_size, T)
+
+        # =====================================================
         # Stage 4: Temporal Modeling (Optional)
         # =====================================================
         if self.use_temporal:
@@ -1001,12 +1078,22 @@ class AquaSOT3DTracker(BaseModule):
             )
             self.temporal_state = new_temporal_state
 
+            # After temporal aggregation, we're back to [B, C, H, W] for downstream heads
+            # No need to reshape - temporal_head returns aggregated [B, C, H, W]
+
+            # CRITICAL FIX (Audit 2025111703 Finding 1 - gt_boxes shape mismatch):
+            # Restore original gt_boxes [B, 4] for loss computation
+            # Temporal aggregation outputs [B, C, H, W], so we need [B, 4] targets, not [B*T, 4]
+            if is_temporal_sequence and return_losses:
+                gt_boxes = gt_boxes_original
+
         # =====================================================
         # Stage 5: 2D Box Prediction
         # =====================================================
         box_outputs = self.predict_boxes(
             rgb_features, sonar_features, fused_features,
-            gt_boxes=gt_boxes if return_losses else None
+            gt_boxes=gt_boxes if return_losses else None,
+            is_temporal_sequence=is_temporal_sequence  # Skip RGB/Sonar loss in temporal mode
         )
 
         # =====================================================

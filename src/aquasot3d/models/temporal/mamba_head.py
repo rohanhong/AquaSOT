@@ -321,6 +321,10 @@ class VisionMambaHead(BaseTemporalHead):
         self.bidirectional = bidirectional
         self.use_occlusion_gating = use_occlusion_gating
 
+        # CRITICAL FIX (Audit 2025111703 Finding 2): Temporal window for state persistence
+        # Maintain sliding window of recent frames for streaming inference
+        self.temporal_window_size = 5  # Keep last N frames for temporal context
+
         # Spatial positional encoding
         self.spatial_pos_encoding = SpatialPositionalEncoding(
             feature_dim=feature_dim,
@@ -376,9 +380,12 @@ class VisionMambaHead(BaseTemporalHead):
         Reset temporal state for new sequence.
 
         This is called when starting tracking on a new video sequence.
+
+        CRITICAL FIX (Audit 2025111703 Finding 2):
+        Clear frame buffer to prevent state leakage across sequences.
         """
         self._temporal_state = None
-        self._frame_buffer = []
+        self._frame_buffer = []  # List of (features, quality_scores) tuples
 
     def forward(
         self,
@@ -396,12 +403,15 @@ class VisionMambaHead(BaseTemporalHead):
             quality_scores: Optional quality/visibility scores
                 - For single frame: [B]
                 - For temporal sequence: [B, T]
-            temporal_state: Previous temporal state (unused in current implementation)
+            temporal_state: Previous temporal state (frame buffer from last call)
 
         Returns:
             Tuple of:
                 - aggregated_features: Temporally aggregated features [B, C, H, W]
-                - new_temporal_state: Updated temporal state (None in current implementation)
+                - new_temporal_state: Updated temporal state (frame buffer for next call)
+
+        CRITICAL FIX (Audit 2025111703 Finding 2):
+        Now maintains temporal state (frame buffer) for streaming inference.
         """
         # Determine input format
         if features.ndim == 4:
@@ -411,14 +421,53 @@ class VisionMambaHead(BaseTemporalHead):
             features = features.unsqueeze(1)  # [B, 1, C, H, W]
             if quality_scores is not None:
                 quality_scores = quality_scores.unsqueeze(1)  # [B, 1]
+            is_single_frame = True
         elif features.ndim == 5:
             # Temporal sequence input [B, T, C, H, W]
             B, T, C, H, W = features.shape
+            is_single_frame = False
         else:
             raise ValueError(
                 f"Expected features to be 4D [B, C, H, W] or 5D [B, T, C, H, W], "
                 f"got shape {features.shape}"
             )
+
+        # CRITICAL FIX (Audit 2025111703 Finding 2): Use temporal_state for streaming
+        if is_single_frame and temporal_state is not None:
+            # Streaming inference: append current frame to history
+            frame_buffer = temporal_state  # List of (feat, qual) tuples
+
+            # Add current frame
+            current_feat = features[:, 0]  # [B, C, H, W]
+            current_qual = quality_scores[:, 0] if quality_scores is not None else None
+            frame_buffer.append((current_feat.detach().cpu(), current_qual.detach().cpu() if current_qual is not None else None))
+
+            # Maintain window size (FIFO)
+            if len(frame_buffer) > self.temporal_window_size:
+                frame_buffer.pop(0)
+
+            # Reconstruct sequence from buffer
+            buffer_features = []
+            buffer_quality = []
+            for feat, qual in frame_buffer:
+                buffer_features.append(feat.to(features.device))
+                if qual is not None:
+                    buffer_quality.append(qual.to(features.device))
+
+            features = torch.stack(buffer_features, dim=1)  # [B, T_buffer, C, H, W]
+            if len(buffer_quality) > 0:
+                quality_scores = torch.stack(buffer_quality, dim=1)  # [B, T_buffer]
+            else:
+                quality_scores = None
+
+            T = len(frame_buffer)
+        else:
+            # Training or first frame: use provided sequence as-is
+            frame_buffer = []
+            for t in range(T):
+                feat = features[:, t]
+                qual = quality_scores[:, t] if quality_scores is not None else None
+                frame_buffer.append((feat.detach().cpu(), qual.detach().cpu() if qual is not None else None))
 
         # Apply spatial positional encoding
         features_with_pos = []
@@ -474,8 +523,9 @@ class VisionMambaHead(BaseTemporalHead):
         # For more sophisticated aggregation, can use attention or pooling
         aggregated_features = features_out[:, -1]  # [B, C, H, W]
 
-        # Return aggregated features and temporal state
-        return aggregated_features, None
+        # CRITICAL FIX (Audit 2025111703 Finding 2): Return frame_buffer as temporal_state
+        # This enables streaming inference with temporal context across frames
+        return aggregated_features, frame_buffer
 
 
 # ============================================================================
