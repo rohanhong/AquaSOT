@@ -98,8 +98,8 @@ model:
 training:
   num_epochs: 40  # Full pretraining (vs. 5 in test)
 
-  batch_size: 8
-  gradient_accumulation_steps: 1
+  batch_size: 8  # Optimized for RTX 3070 Laptop (~50% VRAM, experimentally verified)
+  gradient_accumulation_steps: 1  # Effective batch = 8
 
   optimizer:
     lr: 0.0003

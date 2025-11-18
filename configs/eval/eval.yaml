@@ -42,7 +42,7 @@ data:
   search_sequence_length: 5  # Match training length for consistent temporal behavior
   use_sequence_grouping: true  # Ensure proper sequence-based batching
 
-  num_workers: 4
+  num_workers: 8  # Optimized for i7-11800H (16 threads)
   prefetch_factor: 2
 
   # Template and search sizes

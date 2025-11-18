@@ -55,7 +55,7 @@ data:
   test_split: test
 
   # Dataloader settings
-  num_workers: 4
+  num_workers: 8  # Optimized for i7-11800H (16 threads)
   pin_memory: true
   prefetch_factor: 2
   persistent_workers: true
