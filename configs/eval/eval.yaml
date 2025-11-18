@@ -39,11 +39,11 @@ data:
 
   # CRITICAL FIX (Audit 2025111705 Finding 2): Enable multi-frame temporal inference
   # Evaluation must use sequences to properly test Vision-Mamba/state management
-  search_sequence_length: 5  # Match training length for consistent temporal behavior
-  use_sequence_grouping: true  # Ensure proper sequence-based batching
+  search_sequence_length: 5  # Match training
+  use_sequence_grouping: true
 
-  num_workers: 8  # Optimized for i7-11800H (16 threads)
-  prefetch_factor: 2
+  num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
+  prefetch_factor: 2  # Keep 2 (eval is sequential, less I/O-bound)
 
   # Template and search sizes
   template_size: 128

@@ -29,6 +29,9 @@ data:
   train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
   val_sequences: [uuv3, uuv6, uuv10]
 
+  # Inherits from default.yaml (num_workers=8, prefetch_factor=2)
+  # Higher performance: num_workers=24, prefetch_factor=3 (Xeon W9-3475X 36C/72T)
+
   # Augmentation for RGB-only (domain-specific transforms)
   augmentation:
     enabled: true
@@ -94,18 +97,18 @@ model:
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
-  num_epochs: 40  # Full pretraining (vs. 5 in test)
+  num_epochs: 40
 
-  batch_size: 8  # Optimized for RTX 3070 Laptop (~50% VRAM, experimentally verified)
-  gradient_accumulation_steps: 1  # Effective batch = 8
+  batch_size: 8  # Higher performance: 16 (A4000 16GB, 2x VRAM)
+  gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 16)
 
   optimizer:
-    lr: 0.0003
+    lr: 0.0003  # Higher performance: 0.0006 (scaled for batch=16)
     weight_decay: 0.0001
 
   scheduler:
     type: cosine
-    warmup_epochs: 3
+    warmup_epochs: 3  # Higher performance: 2 (fewer warmup for larger batch)
     t_max: 40
     eta_min: 1.0e-06
 

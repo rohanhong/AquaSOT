@@ -36,11 +36,11 @@ data:
 
   # CRITICAL FIX (Audit 2025111705 Finding 1): Enable multi-frame temporal training
   # Stage 3 must use sequences (not pairs) to train Vision-Mamba temporal modeling
-  search_sequence_length: 5  # Number of consecutive search frames (4-6 recommended)
-  use_sequence_grouping: true  # Prevent cross-sequence contamination in batches
+  search_sequence_length: 5  # 5-frame temporal (VRAM-intensive: 5x single-frame)
+  use_sequence_grouping: true
 
-  num_workers: 8  # Optimized for i7-11800H (16 threads)
-  prefetch_factor: 2
+  num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
+  prefetch_factor: 2  # Higher performance: 3
 
   # Multi-modal augmentation
   augmentation:
@@ -156,22 +156,22 @@ training:
     rgb: outputs/pretrain_rgb/checkpoints/checkpoint_best.pth
     sonar: outputs/pretrain_sonar/checkpoints/checkpoint_best.pth
 
-  num_epochs: 40  # Match Stage 1/2 pretraining epochs
+  num_epochs: 40
 
-  batch_size: 1  # Reduced for multi-frame training (5 frames × full fusion → high VRAM)
-  gradient_accumulation_steps: 4  # Effective batch = 4 (maintained)
+  batch_size: 1  # Higher performance: 2 (A4000 16GB, 2x VRAM; 5-frame uses 5x VRAM)
+  gradient_accumulation_steps: 4  # Higher performance: 2 (effective batch = 4 maintained)
 
   optimizer:
-    lr: 0.0001  # Lower lr for fine-tuning pretrained backbones (1/3 of pretraining lr)
+    lr: 0.0001  # Keep constant if effective batch unchanged
     weight_decay: 0.0001
-    backbone_lr_multiplier: 0.1  # Backbone: 0.00001 (10x smaller for stability)
+    backbone_lr_multiplier: 0.1
 
   scheduler:
     type: cosine
-    warmup_epochs: 3  # Short warmup for pretrained initialization
+    warmup_epochs: 3  # Keep constant for fine-tuning pretrained backbones
     warmup_lr: 0.00001
     min_lr: 0.000001
-    t_max: 40  # Match num_epochs
+    t_max: 40
     eta_min: 0.000001
 
   # Full loss weights
