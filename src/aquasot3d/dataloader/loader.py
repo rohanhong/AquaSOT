@@ -329,8 +329,18 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             # Clamp to [0, 1] for safety (handles edge cases)
             batched[key] = torch.clamp(batched[key], min=0.0, max=1.0)
 
-    # Handle scalar values
-    scalar_keys = ['template_idx', 'search_idx', 'is_valid', 'is_rgb_valid', 'is_sonar_valid',
+    # CRITICAL FIX (Audit 2025111903 Phase 3): Handle validity flags
+    # Validity tracking system to mask invalid samples (occlusions, augmentation filtering)
+    # These flags propagate from dataset → augmentation → collate → loss computation
+    validity_keys = ['is_valid', 'is_valid_rgb', 'is_valid_sonar']
+    for key in validity_keys:
+        if key in batch[0]:
+            values = [sample[key] for sample in batch]
+            # Convert boolean/int values to float tensor for masking operations
+            batched[key] = torch.tensor(values, dtype=torch.float32)
+
+    # Handle other scalar values
+    scalar_keys = ['template_idx', 'search_idx',
                    'template_frame_id', 'search_frame_id', 'frame_id']
     for key in scalar_keys:
         if key in batch[0]:

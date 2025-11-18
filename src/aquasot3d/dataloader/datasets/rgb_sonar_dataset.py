@@ -373,6 +373,16 @@ class RGBSonarDataset(Dataset):
         is_sonar_valid = not is_occluded(sonar_bbox) and sonar_img is not None
         is_valid = is_rgb_valid and is_sonar_valid
 
+        # CRITICAL FIX (Audit 2025111903 Phase 1): Replace [0,0,0,0] with centered bbox
+        # This maintains shape consistency for collate_fn while marking sample as invalid
+        if not is_rgb_valid and rgb_img is not None:
+            h, w = rgb_img.shape[:2]
+            rgb_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
+
+        if not is_sonar_valid and sonar_img is not None:
+            h, w = sonar_img.shape[:2]
+            sonar_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
+
         # Apply transforms
         if self.rgb_transform is not None and rgb_img is not None:
             rgb_img = self.rgb_transform(rgb_img, rgb_bbox if is_rgb_valid else None)

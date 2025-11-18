@@ -149,6 +149,12 @@ class LossManager(nn.Module):
 
         loss_dict = {}
 
+        # CRITICAL (Audit 2025111903 Phase 4): Extract validity masks from targets
+        # These masks propagate from dataset → augmentation → collate → here
+        is_valid = targets.get('is_valid', None)  # Combined validity
+        is_valid_rgb = targets.get('is_valid_rgb', None)  # RGB-specific validity
+        is_valid_sonar = targets.get('is_valid_sonar', None)  # Sonar-specific validity
+
         # ============================================
         # 1. RGB Branch Losses
         # ============================================
@@ -156,13 +162,20 @@ class LossManager(nn.Module):
         rgb_box_pred = predictions.get('rgb_box') if 'rgb_box' in predictions else predictions.get('rgb_boxes')
         rgb_box_target = targets.get('rgb_box') if 'rgb_box' in targets else targets.get('rgb_boxes')
         if rgb_box_pred is not None and rgb_box_target is not None:
-            rgb_box_loss = self._compute_box_loss(rgb_box_pred, rgb_box_target)
+            # CRITICAL (Audit 2025111903 Phase 4): Pass RGB validity mask to loss computation
+            rgb_box_loss = self._compute_box_loss(
+                rgb_box_pred,
+                rgb_box_target,
+                validity_mask=is_valid_rgb
+            )
             loss_dict['rgb_box'] = rgb_box_loss
 
         if 'rgb_cls' in predictions and 'rgb_cls' in targets:
+            # CRITICAL (Audit 2025111903 Phase 4): Pass RGB validity mask to loss computation
             rgb_cls_loss = self._compute_classification_loss(
                 predictions['rgb_cls'],
-                targets['rgb_cls']
+                targets['rgb_cls'],
+                validity_mask=is_valid_rgb
             )
             loss_dict['rgb_cls'] = rgb_cls_loss
 
@@ -172,13 +185,20 @@ class LossManager(nn.Module):
         sonar_box_pred = predictions.get('sonar_box') if 'sonar_box' in predictions else predictions.get('sonar_boxes')
         sonar_box_target = targets.get('sonar_box') if 'sonar_box' in targets else targets.get('sonar_boxes')
         if sonar_box_pred is not None and sonar_box_target is not None:
-            sonar_box_loss = self._compute_box_loss(sonar_box_pred, sonar_box_target)
+            # CRITICAL (Audit 2025111903 Phase 4): Pass Sonar validity mask to loss computation
+            sonar_box_loss = self._compute_box_loss(
+                sonar_box_pred,
+                sonar_box_target,
+                validity_mask=is_valid_sonar
+            )
             loss_dict['sonar_box'] = sonar_box_loss
 
         if 'sonar_cls' in predictions and 'sonar_cls' in targets:
+            # CRITICAL (Audit 2025111903 Phase 4): Pass Sonar validity mask to loss computation
             sonar_cls_loss = self._compute_classification_loss(
                 predictions['sonar_cls'],
-                targets['sonar_cls']
+                targets['sonar_cls'],
+                validity_mask=is_valid_sonar
             )
             loss_dict['sonar_cls'] = sonar_cls_loss
 
@@ -188,13 +208,21 @@ class LossManager(nn.Module):
         fusion_box_pred = predictions.get('fusion_box') if 'fusion_box' in predictions else predictions.get('fusion_boxes')
         fusion_box_target = targets.get('fusion_box') if 'fusion_box' in targets else targets.get('fusion_boxes')
         if fusion_box_pred is not None and fusion_box_target is not None:
-            fusion_box_loss = self._compute_box_loss(fusion_box_pred, fusion_box_target)
+            # CRITICAL (Audit 2025111903 Phase 4): Use combined validity mask for fusion
+            # Fusion requires BOTH RGB and Sonar to be valid
+            fusion_box_loss = self._compute_box_loss(
+                fusion_box_pred,
+                fusion_box_target,
+                validity_mask=is_valid
+            )
             loss_dict['fusion_box'] = fusion_box_loss
 
         if 'fusion_cls' in predictions and 'fusion_cls' in targets:
+            # CRITICAL (Audit 2025111903 Phase 4): Use combined validity mask for fusion
             fusion_cls_loss = self._compute_classification_loss(
                 predictions['fusion_cls'],
-                targets['fusion_cls']
+                targets['fusion_cls'],
+                validity_mask=is_valid
             )
             loss_dict['fusion_cls'] = fusion_cls_loss
 
@@ -360,7 +388,8 @@ class LossManager(nn.Module):
         self,
         pred_boxes: torch.Tensor,
         target_boxes: torch.Tensor,
-        loss_type: Literal['l1', 'giou', 'ciou'] = 'giou'
+        loss_type: Literal['l1', 'giou', 'ciou'] = 'giou',
+        validity_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Compute bounding box regression loss with enforced type-safe format checking.
@@ -369,10 +398,15 @@ class LossManager(nn.Module):
         using type-safe wrappers throughout computation. All inputs are automatically
         wrapped and validated to prevent silent format confusion between xywh/cxcywh.
 
+        CRITICAL (Audit 2025111903 Phase 4): Supports validity masking to exclude
+        invalid samples (occlusions, augmentation filtering) from loss computation.
+        When validity_mask is provided, only valid samples contribute to the loss gradient.
+
         Args:
             pred_boxes: Predicted boxes [B, 4] in cxcywh format (normalized [0,1])
             target_boxes: Target boxes [B, 4] in cxcywh format (normalized [0,1])
             loss_type: Type of loss to use ('l1', 'giou', 'ciou')
+            validity_mask: Optional validity mask [B] (1.0=valid, 0.0=invalid)
 
         Returns:
             Box regression loss (scalar)
@@ -410,10 +444,17 @@ class LossManager(nn.Module):
             )
 
         # L1 loss component using validated tensors
-        l1_loss = F.l1_loss(pred_tensor, target_tensor, reduction=self.reduction)
+        # CRITICAL (Audit 2025111903 Phase 4): Compute per-sample loss (no reduction)
+        l1_loss_per_sample = F.l1_loss(pred_tensor, target_tensor, reduction='none').mean(dim=-1)  # [B]
 
         if loss_type == 'l1':
-            return l1_loss
+            # Apply validity masking before reduction
+            if validity_mask is not None:
+                masked_loss = l1_loss_per_sample * validity_mask  # [B]
+                num_valid = validity_mask.sum().clamp(min=1.0)
+                return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+            else:
+                return l1_loss_per_sample.mean() if self.reduction == 'mean' else l1_loss_per_sample.sum()
 
         # GIoU or CIoU loss - use wrapper conversion methods for type safety
         # Convert to xyxy format using type-safe wrapper methods
@@ -426,22 +467,45 @@ class LossManager(nn.Module):
         target_boxes_xyxy = target_bbox_xyxy.tensor()
 
         if loss_type == 'giou':
-            giou = compute_giou(pred_boxes_xyxy, target_boxes_xyxy)
-            giou_loss = 1.0 - giou.mean() if self.reduction == 'mean' else (1.0 - giou).sum()
-            return l1_loss + giou_loss
+            giou = compute_giou(pred_boxes_xyxy, target_boxes_xyxy)  # [B]
+            giou_loss_per_sample = 1.0 - giou  # [B]
+            combined_loss = l1_loss_per_sample + giou_loss_per_sample  # [B]
+
+            # Apply validity masking before reduction
+            if validity_mask is not None:
+                masked_loss = combined_loss * validity_mask  # [B]
+                num_valid = validity_mask.sum().clamp(min=1.0)
+                return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+            else:
+                return combined_loss.mean() if self.reduction == 'mean' else combined_loss.sum()
 
         elif loss_type == 'ciou':
-            ciou = compute_ciou(pred_boxes_xyxy, target_boxes_xyxy)
-            ciou_loss = 1.0 - ciou.mean() if self.reduction == 'mean' else (1.0 - ciou).sum()
-            return l1_loss + ciou_loss
+            ciou = compute_ciou(pred_boxes_xyxy, target_boxes_xyxy)  # [B]
+            ciou_loss_per_sample = 1.0 - ciou  # [B]
+            combined_loss = l1_loss_per_sample + ciou_loss_per_sample  # [B]
 
-        return l1_loss
+            # Apply validity masking before reduction
+            if validity_mask is not None:
+                masked_loss = combined_loss * validity_mask  # [B]
+                num_valid = validity_mask.sum().clamp(min=1.0)
+                return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+            else:
+                return combined_loss.mean() if self.reduction == 'mean' else combined_loss.sum()
+
+        # Fallback to L1 with masking
+        if validity_mask is not None:
+            masked_loss = l1_loss_per_sample * validity_mask
+            num_valid = validity_mask.sum().clamp(min=1.0)
+            return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+        else:
+            return l1_loss_per_sample.mean() if self.reduction == 'mean' else l1_loss_per_sample.sum()
 
     def _compute_classification_loss(
         self,
         pred_scores: torch.Tensor,
         target_labels: torch.Tensor,
-        loss_type: Literal['bce', 'focal'] = 'bce'
+        loss_type: Literal['bce', 'focal'] = 'bce',
+        validity_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Compute classification loss.
@@ -449,10 +513,15 @@ class LossManager(nn.Module):
         IMPORTANT: This method expects pred_scores to be already sigmoid-activated (range [0,1]),
         NOT raw logits. This aligns with BoxHead design which uses nn.Sigmoid() in cls_head.
 
+        CRITICAL (Audit 2025111903 Phase 4): Supports validity masking to exclude
+        invalid samples (occlusions, augmentation filtering) from loss computation.
+        When validity_mask is provided, only valid samples contribute to the loss gradient.
+
         Args:
             pred_scores: Predicted classification scores [B, ...], already sigmoid-activated in [0,1]
             target_labels: Target labels [B, ...]
             loss_type: Type of classification loss
+            validity_mask: Optional validity mask [B] (1.0=valid, 0.0=invalid)
 
         Returns:
             Classification loss
@@ -461,26 +530,58 @@ class LossManager(nn.Module):
             # Clamp both predictions and targets to [0, 1] for numerical stability
             pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
             target_clamped = torch.clamp(target_labels.float(), min=0.0, max=1.0)
-            return F.binary_cross_entropy(
+
+            # CRITICAL (Audit 2025111903 Phase 4): Compute per-sample loss for masking
+            loss_per_sample = F.binary_cross_entropy(
                 pred_scores_clamped,
                 target_clamped,
-                reduction=self.reduction
+                reduction='none'
             )
+
+            # Apply validity masking before reduction
+            if validity_mask is not None:
+                # Expand mask to match loss dimensions if needed
+                mask_expanded = validity_mask.view(-1, *([1] * (loss_per_sample.ndim - 1)))
+                masked_loss = loss_per_sample * mask_expanded
+                num_valid = validity_mask.sum().clamp(min=1.0)
+                return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+            else:
+                return loss_per_sample.mean() if self.reduction == 'mean' else loss_per_sample.sum()
 
         elif loss_type == 'focal':
             # Focal loss implementation
             from aquasot3d.models.heads.box_head import QualityFocalLoss
-            focal_loss = QualityFocalLoss(reduction=self.reduction)
-            return focal_loss(pred_scores, target_labels)
+            # Note: QualityFocalLoss doesn't support per-sample masking natively
+            # We compute with 'none' reduction and apply masking manually
+            focal_loss_fn = QualityFocalLoss(reduction='none')
+            loss_per_sample = focal_loss_fn(pred_scores, target_labels)
 
-        # Default fallback to BCE
+            # Apply validity masking before reduction
+            if validity_mask is not None:
+                mask_expanded = validity_mask.view(-1, *([1] * (loss_per_sample.ndim - 1)))
+                masked_loss = loss_per_sample * mask_expanded
+                num_valid = validity_mask.sum().clamp(min=1.0)
+                return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+            else:
+                return loss_per_sample.mean() if self.reduction == 'mean' else loss_per_sample.sum()
+
+        # Default fallback to BCE with masking
         pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
         target_clamped = torch.clamp(target_labels.float(), min=0.0, max=1.0)
-        return F.binary_cross_entropy(
+        loss_per_sample = F.binary_cross_entropy(
             pred_scores_clamped,
             target_clamped,
-            reduction=self.reduction
+            reduction='none'
         )
+
+        # Apply validity masking before reduction
+        if validity_mask is not None:
+            mask_expanded = validity_mask.view(-1, *([1] * (loss_per_sample.ndim - 1)))
+            masked_loss = loss_per_sample * mask_expanded
+            num_valid = validity_mask.sum().clamp(min=1.0)
+            return masked_loss.sum() / num_valid if self.reduction == 'mean' else masked_loss.sum()
+        else:
+            return loss_per_sample.mean() if self.reduction == 'mean' else loss_per_sample.sum()
 
     def _get_current_weights(self) -> Dict[str, float]:
         """

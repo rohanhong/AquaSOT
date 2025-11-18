@@ -301,6 +301,15 @@ class Trainer:
         epoch_metrics = defaultdict(float)
         epoch_counts = defaultdict(int)
 
+        # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics
+        validity_stats = {
+            'total_samples': 0,
+            'valid_samples': 0,
+            'valid_rgb': 0,
+            'valid_sonar': 0,
+            'invalid_samples': 0
+        }
+
         # Progress bar
         pbar = tqdm(
             self.train_loader,
@@ -311,6 +320,21 @@ class Trainer:
         for batch_idx, batch in enumerate(pbar):
             # Move batch to device
             batch = self._to_device(batch)
+
+            # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
+            batch_size = batch['rgb_template'].shape[0] if 'rgb_template' in batch else 0
+            validity_stats['total_samples'] += batch_size
+
+            if 'is_valid' in batch:
+                valid_count = batch['is_valid'].sum().item()
+                validity_stats['valid_samples'] += valid_count
+                validity_stats['invalid_samples'] += (batch_size - valid_count)
+
+            if 'is_valid_rgb' in batch:
+                validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
+
+            if 'is_valid_sonar' in batch:
+                validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
             # Prepare ground truth boxes
             # CRITICAL FIX (Audit 2025111901): Convert xywh→cxcywh for BoxHead
@@ -457,16 +481,28 @@ class Trainer:
 
             # Update progress bar
             if self.is_main_process:
-                pbar.set_postfix({
+                # CRITICAL (Audit 2025111903 Phase 5): Add validity rate to progress bar
+                postfix = {
                     'loss': f"{loss_dict['total'].item():.4f}",
                     'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
-                })
+                }
+                if validity_stats['total_samples'] > 0:
+                    validity_rate = validity_stats['valid_samples'] / validity_stats['total_samples'] * 100
+                    postfix['valid%'] = f"{validity_rate:.1f}"
+                pbar.set_postfix(postfix)
 
         # Average metrics
         averaged_metrics = {
             key: value / epoch_counts[key]
             for key, value in epoch_metrics.items()
         }
+
+        # CRITICAL (Audit 2025111903 Phase 5): Add validity statistics to metrics
+        if validity_stats['total_samples'] > 0:
+            averaged_metrics['validity_rate'] = validity_stats['valid_samples'] / validity_stats['total_samples']
+            averaged_metrics['validity_rate_rgb'] = validity_stats['valid_rgb'] / validity_stats['total_samples']
+            averaged_metrics['validity_rate_sonar'] = validity_stats['valid_sonar'] / validity_stats['total_samples']
+            averaged_metrics['invalid_samples'] = validity_stats['invalid_samples']
 
         return averaged_metrics
 
@@ -490,6 +526,15 @@ class Trainer:
         val_metrics = defaultdict(float)
         val_counts = defaultdict(int)
 
+        # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics in validation
+        validity_stats = {
+            'total_samples': 0,
+            'valid_samples': 0,
+            'valid_rgb': 0,
+            'valid_sonar': 0,
+            'invalid_samples': 0
+        }
+
         with torch.no_grad():
             for batch in tqdm(
                 self.val_loader,
@@ -498,6 +543,21 @@ class Trainer:
             ):
                 # Move batch to device
                 batch = self._to_device(batch)
+
+                # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
+                batch_size = batch['rgb_template'].shape[0] if 'rgb_template' in batch else 0
+                validity_stats['total_samples'] += batch_size
+
+                if 'is_valid' in batch:
+                    valid_count = batch['is_valid'].sum().item()
+                    validity_stats['valid_samples'] += valid_count
+                    validity_stats['invalid_samples'] += (batch_size - valid_count)
+
+                if 'is_valid_rgb' in batch:
+                    validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
+
+                if 'is_valid_sonar' in batch:
+                    validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
                 # Prepare ground truth boxes (for validation loss computation)
                 # CRITICAL FIX (Audit 2025111901): Convert xywh→cxcywh for BoxHead
@@ -576,6 +636,13 @@ class Trainer:
             f'val_{key}': value / val_counts[key]
             for key, value in val_metrics.items()
         }
+
+        # CRITICAL (Audit 2025111903 Phase 5): Add validity statistics to validation metrics
+        if validity_stats['total_samples'] > 0:
+            averaged_metrics['val_validity_rate'] = validity_stats['valid_samples'] / validity_stats['total_samples']
+            averaged_metrics['val_validity_rate_rgb'] = validity_stats['valid_rgb'] / validity_stats['total_samples']
+            averaged_metrics['val_validity_rate_sonar'] = validity_stats['valid_sonar'] / validity_stats['total_samples']
+            averaged_metrics['val_invalid_samples'] = validity_stats['invalid_samples']
 
         # Log to TensorBoard
         if self.is_main_process and self.writer is not None:

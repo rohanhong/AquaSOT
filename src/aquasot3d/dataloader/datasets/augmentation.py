@@ -251,7 +251,10 @@ class TrackingAugmentation(BaseAugmentation):
 
     def __call__(self, data: Dict) -> Dict:
         """
-        Apply bbox-aware augmentation pipeline.
+        Apply bbox-aware augmentation pipeline with validity tracking.
+
+        CRITICAL FIX (Audit 2025111903 Phase 2): Propagate validity flags through
+        transform chain, updating when transforms filter bboxes.
 
         Args:
             data: Dictionary with keys:
@@ -259,12 +262,18 @@ class TrackingAugmentation(BaseAugmentation):
                 - sonar_img: Sonar image (H, W, C)
                 - rgb_bbox: RGB bounding box [x, y, w, h]
                 - sonar_bbox: Sonar bounding box [x, y, w, h]
+                - is_valid_rgb: Boolean indicating RGB validity (optional, default True)
+                - is_valid_sonar: Boolean indicating Sonar validity (optional, default True)
                 - (optional) metadata dicts for padding info
 
         Returns:
-            Augmented data dictionary with synchronized images and bboxes
+            Augmented data dictionary with synchronized images, bboxes, and updated validity
         """
         self.set_random_seed()
+
+        # Extract initial validity flags
+        is_valid_rgb = data.get('is_valid_rgb', True)
+        is_valid_sonar = data.get('is_valid_sonar', True)
 
         rgb_img = data['rgb_img'].copy() if data['rgb_img'] is not None else None
         sonar_img = data['sonar_img'].copy() if data['sonar_img'] is not None else None
@@ -277,10 +286,19 @@ class TrackingAugmentation(BaseAugmentation):
             # Ensure bbox is 2D (1, 4) format
             current_rgb_bbox = rgb_bbox.reshape(1, 4) if rgb_bbox.ndim == 1 else rgb_bbox
 
-            for transform in self.rgb_transforms:
-                result = transform(image=current_rgb, bboxes=current_rgb_bbox)
-                current_rgb = result['image']
-                current_rgb_bbox = result['bboxes']
+            # Only apply transforms to valid samples
+            if is_valid_rgb:
+                for transform in self.rgb_transforms:
+                    result = transform(image=current_rgb, bboxes=current_rgb_bbox)
+                    current_rgb = result['image']
+                    current_rgb_bbox = result['bboxes']
+
+                    # CRITICAL FIX (Audit 2025111903 Phase 2): Track validity when bbox filtered
+                    if current_rgb_bbox.shape[0] == 0:
+                        is_valid_rgb = False  # Mark as invalid
+                        h, w = current_rgb.shape[:2]
+                        dummy_bbox = np.array([[w // 2, h // 2, 1, 1]], dtype=np.float32)
+                        current_rgb_bbox = dummy_bbox
 
             # Apply normalization (bbox-aware)
             result = self.rgb_normalize(image=current_rgb, bboxes=current_rgb_bbox)
@@ -298,24 +316,40 @@ class TrackingAugmentation(BaseAugmentation):
             # Ensure bbox is 2D (1, 4) format
             current_sonar_bbox = sonar_bbox.reshape(1, 4) if sonar_bbox.ndim == 1 else sonar_bbox
 
-            # Apply augmentation transforms
-            for transform in self.sonar_transforms:
-                result = transform(
-                    image=current_sonar,
-                    bboxes=current_sonar_bbox,
-                    metadata=data.get('sonar_search_metadata')  # Pass padding info
-                )
-                current_sonar = result['image']
-                current_sonar_bbox = result['bboxes']
+            # Only apply transforms to valid samples
+            if is_valid_sonar:
+                # Apply augmentation transforms
+                for transform in self.sonar_transforms:
+                    result = transform(
+                        image=current_sonar,
+                        bboxes=current_sonar_bbox,
+                        metadata=data.get('sonar_search_metadata')  # Pass padding info
+                    )
+                    current_sonar = result['image']
+                    current_sonar_bbox = result['bboxes']
 
-            # CRITICAL: Apply log-polar transform (fixes Audit Finding 1)
-            if self.use_logpolar and self.logpolar_transform is not None:
-                result = self.logpolar_transform(
-                    image=current_sonar,
-                    bboxes=current_sonar_bbox
-                )
-                current_sonar = result['image']
-                current_sonar_bbox = result['bboxes']
+                    # CRITICAL FIX (Audit 2025111903 Phase 2): Track validity when bbox filtered
+                    if current_sonar_bbox.shape[0] == 0:
+                        is_valid_sonar = False  # Mark as invalid
+                        h, w = current_sonar.shape[:2]
+                        dummy_bbox = np.array([[w // 2, h // 2, 1, 1]], dtype=np.float32)
+                        current_sonar_bbox = dummy_bbox
+
+                # CRITICAL: Apply log-polar transform (fixes Audit 2025111801 Finding 1)
+                if self.use_logpolar and self.logpolar_transform is not None:
+                    result = self.logpolar_transform(
+                        image=current_sonar,
+                        bboxes=current_sonar_bbox
+                    )
+                    current_sonar = result['image']
+                    current_sonar_bbox = result['bboxes']
+
+                    # CRITICAL FIX (Audit 2025111903 Phase 2): Track validity when log-polar filters bbox
+                    if current_sonar_bbox.shape[0] == 0:
+                        is_valid_sonar = False  # Mark as invalid
+                        h, w = current_sonar.shape[:2]
+                        dummy_bbox = np.array([[w // 2, h // 2, 1, 1]], dtype=np.float32)
+                        current_sonar_bbox = dummy_bbox
 
             # Convert to tensor
             if not isinstance(current_sonar, torch.Tensor):
@@ -336,6 +370,11 @@ class TrackingAugmentation(BaseAugmentation):
         data['sonar_img'] = sonar_img
         data['rgb_bbox'] = torch.from_numpy(rgb_bbox) if isinstance(rgb_bbox, np.ndarray) else rgb_bbox
         data['sonar_bbox'] = torch.from_numpy(sonar_bbox) if isinstance(sonar_bbox, np.ndarray) else sonar_bbox
+
+        # CRITICAL FIX (Audit 2025111903 Phase 2): Include updated validity flags
+        data['is_valid_rgb'] = is_valid_rgb
+        data['is_valid_sonar'] = is_valid_sonar
+        data['is_valid'] = is_valid_rgb and is_valid_sonar
 
         return data
 
