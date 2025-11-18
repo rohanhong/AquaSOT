@@ -158,21 +158,26 @@ training:
 
   num_epochs: 40
 
-  batch_size: 1  # Higher performance: 2 (A4000 16GB, 2x VRAM; 5-frame uses 5x VRAM)
-  gradient_accumulation_steps: 4  # Higher performance: 2 (effective batch = 4 maintained)
+  batch_size: 1  # Higher performance: 2 (A4000 16GB, 5-frame temporal uses ~10GB per batch)
+  gradient_accumulation_steps: 4  # Higher performance: 2 (effective batch = 2×2 = 4)
 
   optimizer:
-    lr: 0.0001  # Keep constant if effective batch unchanged
+    lr: 0.0001  # Higher performance: Keep 0.0001 if effective batch unchanged
     weight_decay: 0.0001
     backbone_lr_multiplier: 0.1
 
   scheduler:
     type: cosine
-    warmup_epochs: 3  # Keep constant for fine-tuning pretrained backbones
-    warmup_lr: 0.00001
-    min_lr: 0.000001
+    warmup_epochs: 5  # Higher performance: 3 (pretrained backbones converge faster)
+    warmup_lr: 1.0e-06
     t_max: 40
-    eta_min: 0.000001
+    eta_min: 1.0e-06
+
+  # Gradient clipping
+  grad_clip:
+    enabled: true
+    max_norm: 1.0  # Higher performance: 2.0 (pretrained backbones more stable)
+    norm_type: 2
 
   # Full loss weights
   loss_weights:
@@ -187,14 +192,22 @@ training:
     geometric_consistency: 0.1
     component_consistency: 0.1
     representation_consistency: 0.1
+    quality_fusion_loss: 0.2
     temporal_smooth: 0.05
 
-  val_interval: 1  # Validate every epoch
+  # Loss schedule control (optional for curriculum learning)
+  loss_schedule:
+    enabled: false
+
+  val_interval: 1
 
   checkpoint:
     save_interval: 5
+    save_best: true
+    save_last: true
     metric: val_total
     mode: min
+    max_keep: 5
 
   log_interval: 10
 

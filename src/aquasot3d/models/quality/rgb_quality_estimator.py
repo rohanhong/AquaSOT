@@ -327,6 +327,8 @@ class RGBQualityEstimator(BaseModule):
         # Learnable quality estimation
         if self.learnable and self.quality_net is not None:
             quality = self.quality_net(roi)
+            # CRITICAL: Clamp output to [0, 1] to prevent BCE assertion errors
+            quality = torch.clamp(quality, min=0.0, max=1.0)
             return quality
 
         # Traditional quality estimation
@@ -359,6 +361,8 @@ class RGBQualityEstimator(BaseModule):
 
             # Weighted combination
             quality = 0.4 * variance_norm + 0.3 * magnitude_norm + 0.3 * freq_quality
+            # CRITICAL: Clamp to [0, 1] to prevent FP precision errors (e.g., 1.0000001)
+            quality = torch.clamp(quality, min=0.0, max=1.0)
 
         else:
             raise ValueError(f"Unknown quality estimation method: {self.method}")

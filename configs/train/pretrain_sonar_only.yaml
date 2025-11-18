@@ -105,15 +105,22 @@ training:
   gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 16)
 
   optimizer:
-    lr: 0.0003  # Higher performance: 0.0006 (scaled for batch=16)
+    lr: 0.0001  # Higher performance: 0.0002 (Xeon W9-3475X, batch=16, scaled linearly)
     weight_decay: 0.0001
     backbone_lr_multiplier: 1.0
 
   scheduler:
     type: cosine
-    warmup_epochs: 3  # Higher performance: 2 (fewer warmup for larger batch)
+    warmup_epochs: 5  # Higher performance: 3 (fewer warmup for larger batch=16)
+    warmup_lr: 1.0e-06
     t_max: 40
     eta_min: 1.0e-06
+
+  # Gradient clipping
+  grad_clip:
+    enabled: true
+    max_norm: 1.0  # Higher performance: 2.0 (larger batch more stable gradients)
+    norm_type: 2
 
   # Loss weights - Sonar only
   loss_weights:
@@ -128,14 +135,22 @@ training:
     geometric_consistency: 0.0
     component_consistency: 0.0
     representation_consistency: 0.0
+    quality_fusion_loss: 0.0
     temporal_smooth: 0.05
 
-  val_interval: 1  # Validate every epoch for best checkpoint tracking
+  # Disable weight schedule to prevent fusion_box weight increase
+  loss_schedule:
+    enabled: false
+
+  val_interval: 1
 
   checkpoint:
-    save_interval: 5  # Save interval checkpoint every 5 epochs
-    metric: val_total  # Use validation total loss for best tracking
-    mode: min  # Lower loss is better
+    save_interval: 5
+    save_best: true
+    save_last: true
+    metric: val_total
+    mode: min
+    max_keep: 5
 
   log_interval: 10
 

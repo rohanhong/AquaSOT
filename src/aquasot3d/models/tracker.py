@@ -219,23 +219,44 @@ class AquaSOT3DTracker(BaseModule):
         if box_head_config is None:
             box_head_config = {}
 
-        self.rgb_box_head = build_box_head(
-            'rgb',
-            in_channels=self.rgb_feat_dim,
-            **box_head_config
-        )
+        # CRITICAL FIX: Conditional initialization for all box heads
+        # Only create heads for active modalities to avoid memory waste and maintain symmetry
 
-        self.sonar_box_head = build_box_head(
-            'sonar',
-            in_channels=self.sonar_feat_dim,
-            **box_head_config
-        )
+        # RGB box head (only if RGB backbone exists)
+        self.rgb_box_head = None
+        if self.backbone.rgb_backbone is not None:
+            self.rgb_box_head = build_box_head(
+                'rgb',
+                in_channels=self.rgb_feat_dim,
+                **box_head_config
+            )
+            logger.info("Initialized RGB box head")
+        else:
+            logger.info("RGB box head disabled (no RGB backbone)")
 
-        self.fusion_box_head = build_box_head(
-            'fusion',
-            in_channels=self.fused_feat_dim,
-            **box_head_config
-        )
+        # Sonar box head (only if Sonar encoder exists)
+        self.sonar_box_head = None
+        if self.backbone.sonar_encoder is not None:
+            self.sonar_box_head = build_box_head(
+                'sonar',
+                in_channels=self.sonar_feat_dim,
+                **box_head_config
+            )
+            logger.info("Initialized Sonar box head")
+        else:
+            logger.info("Sonar box head disabled (no Sonar encoder)")
+
+        # Fusion box head (only if both modalities exist)
+        self.fusion_box_head = None
+        if self.backbone.rgb_backbone is not None and self.backbone.sonar_encoder is not None:
+            self.fusion_box_head = build_box_head(
+                'fusion',
+                in_channels=self.fused_feat_dim,
+                **box_head_config
+            )
+            logger.info("Initialized Fusion box head (multi-modal training)")
+        else:
+            logger.info("Fusion box head disabled (single-modal training)")
 
         # 4.2 Multi-Modal Fusion Head (for quality prediction)
         # Only build fusion_head if both modalities are available (multi-modal training)

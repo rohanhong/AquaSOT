@@ -330,6 +330,8 @@ class SonarQualityEstimator(BaseModule):
         if self.learnable and self.quality_net is not None:
             roi = self.crop_roi(sonar_frame, bbox, metadata=metadata)
             quality = self.quality_net(roi)
+            # CRITICAL: Clamp output to [0, 1] to prevent BCE assertion errors
+            quality = torch.clamp(quality, min=0.0, max=1.0)
             return quality
 
         # Traditional quality estimation
@@ -361,6 +363,8 @@ class SonarQualityEstimator(BaseModule):
 
             # Weighted combination
             quality = 0.5 * snr_norm + 0.2 * speckle_quality + 0.3 * intensity_norm
+            # CRITICAL: Clamp to [0, 1] to prevent FP precision errors (e.g., 1.0000001)
+            quality = torch.clamp(quality, min=0.0, max=1.0)
 
         else:
             raise ValueError(f"Unknown quality estimation method: {self.method}")
@@ -384,6 +388,8 @@ class SonarQualityEstimator(BaseModule):
 
             geo_weights = torch.stack(geo_weights).unsqueeze(1)  # (B, 1)
             quality = quality * geo_weights
+            # CRITICAL: Clamp after geometry weighting to prevent out-of-range values
+            quality = torch.clamp(quality, min=0.0, max=1.0)
 
         return quality
 

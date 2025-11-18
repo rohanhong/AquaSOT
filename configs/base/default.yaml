@@ -300,7 +300,7 @@ training:
   # Gradient clipping
   grad_clip:
     enabled: true
-    max_norm: 1.0
+    max_norm: 1.0  # Higher performance: 2.0 (larger batch more stable gradients)
     norm_type: 2
 
   # Loss weights
@@ -335,11 +335,11 @@ training:
 
   # Loss weight scheduling
   loss_schedule:
-    enabled: true
+    enabled: false  # Default disabled for stability, enable for curriculum learning
     type: linear  # linear, step, cosine
     max_epoch: 60
 
-    # Target weights at end of training
+    # Target weights at end of training (if enabled)
     target_weights:
       fusion_box: 3.0
       weak3d_cycle: 1.0
