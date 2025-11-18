@@ -12,7 +12,12 @@ from .rgb_transforms import (
     RandomHorizontalFlip,
     Normalize,
     ToTensor,
-    RGBTransformPipeline,
+    # Bbox-aware versions
+    ColorJitterBboxAware,
+    RandomBlurBboxAware,
+    RandomOcclusionBboxAware,
+    RandomHorizontalFlipBboxAware,
+    NormalizeBboxAware,
 )
 
 from .sonar_transforms import (
@@ -21,7 +26,15 @@ from .sonar_transforms import (
     SectorOcclusion,
     IntensityNormalization,
     FanMaskApplication,
-    SonarTransformPipeline,
+    LogPolarTransform,
+    letterbox_resize,
+    # Bbox-aware versions
+    SpeckleNoiseBboxAware,
+    RadialScalingJitterBboxAware,
+    SectorOcclusionBboxAware,
+    IntensityNormalizationBboxAware,
+    FanMaskApplicationBboxAware,
+    LogPolarTransformBboxAware,
 )
 
 from .sonar_geometry import (
@@ -34,30 +47,46 @@ from .sonar_geometry import (
 from .logpolar import (
     LogPolarTransform,
     LogPolarPreprocessor,
+    transform_bboxes_logpolar,
+    transform_bboxes_logpolar_inverse,
 )
 
 __all__ = [
-    # RGB transforms
+    # RGB transforms (legacy names)
     'ColorJitter',
     'RandomBlur',
     'RandomOcclusion',
     'RandomHorizontalFlip',
     'Normalize',
     'ToTensor',
-    'RGBTransformPipeline',
-    # Sonar transforms
+    # RGB transforms (bbox-aware)
+    'ColorJitterBboxAware',
+    'RandomBlurBboxAware',
+    'RandomOcclusionBboxAware',
+    'RandomHorizontalFlipBboxAware',
+    'NormalizeBboxAware',
+    # Sonar transforms (legacy names)
     'SpeckleNoise',
     'RadialScalingJitter',
     'SectorOcclusion',
     'IntensityNormalization',
     'FanMaskApplication',
-    'SonarTransformPipeline',
+    'LogPolarTransform',
+    'letterbox_resize',
+    # Sonar transforms (bbox-aware)
+    'SpeckleNoiseBboxAware',
+    'RadialScalingJitterBboxAware',
+    'SectorOcclusionBboxAware',
+    'IntensityNormalizationBboxAware',
+    'FanMaskApplicationBboxAware',
+    'LogPolarTransformBboxAware',
     # Sonar geometry
     'generate_fan_mask',
     'compute_radial_weights',
     'compute_angular_resolution',
     'SonarGeometryHandler',
     # Log-polar
-    'LogPolarTransform',
     'LogPolarPreprocessor',
+    'transform_bboxes_logpolar',
+    'transform_bboxes_logpolar_inverse',
 ]

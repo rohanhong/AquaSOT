@@ -1,11 +1,5 @@
 # ==============================================================================
 # RGB-Only Pretraining Configuration (Stage 1)
-#
-# Pretrain the RGB branch independently before full multi-modal training.
-# Useful for transfer learning and component-wise analysis.
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-11
 # ==============================================================================
 
 _base_: ../base/default.yaml
@@ -16,8 +10,8 @@ _base_: ../base/default.yaml
 # ------------------------------------------------------------------------------
 experiment:
   name: aquasot3d_pretrain_rgb
-  tags: [multiseq, rgb_only, pretrain, single_modal]
-  notes: "RGB-only pretraining for transfer learning across 9 training sequences"
+  tags: [multiseq, rgb_only, pretrain]
+  notes: "RGB-only pretraining with bbox-aware augmentation"
   group: pretraining
 
 
@@ -32,11 +26,10 @@ data:
   # Inherits from default.yaml (num_workers=8, prefetch_factor=2)
   # Higher performance: num_workers=24, prefetch_factor=3 (Xeon W9-3475X 36C/72T)
 
-  # Augmentation for RGB-only (domain-specific transforms)
   augmentation:
     enabled: true
+    type: TrackingAugmentationBboxAware
 
-    # RGB-specific transforms (optical imagery)
     rgb:
       enable_color_jitter: true
       brightness: 0.3
@@ -53,7 +46,6 @@ data:
       occlusion_min_size: 0.05
       occlusion_max_size: 0.3
 
-    # Sonar disabled for RGB-only pretraining
     sonar:
       enable_speckle: false
       enable_radial_jitter: false
@@ -64,20 +56,18 @@ data:
 # Model Configuration
 # ------------------------------------------------------------------------------
 model:
-  # Disable sonar branch and fusion
   backbone:
     sonar:
-      type: null  # Disable sonar encoder
+      type: null
 
   fusion:
-    type: null  # Disable fusion
+    type: null
 
   temporal:
     enabled: true
-    num_layers: 8  # Increased for full training (vs. 2 in test)
+    num_layers: 8
 
   heads:
-    # Only RGB head enabled
     rgb_box:
       type: BoxHead
       in_channels: 768
@@ -120,7 +110,6 @@ training:
     max_norm: 1.0  # Higher performance: 2.0 (larger batch more stable gradients)
     norm_type: 2
 
-  # Loss weights - RGB only
   loss_weights:
     rgb_box: 1.0
     rgb_cls: 0.5
@@ -136,7 +125,6 @@ training:
     quality_fusion_loss: 0.0
     temporal_smooth: 0.05
 
-  # Disable weight schedule to prevent fusion_box weight increase
   loss_schedule:
     enabled: false
 

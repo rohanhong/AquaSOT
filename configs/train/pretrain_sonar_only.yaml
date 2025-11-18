@@ -1,11 +1,5 @@
 # ==============================================================================
 # Sonar-Only Pretraining Configuration (Stage 2)
-#
-# Pretrain the sonar branch independently to learn sonar-specific features.
-# Helps initialize the sonar encoder before multi-modal fusion training.
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-11
 # ==============================================================================
 
 _base_: ../base/default.yaml
@@ -16,8 +10,8 @@ _base_: ../base/default.yaml
 # ------------------------------------------------------------------------------
 experiment:
   name: aquasot3d_pretrain_sonar
-  tags: [multiseq, sonar_only, pretrain, single_modal]
-  notes: "Sonar-only pretraining with log-polar preprocessing across 9 training sequences"
+  tags: [multiseq, sonar_only, pretrain]
+  notes: "Sonar-only pretraining with bbox-aware augmentation"
   group: pretraining
 
 
@@ -32,27 +26,20 @@ data:
   # Inherits from default.yaml (num_workers=8, prefetch_factor=2)
   # Higher performance: num_workers=24, prefetch_factor=3 (Xeon W9-3475X 36C/72T)
 
-  # Augmentation for Sonar-only (acoustic-specific transforms)
   augmentation:
     enabled: true
+    type: TrackingAugmentationBboxAware
 
-    # RGB disabled for Sonar-only pretraining
     rgb:
       enable_color_jitter: false
       enable_blur: false
-      enable_occlusion: false
 
-    # Sonar-specific transforms (acoustic imagery with fan geometry)
     sonar:
       enable_speckle: true
       speckle_level: 0.1
       speckle_prob: 0.5
 
-      # DISABLED: RadialScalingJitter has bbox synchronization bug
-      # Geometric transform modifies image coordinates but does not update bbox
-      # This causes ~19% IoU loss (proven mathematically)
-      # Will be re-enabled after implementing bbox-aware transform in Level 2 fix
-      enable_radial_jitter: false
+      enable_radial_jitter: false  # Conservative: disabled until validated
       radial_scale_range: [0.9, 1.1]
       radial_jitter_prob: 0.3
 
@@ -61,25 +48,41 @@ data:
       sector_max_angle: 40.0
       sector_occlusion_prob: 0.2
 
+      normalization_mode: adaptive
+      fov_angle: 130.0
+
+    # Log-polar transform in augmentation (single transform approach)
+    use_logpolar: true
+    logpolar_config:
+      output_height: 224  # Match ViT input size
+      output_width: 224
+      fov_angle: 130.0
+      alpha: 1.0
+      beta: 1.0
+
 
 # ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
 model:
-  # Disable RGB branch and fusion
   backbone:
     rgb:
-      type: null  # Disable RGB backbone
+      type: null
+
+    sonar:
+      img_size: [224, 224]
+      sonar_fov_angle: 130.0
+      max_range_pixels: 224
+      use_logpolar: false  # Disabled: augmentation already applies log-polar
 
   fusion:
-    type: null  # Disable fusion
+    type: null
 
   temporal:
     enabled: true
-    num_layers: 8  # Increased for full training (vs. 2 in test)
+    num_layers: 8
 
   heads:
-    # Only sonar head enabled
     rgb_box:
       type: null
 
@@ -122,7 +125,6 @@ training:
     max_norm: 1.0  # Higher performance: 2.0 (larger batch more stable gradients)
     norm_type: 2
 
-  # Loss weights - Sonar only
   loss_weights:
     rgb_box: 0.0
     rgb_cls: 0.0
@@ -138,7 +140,6 @@ training:
     quality_fusion_loss: 0.0
     temporal_smooth: 0.05
 
-  # Disable weight schedule to prevent fusion_box weight increase
   loss_schedule:
     enabled: false
 

@@ -21,12 +21,20 @@ experiment:
 
 
 # ------------------------------------------------------------------------------
+# Data Configuration
+# ------------------------------------------------------------------------------
+data:
+  augmentation:
+    use_logpolar: false  # Disable log-polar in augmentation
+
+
+# ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
 model:
   backbone:
     sonar:
-      use_logpolar: false  # Disable log-polar
+      use_logpolar: false  # Disable log-polar in model (already false in train.yaml)
 
 
 # ------------------------------------------------------------------------------

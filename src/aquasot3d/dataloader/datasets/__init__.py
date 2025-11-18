@@ -28,6 +28,12 @@ from .augmentation import (
     TemplateSearchAugmentation,
     NoAugmentation,
     build_augmentation,
+    # Backward compatibility aliases
+    BaseAugmentationBboxAware,
+    TrackingAugmentationBboxAware,
+    TemplateSearchAugmentationBboxAware,
+    NoAugmentationBboxAware,
+    build_augmentation_bbox_aware,
 )
 
 __all__ = [
@@ -50,4 +56,10 @@ __all__ = [
     'TemplateSearchAugmentation',
     'NoAugmentation',
     'build_augmentation',
+    # Backward compatibility aliases
+    'BaseAugmentationBboxAware',
+    'TrackingAugmentationBboxAware',
+    'TemplateSearchAugmentationBboxAware',
+    'NoAugmentationBboxAware',
+    'build_augmentation_bbox_aware',
 ]

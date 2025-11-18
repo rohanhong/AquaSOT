@@ -16,6 +16,7 @@ import timm
 
 from aquasot3d.core import BACKBONE_REGISTRY, BaseModule
 from aquasot3d.dataloader.transforms import LogPolarTransform, SonarGeometryHandler
+from aquasot3d.dataloader.transforms.logpolar import transform_bboxes_logpolar
 
 
 @BACKBONE_REGISTRY.register("Sonar_Encoder")
@@ -63,7 +64,7 @@ class SonarEncoder(BaseModule):
         pretrained_path: Optional[str] = None,
         use_logpolar: bool = True,
         learnable_logpolar: bool = True,
-        img_size: Tuple[int, int] = (376, 682),
+        img_size: Optional[Tuple[int, int]] = None,
         embed_dim: int = 384,
         depth: int = 6,
         num_heads: int = 6,
@@ -74,13 +75,23 @@ class SonarEncoder(BaseModule):
     ):
         super().__init__()
 
+        # CRITICAL FIX (Audit 2025111901): NO hardcoded dimensions!
+        # Dataset has 5 different resolutions: 682x376, 684x377, 680x375, 909x501, 912x503
+        # img_size is optional - if None, use reasonable default for initialization
+        # Both SonarGeometryHandler and LogPolarTransform support dynamic sizing
+        if img_size is None:
+            # Use median resolution as initialization default (auto-adapts on first forward)
+            img_size = (512, 512)
+            self.logger.info("img_size not specified, using default (512, 512) for initialization. "
+                           "Will auto-adapt to actual input size during forward pass.")
+
         self.encoder_type = encoder_type
         self.model_name = model_name
         self.pretrained = pretrained
         self.pretrained_path = pretrained_path
         self.use_logpolar = use_logpolar
         self.learnable_logpolar = learnable_logpolar
-        self.img_size = img_size
+        self.img_size = img_size  # Will be updated on first forward pass
         self.embed_dim = embed_dim
         self.depth = depth
         self.num_heads = num_heads
@@ -334,20 +345,44 @@ class SonarEncoder(BaseModule):
         self,
         template: torch.Tensor,
         search: torch.Tensor,
+        template_bbox: Optional[torch.Tensor] = None,
+        search_bbox: Optional[torch.Tensor] = None,
         return_separate: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for template-search paradigm.
 
+        CRITICAL UPDATE (Audit 2025111801 Phase 5):
+        Now accepts and transforms bboxes through log-polar transform,
+        maintaining bbox-image synchronization for tracking.
+
         Args:
             template: Template sonar frame (B, 1, H, W)
             search: Search region sonar frame (B, 1, H, W)
+            template_bbox: Optional template bboxes (B, 4) in format [x, y, w, h]
+            search_bbox: Optional search region bboxes (B, 4) in format [x, y, w, h]
             return_separate: If True, process separately
 
         Returns:
-            Dictionary containing encoded features and geometry info
+            Dictionary containing:
+                - features: Encoded features
+                - template_features: Template features
+                - search_features: Search features
+                - template_bbox: Transformed template bboxes (if provided)
+                - search_bbox: Transformed search bboxes (if provided)
+                - template_radial_profile: Radial profile (if enabled)
+                - search_radial_profile: Radial profile (if enabled)
+                - geometry_info: Sonar geometry metadata
         """
         B = template.shape[0]
+
+        # CRITICAL FIX (Audit 2025111901): Dynamic size detection
+        # Update img_size from actual input dimensions if different
+        actual_H, actual_W = template.shape[2], template.shape[3]
+        if self.img_size != (actual_H, actual_W):
+            self.img_size = (actual_H, actual_W)
+            # Note: Both geometry_handler and logpolar_transform will auto-adapt
+            # No need to reinitialize them - they regenerate geometry on size mismatch
 
         # Apply geometry handler (fan mask and radial weights)
         template_geo = self.geometry_handler(template)
@@ -359,11 +394,68 @@ class SonarEncoder(BaseModule):
         if self.use_logpolar:
             template_lp = self.logpolar_transform(template_masked)
             search_lp = self.logpolar_transform(search_masked)
+
+            # CRITICAL FIX (Audit 2025111801 Phase 5): Transform bboxes to log-polar space
+            # This ensures bbox-image synchronization for tracking
+            if template_bbox is not None:
+                # Get current alpha/beta from learnable parameters
+                import torch.nn.functional as F
+                alpha = F.softplus(self.logpolar_transform.alpha) if self.logpolar_transform.learnable_scales else self.logpolar_transform.alpha
+                beta = F.softplus(self.logpolar_transform.beta) if self.logpolar_transform.learnable_scales else self.logpolar_transform.beta
+
+                template_bbox = transform_bboxes_logpolar(
+                    bboxes=template_bbox,
+                    sensor_pos=(self.logpolar_transform.cx, self.logpolar_transform.cy),
+                    fov_angle=self.sonar_fov_angle,
+                    max_range=self.max_range_pixels,
+                    alpha=alpha.item() if torch.is_tensor(alpha) else alpha,
+                    beta=beta.item() if torch.is_tensor(beta) else beta,
+                    output_height=224,  # Match log-polar output size
+                    output_width=224,
+                    bbox_format='xywh'
+                )
+
+            if search_bbox is not None:
+                # Get current alpha/beta from learnable parameters
+                import torch.nn.functional as F
+                alpha = F.softplus(self.logpolar_transform.alpha) if self.logpolar_transform.learnable_scales else self.logpolar_transform.alpha
+                beta = F.softplus(self.logpolar_transform.beta) if self.logpolar_transform.learnable_scales else self.logpolar_transform.beta
+
+                search_bbox = transform_bboxes_logpolar(
+                    bboxes=search_bbox,
+                    sensor_pos=(self.logpolar_transform.cx, self.logpolar_transform.cy),
+                    fov_angle=self.sonar_fov_angle,
+                    max_range=self.max_range_pixels,
+                    alpha=alpha.item() if torch.is_tensor(alpha) else alpha,
+                    beta=beta.item() if torch.is_tensor(beta) else beta,
+                    output_height=224,  # Match log-polar output size
+                    output_width=224,
+                    bbox_format='xywh'
+                )
         else:
             # Resize to match encoder input size (224x224 for ViT)
             import torch.nn.functional as F
             template_lp = F.interpolate(template_masked, size=(224, 224), mode='bilinear', align_corners=False)
             search_lp = F.interpolate(search_masked, size=(224, 224), mode='bilinear', align_corners=False)
+
+            # If not using log-polar, scale bboxes proportionally for resize
+            if template_bbox is not None:
+                scale_h = 224 / self.img_size[0]
+                scale_w = 224 / self.img_size[1]
+                template_bbox = template_bbox.clone()
+                template_bbox[:, 0] *= scale_w  # x
+                template_bbox[:, 1] *= scale_h  # y
+                template_bbox[:, 2] *= scale_w  # w
+                template_bbox[:, 3] *= scale_h  # h
+
+            if search_bbox is not None:
+                scale_h = 224 / self.img_size[0]
+                scale_w = 224 / self.img_size[1]
+                search_bbox = search_bbox.clone()
+                search_bbox[:, 0] *= scale_w  # x
+                search_bbox[:, 1] *= scale_h  # y
+                search_bbox[:, 2] *= scale_w  # w
+                search_bbox[:, 3] *= scale_h  # h
 
         # Adapt input channels (1 -> 3)
         template_rgb = self.input_adapter(template_lp)
@@ -411,6 +503,12 @@ class SonarEncoder(BaseModule):
             'fov_angle': self.sonar_fov_angle,
             'max_range': self.max_range_pixels,
         }
+
+        # Add transformed bboxes to outputs (CRITICAL for tracking)
+        if template_bbox is not None:
+            outputs['template_bbox'] = template_bbox
+        if search_bbox is not None:
+            outputs['search_bbox'] = search_bbox
 
         return outputs
 

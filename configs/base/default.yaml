@@ -1,11 +1,5 @@
 # ==============================================================================
 # AquaSOT-3D Default Configuration
-#
-# This is the base configuration file containing all default parameters for
-# the AquaSOT-3D multi-modal tracking system.
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-10
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -37,62 +31,48 @@ system:
 # Data Configuration
 # ------------------------------------------------------------------------------
 data:
-  # Multi-sequence dataset configuration (recommended)
   data_root: data
   train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
   val_sequences: [uuv3, uuv6, uuv10]
   test_sequences: [uuv3, uuv6, uuv10]
 
-  # Legacy single-sequence paths (deprecated, maintained for backward compatibility)
-  # If train_root is specified, it will be parsed into data_root + [sequence] with a deprecation warning
   train_root: null
   val_root: null
   test_root: null
 
-  # Dataset splits
   train_split: train
   val_split: val
   test_split: test
 
-  # Dataloader settings
   num_workers: 8  # Higher performance: 24 (Xeon W9-3475X 36C/72T)
   pin_memory: true
   prefetch_factor: 2  # Higher performance: 3 (with more workers)
   persistent_workers: true
-  use_sequence_grouping: true  # Group same-sequence samples in batches (required for temporal training)
+  use_sequence_grouping: true
 
-  # Image sizes (must be divisible by patch_size=16 for ViT)
-  template_size: 128  # 128 = 16 * 8
-  search_size: 256    # 256 = 16 * 16
+  template_size: 128
+  search_size: 256
 
-  # Template-search pair sampling
-  template_search_gap: 30  # Maximum frame gap between template and search
+  template_search_gap: 30
 
-  # Temporal sequence sampling for Vision-Mamba
-  # - 1: Single-frame pairs (backward compatible, for pretraining stages)
-  # - 3-5: Multi-frame sequences (required for Stage 3 fusion/temporal training)
-  search_sequence_length: 1  # Override to 3-5 in Stage 3 configs
+  search_sequence_length: 1  # Override to 3-5 for temporal training
 
-  # Data augmentation (training)
+  # Data augmentation (legacy params, override in specific configs)
   augmentation:
     enabled: true
 
-    # Color jitter
     brightness: 0.2
     contrast: 0.2
     saturation: 0.2
     hue: 0.1
 
-    # Geometric transforms
-    rotation: 15.0  # degrees
+    rotation: 15.0
     scale_range: [0.8, 1.2]
-    translation_range: [0.1, 0.1]  # fraction of image size
+    translation_range: [0.1, 0.1]
 
-    # Flip
     horizontal_flip: 0.5
     vertical_flip: 0.0
 
-    # Occlusion simulation
     random_erase: 0.3
     erase_ratio: [0.02, 0.2]
 
@@ -108,69 +88,57 @@ data:
 # Model Architecture Configuration
 # ------------------------------------------------------------------------------
 model:
-  # Model type
   type: AquaSOT3DTracker
 
-  # Backbone configuration
   backbone:
-    # RGB backbone
     rgb:
-      type: vit_rgb  # vit_rgb, convnext_rgb
+      type: vit_rgb
       model_name: vit_base_patch16_224
       pretrained: true
-      pretrained_path: null  # If null, use timm default
+      pretrained_path: null
       freeze_bn: false
-      output_layers: [9, 11]  # Which layers to extract features from
+      output_layers: [9, 11]
       output_dim: 768
 
-    # Sonar encoder
     sonar:
       type: sonar
       encoder_type: vit
-      model_name: vit_base_patch16_224  # Match RGB backbone architecture
+      model_name: vit_base_patch16_224
       in_channels: 1
       base_channels: 64
       num_stages: 3
-      use_logpolar: true  # Enable log-polar transform
+      use_logpolar: true
       logpolar:
         radial_bins: 128
         angular_bins: 360
         min_radius: 1.0
         max_radius: 100.0
-        align_corners: true  # True for backward compatibility, False recommended for new training
-      output_dim: 768  # Match RGB embedding dim
+        align_corners: true
+      output_dim: 768
 
-  # Fusion configuration (G²-DCMA)
   fusion:
     type: g2_dcma
     embed_dim: 768
     num_heads: 8
     num_layers: 2
 
-    # Geometric gating
     use_geometry_gating: true
-    geometry_gate_type: adaptive  # adaptive, fixed, learned
+    geometry_gate_type: adaptive
 
-    # Quality-aware gating
     use_quality_gating: true
     quality_threshold: 0.5
 
-    # Deformable attention
     use_deformable: true
     num_points: 4
     num_levels: 1
 
-    # Dual consistency
     component_consistency_weight: 0.1
     representation_consistency_weight: 0.1
 
-  # Temporal modeling (Vision-Mamba)
   temporal:
-    type: mamba  # mamba, transformer, or artrack
+    type: mamba
     enabled: true
-    # EMA aggregation for long-range temporal stability (optional enhancement)
-    aggregation: false  # Set true to add EMA smoothing on top of Vision-Mamba
-    # Module parameters (passed to VisionMambaHead.__init__)
+    aggregation: false
     num_layers: 4
     d_state: 16
     d_conv: 4
@@ -179,14 +147,11 @@ model:
     use_occlusion_gating: true
     dropout: 0.1
     max_spatial_size: 32
-    # Aggregator parameters (used when aggregation=true)
     aggregator:
-      momentum: 0.9  # EMA smoothing factor
-      gate_threshold: 0.5  # Quality threshold for gating
+      momentum: 0.9
+      gate_threshold: 0.5
 
-  # Prediction heads
   heads:
-    # RGB box head
     rgb_box:
       type: BoxHead
       in_channels: 768
@@ -194,7 +159,6 @@ model:
       num_layers: 3
       output_format: cxcywh
 
-    # Sonar box head
     sonar_box:
       type: BoxHead
       in_channels: 768
@@ -202,7 +166,6 @@ model:
       num_layers: 3
       output_format: cxcywh
 
-    # Fusion box head
     fusion_box:
       type: FusionHead
       rgb_channels: 768
@@ -211,57 +174,25 @@ model:
       num_layers: 3
       output_format: cxcywh
 
-    # Weak 3D estimation head
     weak3d:
       type: Weak3DHead
       in_channels: 768
       hidden_dim: 256
-      output_dim: 3  # X, Y, Z
+      output_dim: 3
       use_cyclic_loss: true
       cycle_weight: 0.5
-
-  # CRITICAL FIX (Audit 2025111414 Finding 5): Quality and projector configs
-  # These sections are forwarded to the tracker whenever non-empty (no 'type' key required)
-
-  # Optional: Configure quality estimators (SNR, sharpness, gating thresholds)
-  # Uncomment and customize to tune quality-aware fusion behavior:
-  # quality:
-  #   rgb:
-  #     method: laplacian  # laplacian, gradient, entropy
-  #     threshold: 0.5
-  #   sonar:
-  #     method: snr  # snr, intensity_variance
-  #     snr_threshold: 10.0
-  #   adaptive_weighting:
-  #     temperature: 1.0
-  #     min_weight: 0.1
-
-  # Optional: Configure geometric projectors (3D→2D projection strategy)
-  # Uncomment and customize to tune weak-3D cyclic projection:
-  # projector:
-  #   rgb:
-  #     projection_type: perspective  # perspective, mlp, linear
-  #     hidden_dim: 256
-  #   sonar:
-  #     projection_type: mlp  # mlp recommended for sonar (non-standard geometry)
-  #     hidden_dim: 256
 
 
 # ------------------------------------------------------------------------------
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
-  # CRITICAL FIX (Audit 2025111704 Finding 2): Stage 1/2 checkpoint initialization
-  # When set, these checkpoints are loaded into backbones BEFORE training starts
-  # This enables the three-stage curriculum: pretrain RGB → pretrain Sonar → fusion
   init_backbones:
-    rgb: null  # Path to Stage 1 RGB checkpoint (e.g., outputs/pretrain_rgb/checkpoints/checkpoint_best.pth)
-    sonar: null  # Path to Stage 2 Sonar checkpoint (e.g., outputs/pretrain_sonar/checkpoints/checkpoint_best.pth)
+    rgb: null
+    sonar: null
 
-  # Total training epochs
   num_epochs: 60
 
-  # Batch sizes
   batch_size: 16  # Higher performance: 32 (A4000 16GB, 2x VRAM for single-modal)
   val_batch_size: 32  # Higher performance: 64
   gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 32)

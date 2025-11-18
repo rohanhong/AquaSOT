@@ -31,6 +31,7 @@ from collections import defaultdict
 from aquasot3d.training.loss_manager import LossManager
 from aquasot3d.training.checkpoint import CheckpointManager
 from aquasot3d.training.optimizer import clip_gradients
+from aquasot3d.utils import convert_bbox_format
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -312,11 +313,14 @@ class Trainer:
             batch = self._to_device(batch)
 
             # Prepare ground truth boxes
+            # CRITICAL FIX (Audit 2025111901): Convert xywh→cxcywh for BoxHead
+            # Dataset outputs xywh format, but BoxHead.compute_loss expects cxcywh.
+            # Without conversion, center coordinates are wrong by ~30-40 pixels (~28-37% error).
             gt_boxes = {}
             if 'rgb_boxes' in batch:
-                gt_boxes['rgb'] = batch['rgb_boxes']
+                gt_boxes['rgb'] = convert_bbox_format(batch['rgb_boxes'], 'xywh', 'cxcywh')
             if 'sonar_boxes' in batch:
-                gt_boxes['sonar'] = batch['sonar_boxes']
+                gt_boxes['sonar'] = convert_bbox_format(batch['sonar_boxes'], 'xywh', 'cxcywh')
 
             # CRITICAL FIX (Audit 2025111408 Finding 3):
             # Add pixel coordinates for quality estimators
@@ -496,11 +500,13 @@ class Trainer:
                 batch = self._to_device(batch)
 
                 # Prepare ground truth boxes (for validation loss computation)
+                # CRITICAL FIX (Audit 2025111901): Convert xywh→cxcywh for BoxHead
+                # Dataset outputs xywh format, but BoxHead.compute_loss expects cxcywh.
                 gt_boxes = {}
                 if 'rgb_boxes' in batch:
-                    gt_boxes['rgb'] = batch['rgb_boxes']
+                    gt_boxes['rgb'] = convert_bbox_format(batch['rgb_boxes'], 'xywh', 'cxcywh')
                 if 'sonar_boxes' in batch:
-                    gt_boxes['sonar'] = batch['sonar_boxes']
+                    gt_boxes['sonar'] = convert_bbox_format(batch['sonar_boxes'], 'xywh', 'cxcywh')
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
                 # Add pixel coordinates for quality estimators

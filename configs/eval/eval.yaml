@@ -1,16 +1,5 @@
 # ==============================================================================
 # Multi-Sequence Evaluation Configuration
-#
-# Evaluation configuration for testing across all validation sequences.
-# Uses 3 validation sequences: uuv3, uuv6, uuv10
-#
-# Usage:
-#   python scripts/eval.py \
-#     --config configs/eval/eval.yaml \
-#     --checkpoint outputs/train/checkpoints/checkpoint_best.pth
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-14
 # ==============================================================================
 
 _base_: ../base/default.yaml
@@ -21,8 +10,8 @@ _base_: ../base/default.yaml
 # ------------------------------------------------------------------------------
 experiment:
   name: aquasot3d_eval_multiseq
-  tags: [evaluation, multimodal, multiseq]
-  notes: "Multi-sequence evaluation on uuv3, uuv6, uuv10"
+  tags: [evaluation, multimodal]
+  notes: "Multi-sequence evaluation on validation set"
   group: multiseq_evaluation
 
 
@@ -30,16 +19,12 @@ experiment:
 # Data Configuration (Multi-Sequence)
 # ------------------------------------------------------------------------------
 data:
-  # Multi-sequence evaluation
   data_root: data
   test_sequences: [uuv3, uuv6, uuv10]
 
-  # Legacy paths set to null (not used)
   test_root: null
 
-  # CRITICAL FIX (Audit 2025111705 Finding 2): Enable multi-frame temporal inference
-  # Evaluation must use sequences to properly test Vision-Mamba/state management
-  search_sequence_length: 5  # Match training
+  search_sequence_length: 5  # Match training temporal sequence length
   use_sequence_grouping: true
 
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
@@ -95,13 +80,12 @@ evaluation:
 # ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
-# Override temporal aggregation to match training (Stage 3 fusion inference)
 model:
   temporal:
     aggregation: true
     aggregator:
-      momentum: 0.9  # EMA smoothing factor (match training)
-      gate_threshold: 0.5  # Quality threshold for gating (match training)
+      momentum: 0.9
+      gate_threshold: 0.5
 
 
 # ------------------------------------------------------------------------------

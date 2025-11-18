@@ -1,11 +1,5 @@
 # ==============================================================================
-# Multi-Sequence Training Configuration
-#
-# Full multi-modal training with RGB + Sonar across multiple sequences.
-# Uses the new multi-sequence dataset architecture with 9 training sequences.
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-14
+# Multi-Sequence Training Configuration (Stage 3)
 # ==============================================================================
 
 _base_: ../base/default.yaml
@@ -16,8 +10,8 @@ _base_: ../base/default.yaml
 # ------------------------------------------------------------------------------
 experiment:
   name: aquasot3d_multiseq_full
-  tags: [production, multimodal, fusion, multiseq]
-  notes: "Multi-sequence training across 9 sequences (uuv1,2,4,5,7,8,9,11,12)"
+  tags: [production, multimodal, fusion]
+  notes: "Full multi-modal training with bbox-aware augmentation"
   group: multiseq_training
 
 
@@ -25,28 +19,23 @@ experiment:
 # Data Configuration (Multi-Sequence)
 # ------------------------------------------------------------------------------
 data:
-  # Multi-sequence configuration (replaces train_root/val_root)
   data_root: data
   train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
   val_sequences: [uuv3, uuv6, uuv10]
 
-  # Legacy paths set to null (not used in multi-sequence mode)
   train_root: null
   val_root: null
 
-  # CRITICAL FIX (Audit 2025111705 Finding 1): Enable multi-frame temporal training
-  # Stage 3 must use sequences (not pairs) to train Vision-Mamba temporal modeling
-  search_sequence_length: 5  # 5-frame temporal (VRAM-intensive: 5x single-frame)
+  search_sequence_length: 5  # Multi-frame temporal for Vision-Mamba
   use_sequence_grouping: true
 
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
   prefetch_factor: 2  # Higher performance: 3
 
-  # Multi-modal augmentation
   augmentation:
     enabled: true
+    type: TrackingAugmentationBboxAware
 
-    # RGB-specific transforms
     rgb:
       enable_color_jitter: true
       brightness: 0.3
@@ -63,13 +52,12 @@ data:
       occlusion_min_size: 0.05
       occlusion_max_size: 0.3
 
-    # Sonar-specific transforms
     sonar:
       enable_speckle: true
       speckle_level: 0.1
       speckle_prob: 0.5
 
-      enable_radial_jitter: false  # Disabled due to bbox sync bug
+      enable_radial_jitter: false  # Conservative: disabled until validated
       radial_scale_range: [0.9, 1.1]
       radial_jitter_prob: 0.3
 
@@ -78,24 +66,36 @@ data:
       sector_max_angle: 40.0
       sector_occlusion_prob: 0.2
 
+      normalization_mode: adaptive
+      fov_angle: 130.0
+
+    use_logpolar: true
+    logpolar_config:
+      output_height: 224
+      output_width: 224
+      fov_angle: 130.0
+      alpha: 1.0
+      beta: 1.0
+
 
 # ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
 model:
-  # All components enabled
   backbone:
     rgb:
       type: vit_rgb
       model_name: vit_base_patch16_224
       pretrained: true
-      # Note: pretrained_path is auto-set from training.init_backbones.rgb
       output_dim: 768
+
     sonar:
       type: sonar
       encoder_type: vit
-      use_logpolar: true
-      # Note: pretrained_path is auto-set from training.init_backbones.sonar
+      img_size: [224, 224]
+      sonar_fov_angle: 130.0
+      max_range_pixels: 224
+      use_logpolar: false  # Disabled: augmentation already applies log-polar
       output_dim: 768
 
   fusion:
@@ -115,11 +115,10 @@ model:
     use_occlusion_gating: true
     dropout: 0.1
     max_spatial_size: 32
-    # Enable EMA aggregation for fusion training (Stage 3)
     aggregation: true
     aggregator:
-      momentum: 0.9  # EMA smoothing factor
-      gate_threshold: 0.5  # Quality threshold for gating
+      momentum: 0.9
+      gate_threshold: 0.5
 
   heads:
     rgb_box:
@@ -150,8 +149,6 @@ model:
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
-  # CRITICAL FIX (Audit 2025111704 Finding 2): Load Stage 1/2 pretrained weights
-  # Set these paths to enable the three-stage curriculum
   init_backbones:
     rgb: outputs/pretrain_rgb/checkpoints/checkpoint_best.pth
     sonar: outputs/pretrain_sonar/checkpoints/checkpoint_best.pth
@@ -179,7 +176,6 @@ training:
     max_norm: 1.0  # Higher performance: 2.0 (pretrained backbones more stable)
     norm_type: 2
 
-  # Full loss weights
   loss_weights:
     rgb_box: 1.0
     rgb_cls: 0.5
@@ -195,7 +191,6 @@ training:
     quality_fusion_loss: 0.2
     temporal_smooth: 0.05
 
-  # Loss schedule control (optional for curriculum learning)
   loss_schedule:
     enabled: false
 

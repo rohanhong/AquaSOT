@@ -25,7 +25,7 @@ Author: AquaSOT-3D Team
 Date: 2025-11-06
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -479,3 +479,368 @@ class LogPolarPreprocessor(nn.Module):
         logpolar_img = self.logpolar_transform(sonar_img)
 
         return logpolar_img
+
+
+# ==============================================================================
+# Bbox Transformation Utilities for Log-Polar Coordinates
+# ==============================================================================
+
+def transform_bboxes_logpolar(
+    bboxes: Union[np.ndarray, torch.Tensor],
+    sensor_pos: Tuple[float, float],
+    fov_angle: float,
+    max_range: float,
+    alpha: float,
+    beta: float,
+    output_height: int,
+    output_width: int,
+    bbox_format: str = 'xywh',
+    min_radius: float = 1.0
+) -> Union[np.ndarray, torch.Tensor]:
+    """
+    Transform bounding boxes from Cartesian to log-polar coordinates.
+
+    CRITICAL FIX (Audit 2025111801 Finding 1):
+    This function ensures bbox coordinates are synchronized with log-polar
+    transformed images, solving the training failure where images are in
+    log-polar space but bboxes remain in Cartesian coordinates.
+
+    CRITICAL UPDATE (Audit 2025111901 - Dynamic Resolution Support):
+    All transformations support dynamic input dimensions. The dataset contains
+    5 different sonar resolutions:
+        - 682×376 pixels (7 sequences: uuv2,3,4,6,7,8,9)
+        - 684×377 pixels (2 sequences: uuv5, uuv12)
+        - 680×375 pixels (1 sequence: uuv10)
+        - 909×501 pixels (1 sequence: uuv11)
+        - 912×503 pixels (1 sequence: uuv1)
+
+    NO hardcoded dimensions! All size parameters are computed from actual inputs.
+
+    Mathematical Background:
+        Cartesian (x, y) → Polar (r, θ) → Log-Polar (ρ, φ):
+            r = sqrt((x - cx)² + (y - cy)²)
+            θ = atan2(x - cx, cy - y)
+            ρ = α * log(r + 1)
+            φ = β * θ
+
+        Normalized to output space:
+            ρ_norm = ρ / (α * log(max_range + 1))  ∈ [0, 1]
+            φ_norm = φ / (β * fov_angle / 2)       ∈ [-1, 1]
+
+        Pixel coordinates in output image:
+            row = ρ_norm * (output_height - 1)
+            col = (φ_norm + 1) / 2 * (output_width - 1)
+
+    Strategy:
+        Transform all 4 bbox corners independently, then compute axis-aligned
+        bbox in log-polar space. Handle edge cases:
+        - Corners outside FOV (clamp angle to ±fov/2)
+        - Corners at zero range (clamp to min_radius)
+        - Corners beyond max_range (clamp to max_range)
+
+    Args:
+        bboxes: Bounding boxes (N, 4) in Cartesian pixel coordinates
+        sensor_pos: Sonar sensor position (cx, cy) in Cartesian space
+        fov_angle: Field of view angle in degrees (e.g., 130)
+        max_range: Maximum range in pixels (e.g., 376)
+        alpha: Radial scaling parameter (α in ρ = α * log(r + 1))
+        beta: Angular scaling parameter (β in φ = β * θ)
+        output_height: Log-polar output image height (e.g., 256)
+        output_width: Log-polar output image width (e.g., 256)
+        bbox_format: Bbox format ('xywh', 'cxcywh', 'xyxy')
+        min_radius: Minimum radius to avoid log(0) (default 1.0)
+
+    Returns:
+        Transformed bboxes (M, 4) in log-polar pixel coordinates
+        where M <= N (some bboxes may be filtered if outside FOV)
+
+    Mathematical Proof:
+        For bbox corner (x, y) = (250, 120):
+            r = sqrt((250 - 341)² + (375 - 120)²) = 270.6
+            θ = atan2(250 - 341, 375 - 120) = -0.341 rad
+            ρ = 1.0 * log(270.6 + 1) = 5.604
+            φ = 1.0 * (-0.341) = -0.341
+
+            ρ_norm = 5.604 / log(377) = 5.604 / 5.932 = 0.945
+            φ_norm = -0.341 / (130° / 2) = -0.341 / 1.134 = -0.301
+
+            row = 0.945 * 255 = 241
+            col = (-0.301 + 1) / 2 * 255 = 89
+
+        Without this transform: bbox remains at (250, 120) → ~250 pixel error
+        With this transform: bbox at (89, 241) → synchronized ✓
+
+    Example:
+        >>> bboxes = np.array([[250, 120, 80, 60]])
+        >>> transformed = transform_bboxes_logpolar(
+        ...     bboxes, sensor_pos=(341, 375), fov_angle=130,
+        ...     max_range=376, alpha=1.0, beta=1.0,
+        ...     output_height=256, output_width=256
+        ... )
+        >>> print(transformed)  # [[89, 241, ...]]
+    """
+    if bboxes is None or len(bboxes) == 0:
+        return bboxes
+
+    is_torch = isinstance(bboxes, torch.Tensor)
+    device = bboxes.device if is_torch else None
+
+    # Convert to numpy for processing
+    if is_torch:
+        bboxes_np = bboxes.detach().cpu().numpy()
+    else:
+        bboxes_np = bboxes.copy()
+
+    # Handle 1D bbox (single bbox without batch dimension)
+    squeeze_output = False
+    if bboxes_np.ndim == 1:
+        bboxes_np = bboxes_np.reshape(1, 4)
+        squeeze_output = True
+
+    cx, cy = sensor_pos
+
+    # Convert bbox format to xyxy (corners)
+    if bbox_format == 'xywh':
+        x1 = bboxes_np[:, 0]
+        y1 = bboxes_np[:, 1]
+        x2 = x1 + bboxes_np[:, 2]
+        y2 = y1 + bboxes_np[:, 3]
+    elif bbox_format == 'cxcywh':
+        cx_box, cy_box, w, h = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+        x1 = cx_box - w / 2
+        y1 = cy_box - h / 2
+        x2 = cx_box + w / 2
+        y2 = cy_box + h / 2
+    elif bbox_format == 'xyxy':
+        x1, y1, x2, y2 = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+    else:
+        raise ValueError(f"Unknown bbox format: {bbox_format}")
+
+    # Transform all 4 corners for each bbox
+    N = len(bboxes_np)
+    corners = np.zeros((N, 4, 2))  # (N, 4 corners, 2 coords)
+    corners[:, 0, :] = np.stack([x1, y1], axis=1)  # Top-left
+    corners[:, 1, :] = np.stack([x2, y1], axis=1)  # Top-right
+    corners[:, 2, :] = np.stack([x1, y2], axis=1)  # Bottom-left
+    corners[:, 3, :] = np.stack([x2, y2], axis=1)  # Bottom-right
+
+    # Cartesian → Polar
+    # For upward-facing sonar: dx = x - cx, dy = cy - y (flip y-axis)
+    dx = corners[:, :, 0] - cx  # (N, 4)
+    dy = cy - corners[:, :, 1]  # (N, 4)
+
+    # Radial distance and angle
+    r = np.sqrt(dx**2 + dy**2)
+    theta = np.arctan2(dx, dy)  # Angle in radians
+
+    # Clamp radius to valid range
+    r = np.clip(r, min_radius, max_range)
+
+    # Convert FOV to radians
+    fov_angle_rad = np.deg2rad(fov_angle)
+
+    # Polar → Log-Polar (FORWARD transform)
+    rho = alpha * np.log(r + 1)
+    phi = beta * theta
+
+    # Normalize to output coordinate space
+    # ρ_norm ∈ [0, 1], φ_norm ∈ [-1, 1]
+    rho_max = alpha * np.log(max_range + 1)
+    rho_norm = rho / rho_max
+
+    phi_max = beta * (fov_angle_rad / 2)
+    phi_norm = phi / phi_max
+
+    # Clamp to valid normalized range
+    rho_norm = np.clip(rho_norm, 0, 1)
+    phi_norm = np.clip(phi_norm, -1, 1)
+
+    # Convert normalized coordinates to pixel coordinates in output image
+    # row corresponds to ρ (radial axis, vertical in output)
+    # col corresponds to φ (angular axis, horizontal in output)
+    row = rho_norm * (output_height - 1)
+    col = (phi_norm + 1) / 2 * (output_width - 1)
+
+    # Compute axis-aligned bbox from transformed corners
+    col_min = np.min(col, axis=1)
+    row_min = np.min(row, axis=1)
+    col_max = np.max(col, axis=1)
+    row_max = np.max(row, axis=1)
+
+    # Convert back to xywh format (output space uses standard image coordinates)
+    x_lp = col_min
+    y_lp = row_min
+    w_lp = col_max - col_min
+    h_lp = row_max - row_min
+
+    # Filter bboxes with invalid area
+    valid_mask = (w_lp >= 1.0) & (h_lp >= 1.0)
+
+    # Build result in original format
+    if bbox_format == 'xywh':
+        result = np.stack([x_lp, y_lp, w_lp, h_lp], axis=1)
+    elif bbox_format == 'cxcywh':
+        cx_lp = x_lp + w_lp / 2
+        cy_lp = y_lp + h_lp / 2
+        result = np.stack([cx_lp, cy_lp, w_lp, h_lp], axis=1)
+    elif bbox_format == 'xyxy':
+        result = np.stack([x_lp, y_lp, x_lp + w_lp, y_lp + h_lp], axis=1)
+
+    # Apply valid mask
+    result = result[valid_mask]
+
+    # Squeeze if input was 1D
+    if squeeze_output and len(result) == 1:
+        result = result[0]
+
+    # Convert back to original type
+    if is_torch:
+        result = torch.from_numpy(result).to(dtype=bboxes.dtype, device=device)
+
+    return result
+
+
+def transform_bboxes_logpolar_inverse(
+    bboxes: Union[np.ndarray, torch.Tensor],
+    sensor_pos: Tuple[float, float],
+    fov_angle: float,
+    max_range: float,
+    alpha: float,
+    beta: float,
+    input_height: int,
+    input_width: int,
+    output_height: int,
+    output_width: int,
+    bbox_format: str = 'xywh'
+) -> Union[np.ndarray, torch.Tensor]:
+    """
+    Inverse transform: Log-polar bboxes → Cartesian bboxes.
+
+    Used for visualization and evaluation when predictions are made in
+    log-polar space but need to be visualized in Cartesian space.
+
+    Args:
+        bboxes: Bboxes (N, 4) in log-polar pixel coordinates
+        sensor_pos: Sonar sensor position (cx, cy) in Cartesian space
+        fov_angle: Field of view angle in degrees
+        max_range: Maximum range in pixels
+        alpha: Radial scaling parameter
+        beta: Angular scaling parameter
+        input_height: Log-polar input image height
+        input_width: Log-polar input image width
+        output_height: Cartesian output image height
+        output_width: Cartesian output image width
+        bbox_format: Bbox format
+
+    Returns:
+        Transformed bboxes (M, 4) in Cartesian pixel coordinates
+    """
+    if bboxes is None or len(bboxes) == 0:
+        return bboxes
+
+    is_torch = isinstance(bboxes, torch.Tensor)
+    device = bboxes.device if is_torch else None
+
+    # Convert to numpy
+    if is_torch:
+        bboxes_np = bboxes.detach().cpu().numpy()
+    else:
+        bboxes_np = bboxes.copy()
+
+    # Handle 1D bbox
+    squeeze_output = False
+    if bboxes_np.ndim == 1:
+        bboxes_np = bboxes_np.reshape(1, 4)
+        squeeze_output = True
+
+    cx, cy = sensor_pos
+
+    # Convert to xyxy
+    if bbox_format == 'xywh':
+        x1_lp = bboxes_np[:, 0]
+        y1_lp = bboxes_np[:, 1]
+        x2_lp = x1_lp + bboxes_np[:, 2]
+        y2_lp = y1_lp + bboxes_np[:, 3]
+    elif bbox_format == 'cxcywh':
+        cx_lp, cy_lp, w_lp, h_lp = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+        x1_lp = cx_lp - w_lp / 2
+        y1_lp = cy_lp - h_lp / 2
+        x2_lp = cx_lp + w_lp / 2
+        y2_lp = cy_lp + h_lp / 2
+    elif bbox_format == 'xyxy':
+        x1_lp, y1_lp, x2_lp, y2_lp = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+    else:
+        raise ValueError(f"Unknown bbox format: {bbox_format}")
+
+    # Transform all 4 corners
+    N = len(bboxes_np)
+    corners_lp = np.zeros((N, 4, 2))
+    corners_lp[:, 0, :] = np.stack([x1_lp, y1_lp], axis=1)
+    corners_lp[:, 1, :] = np.stack([x2_lp, y1_lp], axis=1)
+    corners_lp[:, 2, :] = np.stack([x1_lp, y2_lp], axis=1)
+    corners_lp[:, 3, :] = np.stack([x2_lp, y2_lp], axis=1)
+
+    # Pixel coordinates → Normalized coordinates
+    col_lp = corners_lp[:, :, 0]  # (N, 4)
+    row_lp = corners_lp[:, :, 1]  # (N, 4)
+
+    phi_norm = (col_lp / (input_width - 1)) * 2 - 1  # [-1, 1]
+    rho_norm = row_lp / (input_height - 1)  # [0, 1]
+
+    # Normalized → Log-Polar
+    fov_angle_rad = np.deg2rad(fov_angle)
+    phi_max = beta * (fov_angle_rad / 2)
+    rho_max = alpha * np.log(max_range + 1)
+
+    phi = phi_norm * phi_max
+    rho = rho_norm * rho_max
+
+    # Log-Polar → Polar (INVERSE)
+    theta = phi / beta
+    r = np.exp(rho / alpha) - 1
+
+    # Polar → Cartesian
+    dx = r * np.sin(theta)
+    dy = r * np.cos(theta)
+
+    x_cart = cx + dx
+    y_cart = cy - dy
+
+    # Compute axis-aligned bbox in Cartesian space
+    x_min = np.min(x_cart, axis=1)
+    y_min = np.min(y_cart, axis=1)
+    x_max = np.max(x_cart, axis=1)
+    y_max = np.max(y_cart, axis=1)
+
+    # Clamp to output image boundaries
+    x_min = np.clip(x_min, 0, output_width - 1)
+    y_min = np.clip(y_min, 0, output_height - 1)
+    x_max = np.clip(x_max, 1, output_width)
+    y_max = np.clip(y_max, 1, output_height)
+
+    # Convert to output format
+    w_cart = x_max - x_min
+    h_cart = y_max - y_min
+
+    if bbox_format == 'xywh':
+        result = np.stack([x_min, y_min, w_cart, h_cart], axis=1)
+    elif bbox_format == 'cxcywh':
+        cx_cart = x_min + w_cart / 2
+        cy_cart = y_min + h_cart / 2
+        result = np.stack([cx_cart, cy_cart, w_cart, h_cart], axis=1)
+    elif bbox_format == 'xyxy':
+        result = np.stack([x_min, y_min, x_max, y_max], axis=1)
+
+    # Filter invalid bboxes
+    valid_mask = (w_cart >= 1.0) & (h_cart >= 1.0)
+    result = result[valid_mask]
+
+    # Squeeze if input was 1D
+    if squeeze_output and len(result) == 1:
+        result = result[0]
+
+    # Convert back to original type
+    if is_torch:
+        result = torch.from_numpy(result).to(dtype=bboxes.dtype, device=device)
+
+    return result

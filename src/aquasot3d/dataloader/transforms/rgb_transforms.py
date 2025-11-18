@@ -1,20 +1,21 @@
 """
-RGB-Specific Data Augmentation Transforms
+Bbox-Aware RGB Transforms
 
-This module implements data augmentation techniques specifically designed
-for RGB camera images in underwater tracking scenarios:
-- Color jitter (hue, saturation, brightness, contrast)
-- Random blur and noise
-- Random occlusion (CutMix/CopyPaste style)
-- Geometric transforms (with bbox coordination)
-- Normalization to ImageNet statistics
+Refactored RGB augmentation transforms with explicit bbox coordinate
+synchronization, following the same architecture as Sonar transforms.
 
-Reference:
-    Standard augmentation practices from visual tracking literature,
-    adapted for underwater imagery characteristics.
+This module implements bbox-aware versions of RGB transforms:
+- Photometric: ColorJitter, RandomBlur, Normalize
+- Geometric: RandomHorizontalFlip, RandomOcclusion, RandomVerticalFlip
+
+CRITICAL (Audit 2025111901):
+- Unified architecture with Sonar transforms (same base classes)
+- Strict bbox format discipline (xywh throughout, converted to cxcywh only in trainer)
+- Dictionary interface: {'image': ..., 'bboxes': ...}
+- Perfect migration of git augmentation methods
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-19
 """
 
 from typing import Optional, Tuple, Union
@@ -22,24 +23,40 @@ import random
 import numpy as np
 import cv2
 import torch
-import torch.nn as nn
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 
+from .base import (
+    PhotometricTransform,
+    BboxAwareTransform,
+    validate_bboxes,
+)
 
-class ColorJitter:
+
+# ==============================================================================
+# Photometric Transforms (Bbox-Preserving)
+# ==============================================================================
+
+class ColorJitterBboxAware(PhotometricTransform):
     """
-    Random color jittering for RGB images.
+    Bbox-aware color jittering for RGB images.
 
     Randomly adjusts brightness, contrast, saturation, and hue to
-    simulate underwater lighting variations.
+    simulate underwater lighting variations. Preserves bbox coordinates
+    as this is a photometric-only transform.
 
     Args:
-        brightness: Brightness factor range (default: 0.2)
-        contrast: Contrast factor range (default: 0.2)
-        saturation: Saturation factor range (default: 0.2)
-        hue: Hue factor range (default: 0.1)
-        prob: Probability of applying jittering (default: 0.5)
+        brightness: Brightness factor range (default 0.2)
+        contrast: Contrast factor range (default 0.2)
+        saturation: Saturation factor range (default 0.2)
+        hue: Hue factor range (default 0.1)
+        prob: Probability of applying jittering (default 0.5)
+        bbox_format: Bbox format
+
+    Example:
+        >>> transform = ColorJitterBboxAware(brightness=0.2, prob=0.5)
+        >>> result = transform(image=rgb_img, bboxes=boxes)
+        >>> # result['bboxes'] unchanged, result['image'] has color jitter
     """
 
     def __init__(
@@ -49,8 +66,9 @@ class ColorJitter:
         saturation: float = 0.2,
         hue: float = 0.1,
         prob: float = 0.5,
+        bbox_format: str = 'xywh'
     ):
-        self.prob = prob
+        super().__init__(bbox_format=bbox_format, p=prob)
         self.jitter = T.ColorJitter(
             brightness=brightness,
             contrast=contrast,
@@ -58,33 +76,40 @@ class ColorJitter:
             hue=hue,
         )
 
-    def __call__(self, img: np.ndarray) -> np.ndarray:
+    def apply_to_image(self, image: np.ndarray) -> np.ndarray:
         """
-        Apply color jittering.
+        Apply color jittering to RGB image.
 
         Args:
-            img: RGB image (H, W, 3) in numpy format
+            image: RGB image (H, W, 3) in range [0, 255]
 
         Returns:
             Jittered image (H, W, 3)
         """
-        if random.random() < self.prob:
-            # Convert to PIL for torchvision transforms
-            img_pil = TF.to_pil_image(img)
-            img_pil = self.jitter(img_pil)
-            img = np.array(img_pil)
+        # Convert to PIL for torchvision transforms
+        img_pil = TF.to_pil_image(image.astype(np.uint8))
+        img_pil = self.jitter(img_pil)
+        jittered = np.array(img_pil, dtype=image.dtype)
 
-        return img
+        return jittered
 
 
-class RandomBlur:
+class RandomBlurBboxAware(PhotometricTransform):
     """
-    Random Gaussian blur to simulate water turbidity.
+    Bbox-aware random Gaussian blur for RGB images.
+
+    Simulates water turbidity and motion blur. Photometric-only transform
+    that preserves bbox coordinates.
 
     Args:
-        kernel_sizes: List of possible kernel sizes (default: [3, 5, 7])
-        sigma_range: Gaussian sigma range (default: (0.1, 2.0))
-        prob: Probability of applying blur (default: 0.3)
+        kernel_sizes: List of possible kernel sizes (default [3, 5, 7])
+        sigma_range: Gaussian sigma range (default (0.1, 2.0))
+        prob: Probability of applying blur (default 0.3)
+        bbox_format: Bbox format
+
+    Example:
+        >>> transform = RandomBlurBboxAware(kernel_sizes=[3, 5], prob=0.3)
+        >>> result = transform(image=rgb_img, bboxes=boxes)
     """
 
     def __init__(
@@ -92,40 +117,293 @@ class RandomBlur:
         kernel_sizes: list = [3, 5, 7],
         sigma_range: Tuple[float, float] = (0.1, 2.0),
         prob: float = 0.3,
+        bbox_format: str = 'xywh'
     ):
+        super().__init__(bbox_format=bbox_format, p=prob)
         self.kernel_sizes = kernel_sizes
         self.sigma_range = sigma_range
-        self.prob = prob
 
-    def __call__(self, img: np.ndarray) -> np.ndarray:
+    def apply_to_image(self, image: np.ndarray) -> np.ndarray:
         """
         Apply random Gaussian blur.
 
         Args:
-            img: RGB image (H, W, 3)
+            image: RGB image (H, W, 3)
 
         Returns:
             Blurred image (H, W, 3)
         """
-        if random.random() < self.prob:
-            kernel_size = random.choice(self.kernel_sizes)
-            sigma = random.uniform(*self.sigma_range)
-            img = cv2.GaussianBlur(img, (kernel_size, kernel_size), sigma)
+        kernel_size = random.choice(self.kernel_sizes)
+        sigma = random.uniform(*self.sigma_range)
+        blurred = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
 
-        return img
+        return blurred
 
 
-class RandomOcclusion:
+class NormalizeBboxAware(PhotometricTransform):
     """
-    Random occlusion augmentation (CutMix-style).
+    Bbox-aware normalization to ImageNet statistics.
 
-    Randomly masks rectangular regions to simulate temporary occlusions.
+    Normalizes RGB images to zero mean and unit variance using ImageNet
+    statistics. Does not affect bbox coordinates.
 
     Args:
-        min_size: Minimum occlusion size ratio (default: 0.05)
-        max_size: Maximum occlusion size ratio (default: 0.3)
-        prob: Probability of applying occlusion (default: 0.2)
+        mean: Mean values for RGB channels (default ImageNet mean)
+        std: Std values for RGB channels (default ImageNet std)
+        bbox_format: Bbox format
+
+    Example:
+        >>> transform = NormalizeBboxAware()
+        >>> result = transform(image=rgb_img, bboxes=boxes)
+    """
+
+    def __init__(
+        self,
+        mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
+        std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
+        bbox_format: str = 'xywh'
+    ):
+        super().__init__(bbox_format=bbox_format, p=1.0)
+        self.mean = np.array(mean, dtype=np.float32)
+        self.std = np.array(std, dtype=np.float32)
+
+    def apply_to_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Normalize image to ImageNet statistics.
+
+        Args:
+            image: RGB image (H, W, 3) in range [0, 255]
+
+        Returns:
+            Normalized image (H, W, 3)
+        """
+        # Convert to [0, 1] range
+        img_float = image.astype(np.float32) / 255.0
+
+        # Normalize
+        normalized = (img_float - self.mean) / self.std
+
+        return normalized
+
+
+# ==============================================================================
+# Geometric Transforms (Bbox-Aware)
+# ==============================================================================
+
+class RandomHorizontalFlipBboxAware(BboxAwareTransform):
+    """
+    Bbox-aware random horizontal flip for RGB images.
+
+    Flips both image and bbox coordinates consistently, ensuring
+    bbox-image synchronization for underwater tracking.
+
+    Args:
+        prob: Probability of flipping (default 0.5)
+        bbox_format: Bbox format
+
+    Example:
+        >>> transform = RandomHorizontalFlipBboxAware(prob=0.5)
+        >>> result = transform(image=rgb_img, bboxes=boxes)
+        >>> # Both image and bboxes are flipped consistently
+    """
+
+    def __init__(
+        self,
+        prob: float = 0.5,
+        bbox_format: str = 'xywh'
+    ):
+        super().__init__(bbox_format=bbox_format, p=prob)
+
+    def apply_to_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply horizontal flip to image.
+
+        Args:
+            image: RGB image (H, W, 3)
+
+        Returns:
+            Flipped image (H, W, 3)
+        """
+        flipped = cv2.flip(image, 1)  # Horizontal flip
+        return flipped
+
+    def apply_to_bboxes(
+        self,
+        bboxes: Union[np.ndarray, torch.Tensor, None],
+        image_shape: Tuple[int, int]
+    ) -> Union[np.ndarray, torch.Tensor, None]:
+        """
+        Apply horizontal flip to bboxes.
+
+        CRITICAL: This method ensures bbox coordinates are transformed
+        consistently with the image.
+
+        Args:
+            bboxes: Bounding boxes (N, 4)
+            image_shape: Image dimensions (H, W)
+
+        Returns:
+            Flipped bboxes (N, 4)
+        """
+        if bboxes is None or len(bboxes) == 0:
+            return bboxes
+
+        is_torch = isinstance(bboxes, torch.Tensor)
+        device = bboxes.device if is_torch else None
+
+        # Convert to numpy for processing
+        if is_torch:
+            bboxes_np = bboxes.detach().cpu().numpy()
+        else:
+            bboxes_np = bboxes.copy()
+
+        H, W = image_shape
+
+        # Flip bboxes based on format
+        if self.bbox_format == 'xywh':
+            # [x, y, w, h] format
+            x, y, w, h = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            # Flip x coordinate: new_x = W - old_x - w
+            x_flipped = W - x - w
+            flipped_bboxes = np.stack([x_flipped, y, w, h], axis=1)
+
+        elif self.bbox_format == 'cxcywh':
+            # [cx, cy, w, h] format
+            cx, cy, w, h = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            # Flip center x: new_cx = W - old_cx
+            cx_flipped = W - cx
+            flipped_bboxes = np.stack([cx_flipped, cy, w, h], axis=1)
+
+        elif self.bbox_format == 'xyxy':
+            # [x1, y1, x2, y2] format
+            x1, y1, x2, y2 = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            # Flip: new_x1 = W - old_x2, new_x2 = W - old_x1
+            x1_flipped = W - x2
+            x2_flipped = W - x1
+            flipped_bboxes = np.stack([x1_flipped, y1, x2_flipped, y2], axis=1)
+
+        else:
+            raise ValueError(f"Unknown bbox format: {self.bbox_format}")
+
+        # Convert back to original type
+        if is_torch:
+            flipped_bboxes = torch.from_numpy(flipped_bboxes).to(dtype=bboxes.dtype, device=device)
+
+        return flipped_bboxes
+
+
+class RandomVerticalFlipBboxAware(BboxAwareTransform):
+    """
+    Bbox-aware random vertical flip for RGB images.
+
+    Flips both image and bbox coordinates consistently. Less common than
+    horizontal flip but useful for underwater scenes.
+
+    Args:
+        prob: Probability of flipping (default 0.1)
+        bbox_format: Bbox format
+
+    Example:
+        >>> transform = RandomVerticalFlipBboxAware(prob=0.1)
+        >>> result = transform(image=rgb_img, bboxes=boxes)
+    """
+
+    def __init__(
+        self,
+        prob: float = 0.1,
+        bbox_format: str = 'xywh'
+    ):
+        super().__init__(bbox_format=bbox_format, p=prob)
+
+    def apply_to_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply vertical flip to image.
+
+        Args:
+            image: RGB image (H, W, 3)
+
+        Returns:
+            Flipped image (H, W, 3)
+        """
+        flipped = cv2.flip(image, 0)  # Vertical flip
+        return flipped
+
+    def apply_to_bboxes(
+        self,
+        bboxes: Union[np.ndarray, torch.Tensor, None],
+        image_shape: Tuple[int, int]
+    ) -> Union[np.ndarray, torch.Tensor, None]:
+        """
+        Apply vertical flip to bboxes.
+
+        Args:
+            bboxes: Bounding boxes (N, 4)
+            image_shape: Image dimensions (H, W)
+
+        Returns:
+            Flipped bboxes (N, 4)
+        """
+        if bboxes is None or len(bboxes) == 0:
+            return bboxes
+
+        is_torch = isinstance(bboxes, torch.Tensor)
+        device = bboxes.device if is_torch else None
+
+        # Convert to numpy
+        if is_torch:
+            bboxes_np = bboxes.detach().cpu().numpy()
+        else:
+            bboxes_np = bboxes.copy()
+
+        H, W = image_shape
+
+        # Flip bboxes based on format
+        if self.bbox_format == 'xywh':
+            x, y, w, h = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            y_flipped = H - y - h
+            flipped_bboxes = np.stack([x, y_flipped, w, h], axis=1)
+
+        elif self.bbox_format == 'cxcywh':
+            cx, cy, w, h = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            cy_flipped = H - cy
+            flipped_bboxes = np.stack([cx, cy_flipped, w, h], axis=1)
+
+        elif self.bbox_format == 'xyxy':
+            x1, y1, x2, y2 = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            y1_flipped = H - y2
+            y2_flipped = H - y1
+            flipped_bboxes = np.stack([x1, y1_flipped, x2, y2_flipped], axis=1)
+
+        else:
+            raise ValueError(f"Unknown bbox format: {self.bbox_format}")
+
+        # Convert back to original type
+        if is_torch:
+            flipped_bboxes = torch.from_numpy(flipped_bboxes).to(dtype=bboxes.dtype, device=device)
+
+        return flipped_bboxes
+
+
+class RandomOcclusionBboxAware(BboxAwareTransform):
+    """
+    Bbox-aware random occlusion augmentation (CutMix-style).
+
+    Randomly masks rectangular regions to simulate temporary occlusions.
+    Filters out bboxes that are heavily occluded (similar to SectorOcclusion
+    for sonar).
+
+    Args:
+        min_size: Minimum occlusion size ratio (default 0.05)
+        max_size: Maximum occlusion size ratio (default 0.3)
+        prob: Probability of applying occlusion (default 0.2)
         fill_mode: Fill mode ('zero', 'random', 'mean')
+        occlusion_threshold: Min bbox occlusion ratio to filter (default 0.5)
+        bbox_format: Bbox format
+
+    Example:
+        >>> transform = RandomOcclusionBboxAware(min_size=0.05, max_size=0.3)
+        >>> result = transform(image=rgb_img, bboxes=boxes)
+        >>> # result['bboxes'] excludes heavily occluded boxes
     """
 
     def __init__(
@@ -134,27 +412,27 @@ class RandomOcclusion:
         max_size: float = 0.3,
         prob: float = 0.2,
         fill_mode: str = 'zero',
+        occlusion_threshold: float = 0.5,
+        bbox_format: str = 'xywh'
     ):
+        super().__init__(bbox_format=bbox_format, p=prob)
         self.min_size = min_size
         self.max_size = max_size
-        self.prob = prob
         self.fill_mode = fill_mode
+        self.occlusion_threshold = occlusion_threshold
+        self._occlusion_mask = None  # Store for bbox filtering
 
-    def __call__(self, img: np.ndarray, bbox: Optional[np.ndarray] = None) -> np.ndarray:
+    def apply_to_image(self, image: np.ndarray) -> np.ndarray:
         """
-        Apply random occlusion.
+        Apply random occlusion to image.
 
         Args:
-            img: RGB image (H, W, 3)
-            bbox: Optional bounding box to avoid occluding target [x, y, w, h]
+            image: RGB image (H, W, 3)
 
         Returns:
             Occluded image (H, W, 3)
         """
-        if random.random() >= self.prob:
-            return img
-
-        H, W = img.shape[:2]
+        H, W = image.shape[:2]
 
         # Random occlusion size
         size_ratio = random.uniform(self.min_size, self.max_size)
@@ -162,116 +440,109 @@ class RandomOcclusion:
         occ_w = int(W * size_ratio)
 
         # Random position
-        max_attempts = 10
-        for _ in range(max_attempts):
-            x = random.randint(0, W - occ_w)
-            y = random.randint(0, H - occ_h)
+        x = random.randint(0, max(W - occ_w, 1))
+        y = random.randint(0, max(H - occ_h, 1))
 
-            # Check if occlusion overlaps with target bbox
-            if bbox is not None and not np.all(bbox == 0):
-                bbox_x, bbox_y, bbox_w, bbox_h = bbox
-                # IoU check
-                overlap_x1 = max(x, bbox_x)
-                overlap_y1 = max(y, bbox_y)
-                overlap_x2 = min(x + occ_w, bbox_x + bbox_w)
-                overlap_y2 = min(y + occ_h, bbox_y + bbox_h)
+        # Create occlusion mask for bbox filtering
+        self._occlusion_mask = np.zeros((H, W), dtype=bool)
+        self._occlusion_mask[y:y+occ_h, x:x+occ_w] = True
 
-                overlap_area = max(0, overlap_x2 - overlap_x1) * max(0, overlap_y2 - overlap_y1)
-                bbox_area = bbox_w * bbox_h
+        # Apply occlusion
+        occluded = image.copy()
+        if self.fill_mode == 'zero':
+            occluded[y:y+occ_h, x:x+occ_w] = 0
+        elif self.fill_mode == 'mean':
+            mean_color = image.mean(axis=(0, 1))
+            occluded[y:y+occ_h, x:x+occ_w] = mean_color
+        elif self.fill_mode == 'random':
+            occluded[y:y+occ_h, x:x+occ_w] = np.random.randint(0, 256, (occ_h, occ_w, 3))
 
-                # If significant overlap, try another position
-                if overlap_area > 0.3 * bbox_area:
-                    continue
+        return occluded
 
-            # Apply occlusion
-            if self.fill_mode == 'zero':
-                img[y:y+occ_h, x:x+occ_w] = 0
-            elif self.fill_mode == 'mean':
-                mean_color = img.mean(axis=(0, 1))
-                img[y:y+occ_h, x:x+occ_w] = mean_color
-            elif self.fill_mode == 'random':
-                img[y:y+occ_h, x:x+occ_w] = np.random.randint(0, 256, (occ_h, occ_w, 3))
-
-            break
-
-        return img
-
-
-class RandomHorizontalFlip:
-    """
-    Random horizontal flip with bbox coordination.
-
-    Args:
-        prob: Probability of flipping (default: 0.5)
-    """
-
-    def __init__(self, prob: float = 0.5):
-        self.prob = prob
-
-    def __call__(
+    def apply_to_bboxes(
         self,
-        img: np.ndarray,
-        bbox: Optional[np.ndarray] = None
-    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        bboxes: Union[np.ndarray, torch.Tensor, None],
+        image_shape: Tuple[int, int]
+    ) -> Union[np.ndarray, torch.Tensor, None]:
         """
-        Apply random horizontal flip.
+        Filter bboxes that are heavily occluded.
+
+        CRITICAL: This method prevents training on invisible targets, similar
+        to SectorOcclusion for sonar.
 
         Args:
-            img: RGB image (H, W, 3)
-            bbox: Optional bounding box [x, y, w, h]
+            bboxes: Bounding boxes (N, 4)
+            image_shape: Image dimensions (H, W)
 
         Returns:
-            Flipped image and bbox (if provided)
+            Filtered bboxes (M, 4) where M <= N
         """
-        if random.random() < self.prob:
-            img = cv2.flip(img, 1)  # Horizontal flip
+        if bboxes is None or len(bboxes) == 0 or self._occlusion_mask is None:
+            return bboxes
 
-            if bbox is not None and not np.all(bbox == 0):
-                W = img.shape[1]
-                x, y, w, h = bbox
-                # Flip bbox
-                bbox = np.array([W - x - w, y, w, h], dtype=np.float32)
+        is_torch = isinstance(bboxes, torch.Tensor)
+        device = bboxes.device if is_torch else None
 
-        if bbox is not None:
-            return img, bbox
-        return img
+        # Convert to numpy
+        if is_torch:
+            bboxes_np = bboxes.detach().cpu().numpy()
+        else:
+            bboxes_np = bboxes.copy()
+
+        # Convert to xyxy for IoU computation
+        if self.bbox_format == 'xywh':
+            x1 = bboxes_np[:, 0]
+            y1 = bboxes_np[:, 1]
+            x2 = x1 + bboxes_np[:, 2]
+            y2 = y1 + bboxes_np[:, 3]
+        elif self.bbox_format == 'cxcywh':
+            cx, cy, w, h = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+            x1 = cx - w / 2
+            y1 = cy - h / 2
+            x2 = cx + w / 2
+            y2 = cy + h / 2
+        elif self.bbox_format == 'xyxy':
+            x1, y1, x2, y2 = bboxes_np[:, 0], bboxes_np[:, 1], bboxes_np[:, 2], bboxes_np[:, 3]
+        else:
+            raise ValueError(f"Unknown bbox format: {self.bbox_format}")
+
+        # Compute occlusion ratio for each bbox
+        H, W = image_shape
+        valid_mask = np.ones(len(bboxes_np), dtype=bool)
+
+        for i in range(len(bboxes_np)):
+            # Clamp bbox to image boundaries
+            x1_clip = int(np.clip(x1[i], 0, W - 1))
+            y1_clip = int(np.clip(y1[i], 0, H - 1))
+            x2_clip = int(np.clip(x2[i], 1, W))
+            y2_clip = int(np.clip(y2[i], 1, H))
+
+            # Extract bbox region from occlusion mask
+            bbox_region = self._occlusion_mask[y1_clip:y2_clip, x1_clip:x2_clip]
+
+            if bbox_region.size == 0:
+                continue
+
+            # Compute occlusion ratio
+            occlusion_ratio = np.mean(bbox_region)
+
+            # Filter if heavily occluded
+            if occlusion_ratio >= self.occlusion_threshold:
+                valid_mask[i] = False
+
+        # Filter bboxes
+        filtered_bboxes = bboxes_np[valid_mask]
+
+        # Convert back to original type
+        if is_torch:
+            filtered_bboxes = torch.from_numpy(filtered_bboxes).to(dtype=bboxes.dtype, device=device)
+
+        return filtered_bboxes
 
 
-class Normalize:
-    """
-    Normalize RGB image to ImageNet statistics.
-
-    Args:
-        mean: Mean values for RGB channels (default: ImageNet mean)
-        std: Std values for RGB channels (default: ImageNet std)
-    """
-
-    def __init__(
-        self,
-        mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
-        std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
-    ):
-        self.mean = np.array(mean, dtype=np.float32)
-        self.std = np.array(std, dtype=np.float32)
-
-    def __call__(self, img: np.ndarray) -> np.ndarray:
-        """
-        Normalize image.
-
-        Args:
-            img: RGB image (H, W, 3) in range [0, 255]
-
-        Returns:
-            Normalized image (H, W, 3)
-        """
-        # Convert to [0, 1] range
-        img = img.astype(np.float32) / 255.0
-
-        # Normalize
-        img = (img - self.mean) / self.std
-
-        return img
-
+# ==============================================================================
+# Utility Classes
+# ==============================================================================
 
 class ToTensor:
     """
@@ -301,98 +572,13 @@ class ToTensor:
         return torch.from_numpy(img.copy())
 
 
-class RGBTransformPipeline:
-    """
-    Complete RGB transformation pipeline for training.
+# ==============================================================================
+# Backward Compatibility Aliases
+# ==============================================================================
 
-    Args:
-        enable_color_jitter: Enable color jittering
-        enable_blur: Enable random blur
-        enable_occlusion: Enable random occlusion
-        enable_flip: Enable horizontal flip
-        normalize: Enable normalization
-        to_tensor: Convert to tensor
-    """
-
-    def __init__(
-        self,
-        enable_color_jitter: bool = True,
-        enable_blur: bool = True,
-        enable_occlusion: bool = True,
-        enable_flip: bool = True,
-        normalize: bool = True,
-        to_tensor: bool = True,
-    ):
-        self.transforms = []
-
-        if enable_color_jitter:
-            self.transforms.append(ColorJitter())
-
-        if enable_blur:
-            self.transforms.append(RandomBlur())
-
-        if enable_occlusion:
-            self.occlusion = RandomOcclusion()
-            self.enable_occlusion = True
-        else:
-            self.enable_occlusion = False
-
-        if enable_flip:
-            self.flip = RandomHorizontalFlip()
-            self.enable_flip = True
-        else:
-            self.enable_flip = False
-
-        if normalize:
-            self.normalize = Normalize()
-            self.enable_normalize = True
-        else:
-            self.enable_normalize = False
-
-        if to_tensor:
-            self.to_tensor = ToTensor()
-            self.enable_to_tensor = True
-        else:
-            self.enable_to_tensor = False
-
-    def __call__(
-        self,
-        img: np.ndarray,
-        bbox: Optional[np.ndarray] = None
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, np.ndarray]]:
-        """
-        Apply transformation pipeline.
-
-        Args:
-            img: RGB image (H, W, 3)
-            bbox: Optional bounding box [x, y, w, h]
-
-        Returns:
-            Transformed image (and bbox if provided)
-        """
-        # Apply transforms that don't need bbox
-        for transform in self.transforms:
-            img = transform(img)
-
-        # Apply occlusion (may need bbox to avoid target)
-        if self.enable_occlusion:
-            img = self.occlusion(img, bbox)
-
-        # Apply flip (needs bbox coordination)
-        if self.enable_flip:
-            if bbox is not None:
-                img, bbox = self.flip(img, bbox)
-            else:
-                img = self.flip(img)
-
-        # Normalize
-        if self.enable_normalize:
-            img = self.normalize(img)
-
-        # Convert to tensor
-        if self.enable_to_tensor:
-            img = self.to_tensor(img)
-
-        if bbox is not None:
-            return img, bbox
-        return img
+# Legacy names without BboxAware suffix for backward compatibility with old imports
+ColorJitter = ColorJitterBboxAware
+RandomBlur = RandomBlurBboxAware
+Normalize = NormalizeBboxAware
+RandomHorizontalFlip = RandomHorizontalFlipBboxAware
+RandomOcclusion = RandomOcclusionBboxAware
