@@ -345,7 +345,7 @@ training:
       weak3d_cycle: 1.0
 
   # Validation
-  val_interval: 5  # Validate every N epochs
+  val_interval: 1  # Validate every N epochs
   val_num_samples: null  # null means use all val data
 
   # Checkpointing
