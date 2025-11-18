@@ -458,11 +458,12 @@ class LossManager(nn.Module):
             Classification loss
         """
         if loss_type == 'bce':
-            # Clamp predictions to [0, 1] for numerical stability
+            # Clamp both predictions and targets to [0, 1] for numerical stability
             pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
+            target_clamped = torch.clamp(target_labels.float(), min=0.0, max=1.0)
             return F.binary_cross_entropy(
                 pred_scores_clamped,
-                target_labels.float(),
+                target_clamped,
                 reduction=self.reduction
             )
 
@@ -474,9 +475,10 @@ class LossManager(nn.Module):
 
         # Default fallback to BCE
         pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
+        target_clamped = torch.clamp(target_labels.float(), min=0.0, max=1.0)
         return F.binary_cross_entropy(
             pred_scores_clamped,
-            target_labels.float(),
+            target_clamped,
             reduction=self.reduction
         )
 

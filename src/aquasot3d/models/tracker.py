@@ -652,7 +652,8 @@ class AquaSOT3DTracker(BaseModule):
         sonar_radial_activation: torch.Tensor,
         gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
         compute_cyclic_loss: bool = True,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        is_temporal_sequence: bool = False
     ) -> Dict[str, torch.Tensor]:
         """
         Predict weak 3D center and compute cyclic consistency loss.
@@ -669,6 +670,7 @@ class AquaSOT3DTracker(BaseModule):
             gt_boxes: Optional ground truth boxes for cyclic loss
             compute_cyclic_loss: Whether to compute cyclic consistency loss
             metadata: Optional dict with template/search metadata for sensor calibration
+            is_temporal_sequence: Whether in temporal sequence mode (skip projection loss)
 
         Returns:
             Dictionary containing 3D predictions and losses
@@ -728,21 +730,24 @@ class AquaSOT3DTracker(BaseModule):
             outputs['sonar_cyclic_loss'] = sonar_proj_outputs['cyclic_loss']
 
             # Compute projection loss against ground truth
-            if 'rgb' in gt_boxes:
-                rgb_proj_loss = self.rgb_projector.compute_projection_loss(
-                    rgb_proj_outputs['bbox_2d'],
-                    gt_boxes['rgb'],
-                    loss_type='l1'
-                )
-                outputs['rgb_proj_loss'] = rgb_proj_loss
+            # CRITICAL FIX: Skip projection loss in temporal mode (shape mismatch)
+            # In temporal mode: pred [B*T, 4] vs gt [B, 4]
+            if not is_temporal_sequence:
+                if 'rgb' in gt_boxes:
+                    rgb_proj_loss = self.rgb_projector.compute_projection_loss(
+                        rgb_proj_outputs['bbox_2d'],
+                        gt_boxes['rgb'],
+                        loss_type='l1'
+                    )
+                    outputs['rgb_proj_loss'] = rgb_proj_loss
 
-            if 'sonar' in gt_boxes:
-                sonar_proj_loss = self.sonar_projector.compute_projection_loss(
-                    sonar_proj_outputs['bbox_2d'],
-                    gt_boxes['sonar'],
-                    loss_type='l1'
-                )
-                outputs['sonar_proj_loss'] = sonar_proj_loss
+                if 'sonar' in gt_boxes:
+                    sonar_proj_loss = self.sonar_projector.compute_projection_loss(
+                        sonar_proj_outputs['bbox_2d'],
+                        gt_boxes['sonar'],
+                        loss_type='l1'
+                    )
+                    outputs['sonar_proj_loss'] = sonar_proj_loss
 
         return outputs
 
@@ -812,6 +817,10 @@ class AquaSOT3DTracker(BaseModule):
             # We DON'T expand gt_boxes because temporal aggregation outputs [B, 4], not [B*T, 4]
             gt_boxes_original = gt_boxes  # Keep original [B, 4] for loss after aggregation
 
+            # CRITICAL FIX: Store original metadata [B] for weak3d projector
+            # weak3d uses aggregated features [B, ...], so needs metadata [B], not [B*T]
+            metadata_original = metadata.copy() if metadata is not None else None
+
             # Expand metadata if provided
             if metadata is not None:
                 metadata_expanded = {}
@@ -833,6 +842,16 @@ class AquaSOT3DTracker(BaseModule):
                     else:
                         metadata_expanded[key] = None
                 metadata = metadata_expanded
+
+                # CRITICAL DEBUG: Verify metadata expansion worked correctly
+                if metadata is not None and 'rgb_search_metadata' in metadata:
+                    actual_length = len(metadata['rgb_search_metadata']) if metadata['rgb_search_metadata'] else 0
+                    expected_length = batch_size * T
+                    if actual_length != expected_length:
+                        raise RuntimeError(
+                            f"Metadata expansion failed: expected {expected_length} entries but got {actual_length}. "
+                            f"B={batch_size}, T={T}, is_temporal={is_temporal_sequence}"
+                        )
         else:
             # Traditional pair mode: [B, C, H, W]
             batch_size = rgb_template.shape[0]
@@ -1127,11 +1146,14 @@ class AquaSOT3DTracker(BaseModule):
 
             # CRITICAL FIX (Audit 2025111412 Finding 2):
             # Pass metadata to weak-3D for calibrated geometry
+            # CRITICAL FIX: weak3d uses UN-aggregated features [B*T, ...] in temporal mode
+            # Therefore it needs expanded metadata [B*T], not original [B]
             weak3d_outputs = self.predict_3d_center(
                 rgb_features, sonar_features, sonar_radial,
                 gt_boxes=gt_boxes if return_losses else None,
                 compute_cyclic_loss=return_losses,
-                metadata=metadata
+                metadata=metadata,  # Use expanded metadata [B*T] in temporal mode
+                is_temporal_sequence=is_temporal_sequence  # Skip projection loss in temporal mode
             )
         else:
             weak3d_outputs = {}

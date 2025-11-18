@@ -317,7 +317,14 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             h_norm = h / img_h
 
             # Stack normalized coordinates [cx, cy, w, h] in [0, 1]
-            batched[key] = torch.stack([cx, cy, w_norm, h_norm], dim=-1)
+            # CRITICAL FIX: For sequence mode, only use last frame for loss computation
+            # This matches temporal aggregation output shape [B, 4]
+            if bbox_tensor.ndim == 3 and bbox_tensor.shape[1] > 1:
+                # Sequence mode: extract only last frame for gt_boxes
+                batched[key] = torch.stack([cx[:, -1], cy[:, -1], w_norm[:, -1], h_norm[:, -1]], dim=-1)
+            else:
+                # Pair/template mode: use full tensor
+                batched[key] = torch.stack([cx, cy, w_norm, h_norm], dim=-1)
 
             # Clamp to [0, 1] for safety (handles edge cases)
             batched[key] = torch.clamp(batched[key], min=0.0, max=1.0)

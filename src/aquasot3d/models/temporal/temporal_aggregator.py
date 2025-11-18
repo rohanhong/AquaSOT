@@ -125,6 +125,18 @@ class EMASmoothing(nn.Module):
         if feat_prev is None:
             return feat_current
 
+        # CRITICAL FIX (Audit 2025111802 Finding 1): Shape validation
+        # Validation stage may have different batch size or spatial dimensions than training.
+        # If shapes don't match, treat as first frame and reset previous state.
+        if feat_current.shape != feat_prev.shape:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"EMA shape mismatch: current {feat_current.shape} vs prev {feat_prev.shape}. "
+                "Resetting temporal state (likely transition from training to validation)."
+            )
+            return feat_current
+
         # Compute momentum
         if self.adaptive:
             momentum = self.compute_adaptive_momentum(feat_current, feat_prev)
@@ -434,6 +446,16 @@ class TemporalAggregator(BaseTemporalHead):
         if self.use_memory_bank:
             self.memory_bank.reset()
 
+    def reset(self) -> None:
+        """
+        Alias for reset_state() to match tracker's introspection interface.
+
+        CRITICAL FIX (Audit 2025111802 Finding 2):
+        Tracker's reset_temporal_state() looks for reset() method via hasattr check.
+        This alias ensures proper state clearing during training->validation transition.
+        """
+        self.reset_state()
+
     def forward(
         self,
         features: torch.Tensor,
@@ -456,12 +478,21 @@ class TemporalAggregator(BaseTemporalHead):
                 - new_temporal_state: Updated temporal state dict
         """
         # Load temporal state if provided
+        # CRITICAL FIX (Audit 2025111801 Finding 1): Training mode should not use cross-batch state
+        # Each training batch should be independent per mini-batch SGD principle.
+        # Cross-batch state causes shape mismatch when batch size varies (e.g., last batch).
+        # Reference: CVPR 2024 tracking methods (ARTrackV2, OneTracker) don't use cross-batch aggregation.
         if temporal_state is not None:
             prev_features = temporal_state.get('prev_features', None)
             frame_count = temporal_state.get('frame_count', 0)
-        else:
+        elif not self.training:
+            # Inference mode: use internal state for online tracking (frame-to-frame smoothing)
             prev_features = self._prev_features
             frame_count = self._frame_count
+        else:
+            # Training mode: no cross-batch state (each batch is independent temporal sequence)
+            prev_features = None
+            frame_count = 0
 
         # Compute visibility gates
         gate_weights, should_update = self.visibility_gate(features, quality_scores)
