@@ -100,8 +100,8 @@ model:
   temporal:
     aggregation: true
     aggregator:
-      alpha: 0.9  # EMA smoothing factor (match training)
-      visibility_threshold: 0.5  # Quality threshold for gating (match training)
+      momentum: 0.9  # EMA smoothing factor (match training)
+      gate_threshold: 0.5  # Quality threshold for gating (match training)
 
 
 # ------------------------------------------------------------------------------

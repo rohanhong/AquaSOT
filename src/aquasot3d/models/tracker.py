@@ -558,10 +558,11 @@ class AquaSOT3DTracker(BaseModule):
 
         # Apply temporal aggregation if enabled
         if self.temporal_aggregation and self.temporal_aggregator is not None:
-            aggregated_features = self.temporal_aggregator(
-                current_features=aggregated_features,
-                quality_score=quality_scores
-            )['aggregated_features']
+            aggregated_features, _ = self.temporal_aggregator(
+                features=aggregated_features,
+                quality_scores=quality_scores,
+                temporal_state=None  # TemporalAggregator manages its own state internally
+            )
 
         return aggregated_features, new_state
 

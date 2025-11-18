@@ -181,8 +181,8 @@ model:
     max_spatial_size: 32
     # Aggregator parameters (used when aggregation=true)
     aggregator:
-      alpha: 0.9  # EMA smoothing factor
-      visibility_threshold: 0.5  # Quality threshold for gating
+      momentum: 0.9  # EMA smoothing factor
+      gate_threshold: 0.5  # Quality threshold for gating
 
   # Prediction heads
   heads:

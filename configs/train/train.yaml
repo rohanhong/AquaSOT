@@ -118,8 +118,8 @@ model:
     # Enable EMA aggregation for fusion training (Stage 3)
     aggregation: true
     aggregator:
-      alpha: 0.9  # EMA smoothing factor
-      visibility_threshold: 0.5  # Quality threshold for gating
+      momentum: 0.9  # EMA smoothing factor
+      gate_threshold: 0.5  # Quality threshold for gating
 
   heads:
     rgb_box:
@@ -156,7 +156,7 @@ training:
     rgb: outputs/pretrain_rgb/checkpoints/checkpoint_best.pth
     sonar: outputs/pretrain_sonar/checkpoints/checkpoint_best.pth
 
-  num_epochs: 60
+  num_epochs: 3
 
   batch_size: 2  # Adjust based on GPU memory
   gradient_accumulation_steps: 2  # Effective batch = 4

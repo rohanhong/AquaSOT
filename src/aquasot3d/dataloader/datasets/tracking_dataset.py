@@ -459,6 +459,11 @@ class TrackingDataset(Dataset):
         import torch
         rgb_search_stacked = torch.stack(rgb_search_list, dim=0)  # [T, C, H, W]
         sonar_search_stacked = torch.stack(sonar_search_list, dim=0)  # [T, C, H, W]
+
+        # Convert bbox lists from numpy to tensor before stacking
+        rgb_bbox_list = [torch.from_numpy(bbox).float() if isinstance(bbox, np.ndarray) else bbox for bbox in rgb_bbox_list]
+        sonar_bbox_list = [torch.from_numpy(bbox).float() if isinstance(bbox, np.ndarray) else bbox for bbox in sonar_bbox_list]
+
         rgb_bbox_stacked = torch.stack(rgb_bbox_list, dim=0)  # [T, 4]
         sonar_bbox_stacked = torch.stack(sonar_bbox_list, dim=0)  # [T, 4]
 
@@ -476,9 +481,10 @@ class TrackingDataset(Dataset):
             'search_bbox_rgb': rgb_bbox_stacked,  # [T, 4]
             'search_bbox_sonar': sonar_bbox_stacked,  # [T, 4]
 
-            # For trainer compatibility, use last frame as primary bbox
-            'rgb_boxes': rgb_bbox_stacked[-1],  # [4]
-            'sonar_boxes': sonar_bbox_stacked[-1],  # [4]
+            # CRITICAL FIX: Return ALL frames' bboxes for quality estimation
+            # In sequence mode, quality estimator processes [B*T, C, H, W] images, so needs [B*T, 4] bboxes
+            'rgb_boxes': rgb_bbox_stacked,  # [T, 4] - will be collated to [B, T, 4] then flattened
+            'sonar_boxes': sonar_bbox_stacked,  # [T, 4]
 
             # Metadata
             'sequence_name': sequence_name,
@@ -641,10 +647,15 @@ class TrackingDataset(Dataset):
         else:
             # CRITICAL FIX (Audit 2025111703 Finding 1): Sample T consecutive frames
             # Ensure we have enough frames for the sequence within this sequence boundary
-            local_start_idx = random.randint(
-                local_min_search_idx,
-                min(local_max_search_idx, seq_range['num_frames'] - self.search_sequence_length)
-            )
+            max_local_start = min(local_max_search_idx, seq_range['num_frames'] - self.search_sequence_length)
+
+            # Check if we have enough frames
+            if max_local_start < local_min_search_idx:
+                # Not enough frames, fall back to repeating template frame
+                template_idx = seq_range['start'] + local_template_idx
+                return template_idx, [template_idx] * self.search_sequence_length
+
+            local_start_idx = random.randint(local_min_search_idx, max_local_start)
             # Generate consecutive local indices
             local_search_indices = list(range(local_start_idx, local_start_idx + self.search_sequence_length))
 

@@ -284,11 +284,29 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             # Quality estimators need pixel xywh to crop ROIs correctly
 
             bbox_tensor = batched[key].clone()
-            x, y, w, h = bbox_tensor[:, 0], bbox_tensor[:, 1], bbox_tensor[:, 2], bbox_tensor[:, 3]
 
-            # Store original pixel coordinates in xywh format for quality estimation
-            pixel_key = key + '_pixels'
-            batched[pixel_key] = bbox_tensor.clone()  # Keep pixel xywh
+            # CRITICAL FIX: Handle sequence mode where bbox shape is [B, T, 4] instead of [B, 4]
+            # Check dimensionality directly instead of relying on key name
+            if bbox_tensor.ndim == 3 and bbox_tensor.shape[1] > 1:
+                # Sequence mode: bbox_tensor shape is [B, T, 4]
+                # For quality estimation, flatten to [B*T, 4] to match reshaped images [B*T, C, H, W]
+                pixel_key = key + '_pixels'
+                B, T = bbox_tensor.shape[0], bbox_tensor.shape[1]
+                batched[pixel_key] = bbox_tensor.reshape(B * T, 4).clone()  # [B*T, 4]
+
+                # Extract coordinates for normalization
+                x, y, w, h = bbox_tensor[..., 0], bbox_tensor[..., 1], bbox_tensor[..., 2], bbox_tensor[..., 3]
+            else:
+                # Pair mode or template: bbox_tensor shape is [B, 4] (or [B, 1, 4] squeezed)
+                if bbox_tensor.ndim == 3:
+                    bbox_tensor = bbox_tensor.squeeze(1)  # [B, 1, 4] -> [B, 4]
+                    batched[key] = bbox_tensor  # Update batched with squeezed version
+
+                x, y, w, h = bbox_tensor[:, 0], bbox_tensor[:, 1], bbox_tensor[:, 2], bbox_tensor[:, 3]
+
+                # Store original pixel coordinates in xywh format for quality estimation
+                pixel_key = key + '_pixels'
+                batched[pixel_key] = bbox_tensor.clone()  # Keep pixel xywh
 
             # Convert [x, y, w, h] to [cx, cy, w, h] and normalize for losses
             # cx = (x + w/2) / img_w, cy = (y + h/2) / img_h
