@@ -193,14 +193,14 @@ training:
 
   num_epochs: 60
 
-  batch_size: 16  # Higher performance: 32 (A4000 16GB, 2x VRAM for single-modal)
-  val_batch_size: 32  # Higher performance: 64
-  gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 32)
+  batch_size: 16  # Higher performance: 64 (60% VRAM usage on high-end GPU)
+  val_batch_size: 32  # Higher performance: 128 (validation requires no gradients)
+  gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 64)
 
   # Optimizer
   optimizer:
     type: adamw
-    lr: 0.0002  # Higher performance: 0.0004 (scaled for batch=32)
+    lr: 0.0002  # Higher performance: 0.0008 (linearly scaled for batch=64, 4x base lr)
     weight_decay: 0.0001
     betas: [0.9, 0.999]
     eps: 1.0e-8
@@ -215,8 +215,8 @@ training:
   # Learning rate scheduler
   scheduler:
     type: cosine  # cosine, step, multistep, exponential, polynomial
-    warmup_epochs: 5  # Higher performance: 3-4 (fewer warmup for larger batch)
-    warmup_lr: 0.00001  # Higher performance: 0.00002
+    warmup_epochs: 5  # Higher performance: 20 (keep warmup steps≈3000 for batch=64)
+    warmup_lr: 0.00001  # Higher performance: 0.00004 (linearly scaled for batch=64)
     min_lr: 0.000001
 
     # Cosine annealing

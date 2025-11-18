@@ -104,25 +104,25 @@ model:
 training:
   num_epochs: 40
 
-  batch_size: 8  # Higher performance: 16 (A4000 16GB, 2x VRAM)
-  gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 16)
+  batch_size: 8  # Higher performance: 64 (60% VRAM usage on high-end GPU)
+  gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 64)
 
   optimizer:
-    lr: 0.0001  # Higher performance: 0.0002 (Xeon W9-3475X, batch=16, scaled linearly)
+    lr: 0.0001  # Higher performance: 0.0008 (linearly scaled for batch=64, 8x base lr)
     weight_decay: 0.0001
     backbone_lr_multiplier: 1.0
 
   scheduler:
     type: cosine
-    warmup_epochs: 5  # Higher performance: 3 (fewer warmup for larger batch=16)
-    warmup_lr: 1.0e-06
+    warmup_epochs: 5  # Higher performance: 40 (keep warmup steps≈6000 for batch=64)
+    warmup_lr: 1.0e-06  # Higher performance: 8.0e-06 (linearly scaled for batch=64)
     t_max: 40
     eta_min: 1.0e-06
 
   # Gradient clipping
   grad_clip:
     enabled: true
-    max_norm: 1.0  # Higher performance: 2.0 (larger batch more stable gradients)
+    max_norm: 1.0  # Higher performance: 2.0 (larger batch=64 more stable gradients)
     norm_type: 2
 
   loss_weights:
