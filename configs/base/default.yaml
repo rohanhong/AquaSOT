@@ -209,7 +209,7 @@ training:
   # Learning rate scheduler
   scheduler:
     type: cosine  # cosine, step, multistep, exponential, polynomial
-    warmup_epochs: 5  # Higher performance: 20 (keep warmup steps≈3000 for batch=64)
+    warmup_epochs: 5  # Higher performance: 7 (12% ratio for batch=64, 4x increase)
     warmup_lr: 0.00001  # Higher performance: 0.00004 (linearly scaled for batch=64)
     min_lr: 0.000001
 

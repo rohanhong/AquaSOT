@@ -97,7 +97,7 @@ training:
 
   scheduler:
     type: cosine
-    warmup_epochs: 5  # Higher performance: 40 (keep warmup steps≈6000 for batch=64)
+    warmup_epochs: 5  # Higher performance: 8 (20% ratio for large batch=64, NOT 40!)
     warmup_lr: 1.0e-06  # Higher performance: 8.0e-06 (linearly scaled for batch=64)
     t_max: 40
     eta_min: 1.0e-06
