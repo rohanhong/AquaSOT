@@ -51,9 +51,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
                 'rgb': {'enable_color_jitter': True, 'enable_blur': True},
                 'sonar': {'enable_speckle': True}
             },
-            enable_flip=True,
-            use_logpolar=False,
-        )
+            enable_flip=True)
 
         result = aug(self.test_data)
 
@@ -77,15 +75,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             is_train=True,
             template_config={'rgb': {}, 'sonar': {}},
             search_config={'rgb': {}, 'sonar': {}},
-            enable_flip=False,
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-            }
-        )
+            enable_flip=False)
 
         result = aug(self.test_data)
 
@@ -101,9 +91,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             template_config={'rgb': {}, 'sonar': {}},
             search_config={'rgb': {}, 'sonar': {}},
             enable_flip=True,
-            use_logpolar=False,
-            seed=42,
-        )
+            seed=42)
 
         # Run augmentation multiple times with same seed
         result1 = aug(self.test_data.copy())
@@ -114,9 +102,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             template_config={'rgb': {}, 'sonar': {}},
             search_config={'rgb': {}, 'sonar': {}},
             enable_flip=True,
-            use_logpolar=False,
-            seed=42,
-        )
+            seed=42)
         result2 = aug2(self.test_data.copy())
 
         # Results should be identical with same seed
@@ -155,9 +141,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             is_train=True,
             template_config=template_config,
             search_config=search_config,
-            enable_flip=False,  # Disable coordinated flip
-            use_logpolar=False,
-        )
+            enable_flip=False,  # Disable coordinated flip)
 
         result = aug(self.test_data)
 
@@ -171,9 +155,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             is_train=False,
             template_config={'rgb': {}, 'sonar': {}},
             search_config={'rgb': {}, 'sonar': {}},
-            enable_flip=True,  # Should be disabled in eval mode
-            use_logpolar=False,
-        )
+            enable_flip=True,  # Should be disabled in eval mode)
 
         result = aug(self.test_data)
 
@@ -189,9 +171,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             is_train=True,
             template_config={'rgb': {}, 'sonar': {}},
             search_config={'rgb': {}, 'sonar': {}},
-            enable_flip=True,
-            use_logpolar=True,
-        )
+            enable_flip=True)
 
         result = aug(self.test_data)
 
@@ -206,9 +186,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
         aug = TemplateSearchAugmentationBboxAware(
             is_train=True,
             template_config={'rgb': {}, 'sonar': {}},
-            search_config={'rgb': {}, 'sonar': {}},
-            use_logpolar=False,
-        )
+            search_config={'rgb': {}, 'sonar': {}})
 
         result = aug(self.test_data)
 
@@ -233,9 +211,7 @@ class TestTemplateSearchAugmentation(unittest.TestCase):
             is_train=True,
             template_config={'rgb': {}, 'sonar': {}},
             search_config={'rgb': {}, 'sonar': {}},
-            enable_flip=False,
-            use_logpolar=False,
-        )
+            enable_flip=False)
 
         result = aug(data_with_none)
 
@@ -282,16 +258,7 @@ class TestTemplateSearchAugmentationIntegration(unittest.TestCase):
                     'enable_radial_jitter': True,
                 }
             },
-            enable_flip=True,
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-                'fov_angle': 130.0,
-            },
-        )
+            enable_flip=True)
 
         result = aug(data)
 

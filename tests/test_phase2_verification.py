@@ -50,11 +50,10 @@ def main():
         ("aquasot3d.dataloader.datasets", "TemplateSearchAugmentation"),
         ("aquasot3d.dataloader.datasets", "build_augmentation"),
 
-        # Transform modules (these will fail without torch)
+        # Transform modules (commented out - require torch/numpy)
         # ("aquasot3d.dataloader.transforms", "LogPolarTransform"),
-        # ("aquasot3d.dataloader.transforms", "SonarGeometryHandler"),
 
-        # Loader utilities (these will fail without torch)
+        # Loader utilities (commented out - require torch)
         # ("aquasot3d.dataloader", "create_dataloader"),
     ]
 
@@ -95,8 +94,8 @@ def main():
         "src/aquasot3d/dataloader/datasets/augmentation.py",
         "src/aquasot3d/dataloader/transforms/rgb_transforms.py",
         "src/aquasot3d/dataloader/transforms/sonar_transforms.py",
-        "src/aquasot3d/dataloader/transforms/sonar_geometry.py",
-        "src/aquasot3d/dataloader/transforms/logpolar.py",
+        # Note: sonar_geometry.py and logpolar.py removed (2025-11-19)
+        # Reason: Sonar now uses offline preprocessing (scripts/preprocess_sonar.py)
         "src/aquasot3d/dataloader/loader.py",
         "tests/test_rgb_sonar_dataset.py",
         "tests/test_dataloader.py",

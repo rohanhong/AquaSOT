@@ -62,11 +62,12 @@ class DummyTemplateSearchDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
+        # Use trainer-expected field names: rgb_template, rgb_search, sonar_template, sonar_search
         sample = {
-            'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
-            'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
-            'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
-            'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+            'rgb_template': np.random.randn(128, 128, 3).astype(np.float32),
+            'sonar_template': np.random.randn(128, 128, 3).astype(np.float32),
+            'rgb_search': np.random.randn(256, 256, 3).astype(np.float32),
+            'sonar_search': np.random.randn(256, 256, 3).astype(np.float32),
             'template_bbox_rgb': np.array([10, 20, 100, 200], dtype=np.float32),
             'template_bbox_sonar': np.array([5, 10, 50, 100], dtype=np.float32),
             'search_bbox_rgb': np.array([15, 25, 110, 210], dtype=np.float32),
@@ -155,12 +156,13 @@ class TestCollateTemplateSearch:
 
     def test_collate_template_search(self):
         """Test collating template-search batch."""
+        # Use trainer-expected field names: rgb_template, rgb_search, sonar_template, sonar_search
         batch = [
             {
-                'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
-                'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
-                'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
-                'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+                'rgb_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'sonar_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'rgb_search': np.random.randn(256, 256, 3).astype(np.float32),
+                'sonar_search': np.random.randn(256, 256, 3).astype(np.float32),
                 'template_bbox_rgb': np.array([10, 20, 100, 200], dtype=np.float32),
                 'template_bbox_sonar': np.array([5, 10, 50, 100], dtype=np.float32),
                 'search_bbox_rgb': np.array([15, 25, 110, 210], dtype=np.float32),
@@ -170,10 +172,10 @@ class TestCollateTemplateSearch:
                 'is_valid': True,
             },
             {
-                'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
-                'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
-                'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
-                'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+                'rgb_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'sonar_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'rgb_search': np.random.randn(256, 256, 3).astype(np.float32),
+                'sonar_search': np.random.randn(256, 256, 3).astype(np.float32),
                 'template_bbox_rgb': np.array([20, 30, 110, 210], dtype=np.float32),
                 'template_bbox_sonar': np.array([10, 15, 55, 105], dtype=np.float32),
                 'search_bbox_rgb': np.array([25, 35, 120, 220], dtype=np.float32),
@@ -188,10 +190,10 @@ class TestCollateTemplateSearch:
 
         assert batched is not None
         # Images should be (B, C, H, W)
-        assert batched['template_rgb'].shape == (2, 3, 128, 128)
-        assert batched['template_sonar'].shape == (2, 3, 128, 128)
-        assert batched['search_rgb'].shape == (2, 3, 256, 256)
-        assert batched['search_sonar'].shape == (2, 3, 256, 256)
+        assert batched['rgb_template'].shape == (2, 3, 128, 128)
+        assert batched['sonar_template'].shape == (2, 3, 128, 128)
+        assert batched['rgb_search'].shape == (2, 3, 256, 256)
+        assert batched['sonar_search'].shape == (2, 3, 256, 256)
         # Bboxes should be (B, 4)
         assert batched['template_bbox_rgb'].shape == (2, 4)
         assert batched['search_bbox_sonar'].shape == (2, 4)
@@ -251,9 +253,9 @@ class TestDataLoaderCreation:
         batch = next(iter(loader))
 
         assert batch is not None
-        assert 'template_rgb' in batch
-        assert 'search_rgb' in batch
-        assert batch['template_rgb'].shape[0] == 8
+        assert 'rgb_template' in batch
+        assert 'rgb_search' in batch
+        assert batch['rgb_template'].shape[0] == 8
 
 
 class TestInfiniteDataLoader:
@@ -357,12 +359,13 @@ class TestMultiSequenceCollation:
 
     def test_collate_multi_sequence_template_search(self):
         """Test collating multi-sequence template-search batch."""
+        # Use trainer-expected field names
         batch = [
             {
-                'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
-                'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
-                'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
-                'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+                'rgb_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'sonar_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'rgb_search': np.random.randn(256, 256, 3).astype(np.float32),
+                'sonar_search': np.random.randn(256, 256, 3).astype(np.float32),
                 'template_bbox_rgb': np.array([10, 20, 100, 200], dtype=np.float32),
                 'template_bbox_sonar': np.array([5, 10, 50, 100], dtype=np.float32),
                 'search_bbox_rgb': np.array([15, 25, 110, 210], dtype=np.float32),
@@ -376,10 +379,10 @@ class TestMultiSequenceCollation:
                 'is_valid': True,
             },
             {
-                'template_rgb': np.random.randn(128, 128, 3).astype(np.float32),
-                'template_sonar': np.random.randn(128, 128, 3).astype(np.float32),
-                'search_rgb': np.random.randn(256, 256, 3).astype(np.float32),
-                'search_sonar': np.random.randn(256, 256, 3).astype(np.float32),
+                'rgb_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'sonar_template': np.random.randn(128, 128, 3).astype(np.float32),
+                'rgb_search': np.random.randn(256, 256, 3).astype(np.float32),
+                'sonar_search': np.random.randn(256, 256, 3).astype(np.float32),
                 'template_bbox_rgb': np.array([20, 30, 110, 210], dtype=np.float32),
                 'template_bbox_sonar': np.array([10, 15, 55, 105], dtype=np.float32),
                 'search_bbox_rgb': np.array([25, 35, 120, 220], dtype=np.float32),
@@ -397,8 +400,8 @@ class TestMultiSequenceCollation:
         batched = collate_fn_template_search(batch)
 
         assert batched is not None
-        assert batched['template_rgb'].shape == (2, 3, 128, 128)
-        assert batched['search_rgb'].shape == (2, 3, 256, 256)
+        assert batched['rgb_template'].shape == (2, 3, 128, 128)
+        assert batched['rgb_search'].shape == (2, 3, 256, 256)
 
         # Verify sequence names are preserved
         assert 'template_sequence' in batched

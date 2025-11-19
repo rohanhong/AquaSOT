@@ -101,19 +101,13 @@ model:
       output_dim: 768
 
     sonar:
-      type: sonar
-      encoder_type: vit
+      type: vit_sonar
       model_name: vit_base_patch16_224
-      in_channels: 1
-      base_channels: 64
-      num_stages: 3
-      use_logpolar: true
-      logpolar:
-        radial_bins: 128
-        angular_bins: 360
-        min_radius: 1.0
-        max_radius: 100.0
-        align_corners: true
+      pretrained: true
+      in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
+      # NOTE: Sonar images are preprocessed to rectangular coordinates (682x376)
+      # before training. See scripts/preprocess_sonar.py and docs/Training_Guide.md
+      img_size: 224
       output_dim: 768
 
   fusion:
@@ -362,7 +356,6 @@ ablation:
     quality_gating: true
     weak3d_cycle: true
     deformable_attention: true
-    logpolar_transform: true
     dual_consistency: true
 
   # Alternative configurations
@@ -405,7 +398,6 @@ paths:
   # Pretrained models
   pretrained:
     vit_base: null  # Will use timm default
-    convnext_base: null
 
   # Data cache
   cache_dir: .cache

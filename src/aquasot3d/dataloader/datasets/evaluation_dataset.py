@@ -17,7 +17,7 @@ from typing import Dict, Optional, List
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset
-from ..transforms.sonar_transforms import letterbox_resize
+# Note: letterbox_resize removed - unified with RGB strategy (2025-11-19)
 
 
 class EvaluationSequenceDataset(Dataset):
@@ -299,37 +299,22 @@ class EvaluationSequenceDataset(Dataset):
         # Store original dimensions
         original_height, original_width = img.shape[:2]
 
-        # Branch based on modality
-        if is_sonar:
-            # Sonar: Use letterbox padding to preserve aspect ratio (Audit 2025111408 Finding 2)
-            # This keeps sensor origin at cy=H-1 for log-polar transform
-            img_resized, (scale, pad_y, pad_x) = letterbox_resize(
-                img, (target_size, target_size), fill_value=0
-            )
-            # Letterbox uses isotropic scaling, so scale_x = scale_y = scale
-            metadata = {
-                'original_height': original_height,
-                'original_width': original_width,
-                'scale_x': scale,
-                'scale_y': scale,
-                'pad_x': pad_x,
-                'pad_y': pad_y,
-            }
-        else:
-            # RGB: Direct resize (anisotropic - can stretch)
-            import cv2
-            img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
-            # Compute per-axis scaling factors
-            scale_x = target_size / original_width
-            scale_y = target_size / original_height
-            metadata = {
-                'original_height': original_height,
-                'original_width': original_width,
-                'scale_x': scale_x,
-                'scale_y': scale_y,
-                'pad_x': 0,
-                'pad_y': 0,
-            }
+        # Unified resize strategy for both RGB and Sonar
+        # Note: Sonar now uses rectangular coordinates (682×376), no special handling needed
+        import cv2
+        img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        # Compute per-axis scaling factors
+        scale_x = target_size / original_width
+        scale_y = target_size / original_height
+        metadata = {
+            'original_height': original_height,
+            'original_width': original_width,
+            'scale_x': scale_x,
+            'scale_y': scale_y,
+            'pad_x': 0,
+            'pad_y': 0,
+        }
 
         # Convert to tensor and normalize
         # Handle different channel formats

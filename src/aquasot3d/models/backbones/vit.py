@@ -16,13 +16,15 @@ import timm
 from aquasot3d.core import BACKBONE_REGISTRY, BaseModule
 
 
-@BACKBONE_REGISTRY.register("ViT_RGB")
-class ViTRGBBackbone(BaseModule):
+@BACKBONE_REGISTRY.register("vit_rgb")
+@BACKBONE_REGISTRY.register("vit_sonar")
+@BACKBONE_REGISTRY.register("vit")
+class ViTBackbone(BaseModule):
     """
-    Vision Transformer backbone for RGB image encoding.
+    Unified Vision Transformer backbone for RGB and Sonar image encoding.
 
-    Supports OSTrack-style template-search paradigm by processing concatenated
-    template and search region patches through a shared ViT encoder.
+    Supports both RGB (3-channel) and Sonar (1-channel) inputs through optional
+    channel adaptation. Uses OSTrack-style template-search paradigm.
 
     Args:
         model_name: timm model name (e.g., 'vit_base_patch16_224')
@@ -36,6 +38,7 @@ class ViTRGBBackbone(BaseModule):
         drop_path_rate: Stochastic depth rate (default: 0.1)
         return_interm_layers: Whether to return intermediate layer features
         freeze_backbone: Whether to freeze backbone parameters
+        in_channels: Input channels (3 for RGB, 1 for Sonar, default: 3)
 
     Returns:
         Dictionary containing:
@@ -44,11 +47,13 @@ class ViTRGBBackbone(BaseModule):
             - 'attention_weights': Self-attention weights (optional)
 
     Example:
-        >>> backbone = ViTRGBBackbone(model_name='vit_base_patch16_224', pretrained=True)
-        >>> template = torch.randn(4, 3, 128, 128)  # Template frames
-        >>> search = torch.randn(4, 3, 256, 256)    # Search region frames
-        >>> outputs = backbone(template, search)
-        >>> print(outputs['features'].shape)  # (4, num_patches, 768)
+        >>> # RGB backbone
+        >>> rgb_backbone = ViTRGBBackbone(model_name='vit_base_patch16_224', in_channels=3)
+        >>> # Sonar backbone (same architecture, different input)
+        >>> sonar_backbone = ViTRGBBackbone(model_name='vit_base_patch16_224', in_channels=1)
+        >>> template = torch.randn(4, 3, 128, 128)  # RGB
+        >>> search = torch.randn(4, 3, 256, 256)
+        >>> outputs = rgb_backbone(template, search)
     """
 
     def __init__(
@@ -65,6 +70,7 @@ class ViTRGBBackbone(BaseModule):
         drop_path_rate: float = 0.1,
         return_interm_layers: bool = False,
         freeze_backbone: bool = False,
+        in_channels: int = 3,  # Support both RGB (3) and Sonar (1)
         **kwargs
     ):
         super().__init__()
@@ -79,6 +85,14 @@ class ViTRGBBackbone(BaseModule):
         self.num_heads = num_heads
         self.return_interm_layers = return_interm_layers
         self.freeze_backbone = freeze_backbone
+        self.in_channels = in_channels
+
+        # Channel adapter for single-channel inputs (e.g., Sonar)
+        if in_channels == 1:
+            self.channel_adapter = nn.Conv2d(1, 3, kernel_size=1, bias=False)
+            self.logger.info("Added 1->3 channel adapter for single-channel input")
+        else:
+            self.channel_adapter = None
 
         # Load pretrained ViT from timm (ImageNet weights)
         try:
@@ -265,6 +279,11 @@ class ViTRGBBackbone(BaseModule):
         """
         B = template.shape[0]
 
+        # Apply channel adapter for single-channel inputs (e.g., Sonar)
+        if self.channel_adapter is not None:
+            template = self.channel_adapter(template)
+            search = self.channel_adapter(search)
+
         if return_separate:
             # Process template and search separately
             template_feat = self.forward_features(template)
@@ -360,23 +379,24 @@ class PositionEmbeddingAdapter(nn.Module):
         return pos_embed
 
 
-def create_vit_rgb_backbone(
+def create_vit_backbone(
     model_name: str = "vit_base_patch16_224",
     pretrained: bool = True,
     **kwargs
-) -> ViTRGBBackbone:
+) -> ViTBackbone:
     """
-    Factory function to create ViT RGB backbone.
+    Factory function to create ViT backbone (RGB or Sonar).
 
     Args:
         model_name: timm model name
         pretrained: Whether to load pretrained weights
-        **kwargs: Additional arguments for ViTRGBBackbone
+        **kwargs: Additional arguments for ViTBackbone
 
     Returns:
-        ViTRGBBackbone instance
+        ViTBackbone instance
 
     Example:
-        >>> backbone = create_vit_rgb_backbone('vit_base_patch16_224', pretrained=True)
+        >>> rgb_backbone = create_vit_backbone('vit_base_patch16_224', pretrained=True)
+        >>> sonar_backbone = create_vit_backbone('vit_base_patch16_224', in_channels=1, pretrained=True)
     """
-    return ViTRGBBackbone(model_name=model_name, pretrained=pretrained, **kwargs)
+    return ViTBackbone(model_name=model_name, pretrained=pretrained, **kwargs)

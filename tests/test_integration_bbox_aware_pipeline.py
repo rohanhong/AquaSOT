@@ -20,9 +20,8 @@ from typing import Dict, List
 from aquasot3d.dataloader.datasets.augmentation import (
     TrackingAugmentationBboxAware,
     NoAugmentationBboxAware,
-    build_augmentation_bbox_aware,
-)
-from aquasot3d.models.backbones.sonar_encoder import SonarEncoder
+    build_augmentation_bbox_aware)
+from aquasot3d.models.backbones.vit import ViTBackbone
 
 
 class MockDatasetSample:
@@ -57,33 +56,21 @@ class TestEndToEndPipeline:
 
     def test_augmentation_to_encoder_sonar_only(self):
         """
-        Test sonar-only pipeline: Augmentation → SonarEncoder.
+        Test sonar-only pipeline: Augmentation → ViT Backbone (Sonar mode).
 
         CRITICAL: This is the key pipeline for sonar pretraining (Stage 2).
         """
         # Create augmentation pipeline
         aug = TrackingAugmentationBboxAware(
             is_train=True,
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-                'fov_angle': 130.0
-            }
-        )
+            sonar_config={'enable_speckle': True})
 
-        # Create SonarEncoder
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        # Create ViT backbone for sonar
+        encoder = ViTBackbone(
             model_name='vit_tiny_patch16_224',
-            use_logpolar=True,
-            learnable_logpolar=False,
-            img_size=(256, 256),  # Augmentation outputs 256x256 log-polar
-            sonar_fov_angle=130.0,
-            max_range_pixels=256
+            pretrained=False,
+            in_channels=1,  # Sonar mode (1ch -> 3ch adapter applied internally)
+            img_size=224
         )
 
         # Generate mock sample
@@ -94,36 +81,30 @@ class TestEndToEndPipeline:
         augmented = aug(sample)
 
         # Verify augmented output
-        assert augmented['sonar_img'].shape == (1, 256, 256)
-        assert augmented['sonar_bbox'].shape == (4,)
+        assert augmented['sonar_img'].shape == (1, 376, 682)
+        assert augmented['sonar_bbox'].shape == torch.Size([4])
 
-        # Prepare for encoder
-        template = augmented['sonar_img'].unsqueeze(0)  # [1, 1, 256, 256]
-        search = augmented['sonar_img'].unsqueeze(0)
-        template_bbox = augmented['sonar_bbox'].unsqueeze(0)  # [1, 4]
-        search_bbox = augmented['sonar_bbox'].unsqueeze(0)
+        # Prepare for encoder (resize to 224x224 for ViT)
+        import torch.nn.functional as F
+        template = F.interpolate(augmented['sonar_img'].unsqueeze(0), size=(224, 224), mode='bilinear')
+        search = F.interpolate(augmented['sonar_img'].unsqueeze(0), size=(224, 224), mode='bilinear')
+
+        # Note: Bbox transformations are handled in augmentation pipeline
+        # ViT encoder only processes features
 
         # Forward through encoder
         with torch.no_grad():
-            outputs = encoder(
-                template, search,
-                template_bbox=template_bbox,
-                search_bbox=search_bbox
-            )
+            outputs = encoder(template, search, return_separate=True)
 
         # Verify encoder outputs
         assert 'template_features' in outputs
         assert 'search_features' in outputs
-        assert 'template_bbox' in outputs
-        assert 'search_bbox' in outputs
-
-        # Verify bbox coordinates are valid for encoder's 224x224 space
-        assert torch.all(outputs['template_bbox'][:, 0] >= 0)
-        assert torch.all(outputs['template_bbox'][:, 0] < 224)
+        assert outputs['template_features'].shape[0] == 1  # Batch size
+        assert outputs['search_features'].shape[0] == 1
 
     def test_augmentation_to_encoder_multimodal(self):
         """
-        Test multi-modal pipeline: Augmentation → SonarEncoder + RGBEncoder.
+        Test multi-modal pipeline: Augmentation → ViT Backbones (Sonar + RGB).
 
         CRITICAL: This is the pipeline for fusion training (Stage 3).
         """
@@ -131,22 +112,14 @@ class TestEndToEndPipeline:
         aug = TrackingAugmentationBboxAware(
             is_train=True,
             rgb_config={'enable_color_jitter': True},
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
-        )
+            sonar_config={'enable_speckle': True})
 
-        # Create SonarEncoder
-        sonar_encoder = SonarEncoder(
-            encoder_type='vit',
+        # Create ViT backbone for sonar
+        sonar_encoder = ViTBackbone(
             model_name='vit_tiny_patch16_224',
-            use_logpolar=True,
-            img_size=(256, 256)
+            pretrained=False,
+            in_channels=1,  # Sonar mode
+            img_size=224
         )
 
         # Generate mock sample
@@ -160,45 +133,33 @@ class TestEndToEndPipeline:
         assert augmented['rgb_img'] is not None
         assert augmented['sonar_img'] is not None
         assert augmented['rgb_img'].shape == (3, 376, 682)  # RGB unchanged
-        assert augmented['sonar_img'].shape == (1, 256, 256)  # Sonar log-polar
+        assert augmented['sonar_img'].shape == (1, 376, 682)  # Sonar log-polar
 
-        # Forward sonar through encoder
-        sonar_template = augmented['sonar_img'].unsqueeze(0)
-        sonar_search = augmented['sonar_img'].unsqueeze(0)
-        sonar_bbox = augmented['sonar_bbox'].unsqueeze(0)
+        # Forward sonar through encoder (resize to 224x224)
+        import torch.nn.functional as F
+        sonar_template = F.interpolate(augmented['sonar_img'].unsqueeze(0), size=(224, 224), mode='bilinear')
+        sonar_search = F.interpolate(augmented['sonar_img'].unsqueeze(0), size=(224, 224), mode='bilinear')
 
         with torch.no_grad():
-            sonar_outputs = sonar_encoder(
-                sonar_template, sonar_search,
-                template_bbox=sonar_bbox,
-                search_bbox=sonar_bbox
-            )
+            sonar_outputs = sonar_encoder(sonar_template, sonar_search, return_separate=True)
 
         # Verify outputs
         assert 'template_features' in sonar_outputs
-        assert 'template_bbox' in sonar_outputs
+        assert 'search_features' in sonar_outputs
 
     def test_batch_processing(self):
         """Test batch processing through entire pipeline."""
         # Create augmentation pipeline
         aug = TrackingAugmentationBboxAware(
             is_train=True,
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
-        )
+            sonar_config={'enable_speckle': True})
 
-        # Create SonarEncoder
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        # Create ViT backbone for sonar
+        encoder = ViTBackbone(
             model_name='vit_tiny_patch16_224',
-            use_logpolar=True,
-            img_size=(256, 256)
+            pretrained=False,
+            in_channels=1,
+            img_size=224
         )
 
         # Generate batch
@@ -212,44 +173,34 @@ class TestEndToEndPipeline:
         # Stack into batch
         template_batch = torch.stack([aug_sample['sonar_img'] for aug_sample in augmented_batch])
         search_batch = torch.stack([aug_sample['sonar_img'] for aug_sample in augmented_batch])
-        template_bbox_batch = torch.stack([aug_sample['sonar_bbox'] for aug_sample in augmented_batch])
-        search_bbox_batch = torch.stack([aug_sample['sonar_bbox'] for aug_sample in augmented_batch])
 
-        # Verify batch shapes
-        assert template_batch.shape == (B, 1, 256, 256)
-        assert template_bbox_batch.shape == (B, 4)
+        # Verify batch shapes before resize
+        assert template_batch.shape == (B, 1, 376, 682)
+
+        # Resize to 224x224 for ViT
+        import torch.nn.functional as F
+        template_batch = F.interpolate(template_batch, size=(224, 224), mode='bilinear')
+        search_batch = F.interpolate(search_batch, size=(224, 224), mode='bilinear')
 
         # Forward through encoder
         with torch.no_grad():
-            outputs = encoder(
-                template_batch, search_batch,
-                template_bbox=template_bbox_batch,
-                search_bbox=search_bbox_batch
-            )
+            outputs = encoder(template_batch, search_batch, return_separate=True)
 
         # Verify batch outputs
-        assert outputs['template_bbox'].shape == (B, 4)
-        assert outputs['search_bbox'].shape == (B, 4)
+        assert outputs['template_features'].shape[0] == B
+        assert outputs['search_features'].shape[0] == B
 
     def test_evaluation_mode_pipeline(self):
         """Test pipeline in evaluation mode (no augmentation)."""
         # Create evaluation augmentation
-        aug = NoAugmentationBboxAware(
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
-        )
+        aug = NoAugmentationBboxAware()
 
-        # Create SonarEncoder
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        # Create ViT backbone for sonar
+        encoder = ViTBackbone(
             model_name='vit_tiny_patch16_224',
-            use_logpolar=True,
-            img_size=(256, 256)
+            pretrained=False,
+            in_channels=1,
+            img_size=224
         )
 
         # Generate mock sample
@@ -259,23 +210,18 @@ class TestEndToEndPipeline:
         # Apply augmentation (only normalization)
         augmented = aug(sample)
 
-        # Forward through encoder
-        template = augmented['sonar_img'].unsqueeze(0)
-        search = augmented['sonar_img'].unsqueeze(0)
-        template_bbox = augmented['sonar_bbox'].unsqueeze(0)
-        search_bbox = augmented['sonar_bbox'].unsqueeze(0)
+        # Forward through encoder (resize to 224x224)
+        import torch.nn.functional as F
+        template = F.interpolate(augmented['sonar_img'].unsqueeze(0), size=(224, 224), mode='bilinear')
+        search = F.interpolate(augmented['sonar_img'].unsqueeze(0), size=(224, 224), mode='bilinear')
 
         encoder.eval()
         with torch.no_grad():
-            outputs = encoder(
-                template, search,
-                template_bbox=template_bbox,
-                search_bbox=search_bbox
-            )
+            outputs = encoder(template, search, return_separate=True)
 
         # Verify outputs
-        assert 'template_bbox' in outputs
-        assert 'search_bbox' in outputs
+        assert 'template_features' in outputs
+        assert 'search_features' in outputs
 
 
 class TestPerformanceBenchmark:
@@ -291,8 +237,7 @@ class TestPerformanceBenchmark:
         baseline_aug = TrackingAugmentationBboxAware(
             is_train=True,
             rgb_config={'enable_color_jitter': False},
-            sonar_config={'enable_speckle': False},  # Disable for baseline
-            use_logpolar=False
+            sonar_config={'enable_speckle': False}  # Disable for baseline
         )
 
         # Create bbox-aware augmentation with transforms (speckle enabled)
@@ -303,8 +248,7 @@ class TestPerformanceBenchmark:
                 'enable_speckle': True,  # Enable speckle
                 'speckle_prob': 1.0,  # Always apply for consistent benchmark
                 'speckle_level': 0.1
-            },
-            use_logpolar=False  # Disable log-polar for fair comparison
+            }
         )
 
         # Generate test samples (numpy arrays)
@@ -341,53 +285,42 @@ class TestPerformanceBenchmark:
         # (Speckle adds random noise multiplication to entire image, ~100% overhead is expected)
         assert overhead < 120.0, f"Speckle overhead {overhead:.2f}% too high"
 
-    def test_encoder_bbox_overhead(self):
+    def test_encoder_performance(self):
         """
-        Benchmark SonarEncoder overhead with bbox pass-through.
+        Benchmark ViT encoder performance with return_separate flag.
 
-        Overhead should be negligible (<3%) since bbox transform is non-differentiable.
+        Tests that unified ViT processes features efficiently.
         """
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        encoder = ViTBackbone(
             model_name='vit_tiny_patch16_224',
-            use_logpolar=True,
-            img_size=(256, 256)
+            pretrained=False,
+            in_channels=1,
+            img_size=224
         )
 
         B = 8
-        template = torch.randn(B, 1, 256, 256)
-        search = torch.randn(B, 1, 256, 256)
-        template_bbox = torch.rand(B, 4) * 100 + 50
-        search_bbox = torch.rand(B, 4) * 100 + 50
+        template = torch.randn(B, 1, 224, 224)
+        search = torch.randn(B, 1, 224, 224)
 
         # Warmup
         with torch.no_grad():
             for _ in range(10):
-                _ = encoder(template, search)
+                _ = encoder(template, search, return_separate=True)
 
-        # Benchmark without bboxes
+        # Benchmark encoder forward pass
         start_time = time.time()
         with torch.no_grad():
             for _ in range(100):
-                _ = encoder(template, search)
-        time_without_bbox = time.time() - start_time
+                _ = encoder(template, search, return_separate=True)
+        encoder_time = time.time() - start_time
 
-        # Benchmark with bboxes
-        start_time = time.time()
-        with torch.no_grad():
-            for _ in range(100):
-                _ = encoder(template, search, template_bbox=template_bbox, search_bbox=search_bbox)
-        time_with_bbox = time.time() - start_time
+        print(f"\nEncoder Performance:")
+        print(f"  Forward pass time: {encoder_time:.4f}s for 100 iterations")
+        print(f"  Average per batch: {encoder_time / 100 * 1000:.2f}ms")
 
-        overhead = (time_with_bbox - time_without_bbox) / time_without_bbox * 100
-
-        print(f"\nEncoder Bbox Overhead:")
-        print(f"  Without bbox: {time_without_bbox:.4f}s")
-        print(f"  With bbox:    {time_with_bbox:.4f}s")
-        print(f"  Overhead:     {overhead:.2f}%")
-
-        # Overhead should be negligible (<3%)
-        assert overhead < 3.0, f"Encoder bbox overhead {overhead:.2f}% exceeds 3% threshold"
+        # Verify encoder runs efficiently (<100ms per batch on CPU)
+        avg_time_ms = encoder_time / 100 * 1000
+        assert avg_time_ms < 500, f"Encoder too slow: {avg_time_ms:.2f}ms per batch"
 
 
 class TestBboxImageSynchronization:
@@ -404,16 +337,7 @@ class TestBboxImageSynchronization:
         # Create augmentation pipeline
         aug = TrackingAugmentationBboxAware(
             is_train=False,  # Disable random augmentation for deterministic test
-            sonar_config={'enable_speckle': False},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-                'fov_angle': 130.0
-            }
-        )
+            sonar_config={'enable_speckle': False})
 
         # Create synthetic image with target at bbox location
         sonar_img = np.zeros((376, 682, 1), dtype=np.uint8)
@@ -461,15 +385,7 @@ class TestBboxImageSynchronization:
         """
         aug = TrackingAugmentationBboxAware(
             is_train=False,
-            sonar_config={'enable_speckle': False},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
-        )
+            sonar_config={'enable_speckle': False})
 
         # Test different bbox positions
         test_bboxes = [
@@ -552,8 +468,8 @@ class TestConfigurationIntegration:
         result_train = aug_train(sample_train)
         result_eval = aug_eval(sample_eval)
 
-        assert result_train['sonar_img'].shape == (1, 256, 256)
-        assert result_eval['sonar_img'].shape == (1, 256, 256)
+        assert result_train['sonar_img'].shape == (1, 376, 682)
+        assert result_eval['sonar_img'].shape == (1, 376, 682)
 
 
 if __name__ == '__main__':

@@ -10,14 +10,14 @@ This module implements the complete tracking pipeline integrating:
 
 Architecture:
     Input: RGB template/search + Sonar template/search
-    -> Backbones: ViT/ConvNeXt (RGB) + SonarEncoder (Sonar)
+    -> Backbones: Unified ViT for RGB (3-channel) and Sonar (1-channel)
     -> Fusion: G2-DCMA (geometry-gated deformable cross-modal attention)
     -> Temporal: Vision-Mamba / Transformer / ARTrack
     -> Heads: BoxHead (RGB/Sonar/Fusion) + Weak3DHead + GeometricProjector
     Output: 2D boxes (RGB/Sonar/Fusion) + 3D center (X,Y,Z) + losses
 
 Author: AquaSOT-3D Team
-Date: 2025-11-10
+Date: 2025-11-19
 """
 
 import torch

@@ -272,15 +272,13 @@ def build_dataloaders(cfg):
 
         # Use bbox-aware augmentation builder
         aug_cfg = cfg.data.augmentation
-        use_logpolar = aug_cfg.get('use_logpolar', False)
 
         train_augmentation = build_augmentation(
             cfg=aug_cfg,
-            is_train=True,
-            use_logpolar=use_logpolar
+            is_train=True
         )
 
-        logger.info(f"Augmentation type: {aug_cfg.get('type', 'TrackingAugmentationBboxAware')}, use_logpolar={use_logpolar}")
+        logger.info(f"Augmentation type: {aug_cfg.get('type', 'TrackingAugmentationBboxAware')}")
     else:
         logger.info("Augmentation disabled")
 

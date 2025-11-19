@@ -5,7 +5,7 @@ Tests the implementation of partial checkpoint loading for Stage 1/2 pretrained 
 verifying the fixes for Audit 2025111704 Finding #2.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-17
+Date: 2025-11-19
 """
 
 import pytest
@@ -20,8 +20,7 @@ import sys
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / 'src'))
 
-from aquasot3d.models.backbones.vit_rgb import ViTRGBBackbone
-from aquasot3d.models.backbones.sonar_encoder import SonarEncoder
+from aquasot3d.models.backbones.vit import ViTBackbone
 
 
 class TestBackboneCheckpointLoading:
@@ -29,19 +28,21 @@ class TestBackboneCheckpointLoading:
 
     @pytest.fixture
     def temp_checkpoint_dir(self):
-        """Create temporary directory for checkpoints."""
+        """Create temporary directory for checkpoint files."""
         with tempfile.TemporaryDirectory() as tmpdir:
             yield Path(tmpdir)
 
     def create_dummy_rgb_checkpoint(self, checkpoint_path: Path):
         """Create a dummy RGB backbone checkpoint."""
         # Create a simple state dict mimicking RGB backbone structure
+        # Using embed_dim=192 to match vit_tiny_patch16_224
+        embed_dim = 192
         state_dict = {
             'model_state_dict': {
-                'backbone.rgb_backbone.vit.patch_embed.proj.weight': torch.randn(768, 3, 16, 16),
-                'backbone.rgb_backbone.vit.patch_embed.proj.bias': torch.randn(768),
-                'backbone.rgb_backbone.vit.pos_embed': torch.randn(1, 197, 768),
-                'backbone.rgb_backbone.vit.cls_token': torch.randn(1, 1, 768),
+                'backbone.rgb_backbone.vit.patch_embed.proj.weight': torch.randn(embed_dim, 3, 16, 16),
+                'backbone.rgb_backbone.vit.patch_embed.proj.bias': torch.randn(embed_dim),
+                'backbone.rgb_backbone.vit.pos_embed': torch.randn(1, 197, embed_dim),
+                'backbone.rgb_backbone.vit.cls_token': torch.randn(1, 1, embed_dim),
             },
             'epoch': 40,
             'metadata': {
@@ -55,15 +56,18 @@ class TestBackboneCheckpointLoading:
         return checkpoint_path
 
     def create_dummy_sonar_checkpoint(self, checkpoint_path: Path):
-        """Create a dummy Sonar encoder checkpoint."""
-        # Create a simple state dict mimicking Sonar encoder structure
+        """Create a dummy Sonar backbone checkpoint (using ViT)."""
+        # Create a simple state dict mimicking Sonar backbone structure
+        # NOTE: Sonar now uses unified ViT with channel adapter
+        # Using embed_dim=192 to match vit_tiny_patch16_224
+        embed_dim = 192
         state_dict = {
             'model_state_dict': {
-                'backbone.sonar_encoder.encoder.patch_embed.proj.weight': torch.randn(384, 3, 16, 16),
-                'backbone.sonar_encoder.encoder.patch_embed.proj.bias': torch.randn(384),
-                'backbone.sonar_encoder.encoder.pos_embed': torch.randn(1, 197, 384),
-                'backbone.sonar_encoder.input_adapter.weight': torch.randn(3, 1, 1, 1),
-                'backbone.sonar_encoder.input_adapter.bias': torch.randn(3),
+                'backbone.sonar_encoder.vit.patch_embed.proj.weight': torch.randn(embed_dim, 3, 16, 16),
+                'backbone.sonar_encoder.vit.patch_embed.proj.bias': torch.randn(embed_dim),
+                'backbone.sonar_encoder.vit.pos_embed': torch.randn(1, 197, embed_dim),
+                'backbone.sonar_encoder.vit.cls_token': torch.randn(1, 1, embed_dim),
+                'backbone.sonar_encoder.channel_adapter.weight': torch.randn(3, 1, 1, 1),
             },
             'epoch': 40,
             'metadata': {
@@ -78,7 +82,7 @@ class TestBackboneCheckpointLoading:
 
     def test_rgb_backbone_loads_without_pretrained_path(self):
         """Test RGB backbone initialization without pretrained checkpoint."""
-        backbone = ViTRGBBackbone(
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
             pretrained_path=None
@@ -92,7 +96,7 @@ class TestBackboneCheckpointLoading:
         non_existent_path = str(temp_checkpoint_dir / 'non_existent.pth')
 
         # Should not raise error, just log warning
-        backbone = ViTRGBBackbone(
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
             pretrained_path=non_existent_path
@@ -105,7 +109,7 @@ class TestBackboneCheckpointLoading:
         checkpoint_path = temp_checkpoint_dir / 'rgb_checkpoint.pth'
         self.create_dummy_rgb_checkpoint(checkpoint_path)
 
-        backbone = ViTRGBBackbone(
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
             pretrained_path=str(checkpoint_path)
@@ -116,48 +120,49 @@ class TestBackboneCheckpointLoading:
         # Verify checkpoint was loaded (weights should be different from random init)
         assert backbone.pretrained_path == str(checkpoint_path)
 
-    def test_sonar_encoder_loads_without_pretrained_path(self):
-        """Test Sonar encoder initialization without pretrained checkpoint."""
-        encoder = SonarEncoder(
-            encoder_type='vit',
+    def test_sonar_backbone_loads_without_pretrained_path(self):
+        """Test Sonar backbone initialization without pretrained checkpoint."""
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
+            in_channels=1,  # Sonar mode
             pretrained_path=None
         )
 
-        assert encoder is not None
-        assert hasattr(encoder, 'encoder')
+        assert backbone is not None
+        assert hasattr(backbone, 'vit')
+        assert backbone.channel_adapter is not None
 
-    def test_sonar_encoder_handles_missing_checkpoint_gracefully(self, temp_checkpoint_dir):
-        """Test Sonar encoder handles missing checkpoint file gracefully."""
+    def test_sonar_backbone_handles_missing_checkpoint_gracefully(self, temp_checkpoint_dir):
+        """Test Sonar backbone handles missing checkpoint file gracefully."""
         non_existent_path = str(temp_checkpoint_dir / 'non_existent.pth')
 
         # Should not raise error, just log warning
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
+            in_channels=1,  # Sonar mode
             pretrained_path=non_existent_path
         )
 
-        assert encoder is not None
+        assert backbone is not None
 
-    def test_sonar_encoder_loads_checkpoint_successfully(self, temp_checkpoint_dir):
-        """Test Sonar encoder successfully loads pretrained checkpoint."""
+    def test_sonar_backbone_loads_checkpoint_successfully(self, temp_checkpoint_dir):
+        """Test Sonar backbone successfully loads pretrained checkpoint."""
         checkpoint_path = temp_checkpoint_dir / 'sonar_checkpoint.pth'
         self.create_dummy_sonar_checkpoint(checkpoint_path)
 
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
+            in_channels=1,  # Sonar mode
             pretrained_path=str(checkpoint_path)
         )
 
-        assert encoder is not None
-        assert hasattr(encoder, 'encoder')
+        assert backbone is not None
+        assert hasattr(backbone, 'vit')
         # Verify checkpoint was loaded
-        assert encoder.pretrained_path == str(checkpoint_path)
+        assert backbone.pretrained_path == str(checkpoint_path)
 
     def test_checkpoint_metadata_preserved(self, temp_checkpoint_dir):
         """Test that checkpoint metadata is preserved."""
@@ -177,42 +182,42 @@ class TestBackboneCheckpointLoading:
         checkpoint_path = temp_checkpoint_dir / 'rgb_checkpoint.pth'
         self.create_dummy_rgb_checkpoint(checkpoint_path)
 
-        backbone = ViTRGBBackbone(
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
             pretrained_path=str(checkpoint_path)
         )
 
-        # Test forward pass
+        # Test forward pass with separate processing
         template = torch.randn(2, 3, 128, 128)
         search = torch.randn(2, 3, 256, 256)
 
         with torch.no_grad():
-            outputs = backbone(template, search)
+            outputs = backbone(template, search, return_separate=True)
 
         assert 'template_features' in outputs
         assert 'search_features' in outputs
         assert outputs['template_features'].shape[0] == 2  # batch size
         assert outputs['search_features'].shape[0] == 2
 
-    def test_sonar_encoder_forward_with_pretrained_checkpoint(self, temp_checkpoint_dir):
-        """Test Sonar encoder forward pass with pretrained checkpoint."""
+    def test_sonar_backbone_forward_with_pretrained_checkpoint(self, temp_checkpoint_dir):
+        """Test Sonar backbone forward pass with pretrained checkpoint."""
         checkpoint_path = temp_checkpoint_dir / 'sonar_checkpoint.pth'
         self.create_dummy_sonar_checkpoint(checkpoint_path)
 
-        encoder = SonarEncoder(
-            encoder_type='vit',
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
+            in_channels=1,  # Sonar mode
             pretrained_path=str(checkpoint_path)
         )
 
-        # Test forward pass
-        template = torch.randn(2, 1, 376, 682)
-        search = torch.randn(2, 1, 376, 682)
+        # Test forward pass (Sonar images preprocessed to 224x224)
+        template = torch.randn(2, 1, 224, 224)
+        search = torch.randn(2, 1, 224, 224)
 
         with torch.no_grad():
-            outputs = encoder(template, search)
+            outputs = backbone(template, search)
 
         assert 'template_features' in outputs
         assert 'search_features' in outputs
@@ -266,7 +271,3 @@ class TestOptimizerLRMultiplier:
         # Verify head has base LR
         if head_group is not None:
             assert abs(head_group['lr'] - base_lr) < 1e-6
-
-
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])

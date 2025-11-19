@@ -94,8 +94,12 @@ class RadialProfileExtractor(BaseModule):
         x_coords = torch.arange(W, device=device, dtype=torch.float32)
         y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
 
-        # Calculate radial distance from sensor origin
-        r = torch.sqrt((x_grid - cx) ** 2 + (y_grid - cy) ** 2)  # [H, W]
+        # CRITICAL FIX: Sonar rectangular coordinates are (bearing_angle, range)
+        # - x-axis: X-direction angle (bearing, horizontal FOV)
+        # - y-axis: Z-direction distance (range from sensor)
+        # Cannot mix angle and distance with Euclidean formula!
+        # Correct radial distance is simply the y-axis coordinate (range axis)
+        r = cy - y_grid  # [H, W], range from sensor (bottom=0, top=max_range)
 
         # Normalize to bin indices [0, num_bins)
         r_max = r.max()

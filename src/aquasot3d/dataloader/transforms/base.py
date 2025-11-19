@@ -530,8 +530,8 @@ def compose_transforms(transforms: List[BboxAwareTransform]) -> 'ComposeTransfor
     Example:
         >>> transforms = [
         ...     SpeckleNoiseBboxAware(noise_level=0.1),
-        ...     RadialScalingJitterBboxAware(scale_range=(0.9, 1.1)),
-        ...     SectorOcclusionBboxAware(min_angle=10, max_angle=40)
+        ...     IntensityNormalizationBboxAware(),
+        ...     RandomOcclusionBboxAware(min_size=0.05, max_size=0.3)
         ... ]
         >>> pipeline = compose_transforms(transforms)
         >>> result = pipeline(image=img, bboxes=boxes)

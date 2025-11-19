@@ -28,11 +28,7 @@ from ..transforms.rgb_transforms import (
 
 from ..transforms.sonar_transforms import (
     SpeckleNoiseBboxAware,
-    RadialScalingJitterBboxAware,
-    SectorOcclusionBboxAware,
     IntensityNormalizationBboxAware,
-    FanMaskApplicationBboxAware,
-    LogPolarTransformBboxAware,
 )
 
 from ..transforms.base import (
@@ -89,16 +85,13 @@ class TrackingAugmentation(BaseAugmentation):
         is_train: Enable training augmentations
         rgb_config: Configuration dict for RGB transforms
         sonar_config: Configuration dict for Sonar transforms
-        use_logpolar: Enable log-polar transform for sonar (critical fix)
-        logpolar_config: Log-polar transform configuration
         seed: Random seed
 
     Example:
         >>> aug = TrackingAugmentationBboxAware(
         ...     is_train=True,
         ...     rgb_config={'enable_color_jitter': True},
-        ...     sonar_config={'enable_speckle': True, 'enable_radial_jitter': True},
-        ...     use_logpolar=True
+        ...     sonar_config={'enable_speckle': True}
         ... )
         >>> data = {
         ...     'rgb_img': np.array(...),
@@ -114,9 +107,8 @@ class TrackingAugmentation(BaseAugmentation):
         is_train: bool = True,
         rgb_config: Optional[Dict] = None,
         sonar_config: Optional[Dict] = None,
-        use_logpolar: bool = False,
-        logpolar_config: Optional[Dict] = None,
         seed: Optional[int] = None,
+        **kwargs  # Accept but ignore legacy logpolar params for backward compatibility
     ):
         super().__init__(is_train, seed)
 
@@ -124,34 +116,12 @@ class TrackingAugmentation(BaseAugmentation):
             rgb_config = {}
         if sonar_config is None:
             sonar_config = {}
-        if logpolar_config is None:
-            logpolar_config = {}
 
-        self.use_logpolar = use_logpolar
-
-        # Initialize RGB transforms (legacy, wrapped for compatibility)
+        # Initialize RGB transforms
         self.rgb_transforms = self._init_rgb_transforms(rgb_config)
 
         # Initialize Sonar bbox-aware transforms
         self.sonar_transforms = self._init_sonar_transforms(sonar_config)
-
-        # Log-polar transform (critical for sonar pretraining)
-        # CRITICAL FIX (Audit 2025111901): NO hardcoded dimensions!
-        # sonar_height/width are optional - auto-detected from first input
-        if use_logpolar:
-            self.logpolar_transform = LogPolarTransformBboxAware(
-                sonar_height=logpolar_config.get('sonar_height', None),  # None = auto-detect
-                sonar_width=logpolar_config.get('sonar_width', None),    # None = auto-detect
-                output_height=logpolar_config.get('output_height', 256),
-                output_width=logpolar_config.get('output_width', 256),
-                fov_angle=logpolar_config.get('fov_angle', 130.0),
-                alpha=logpolar_config.get('alpha', 1.0),
-                beta=logpolar_config.get('beta', 1.0),
-                min_radius=logpolar_config.get('min_radius', 1.0),
-                bbox_format='xywh'
-            )
-        else:
-            self.logpolar_transform = None
 
         # Always apply normalization and tensor conversion
         self.rgb_normalize = NormalizeBboxAware(bbox_format='xywh')
@@ -218,32 +188,10 @@ class TrackingAugmentation(BaseAugmentation):
                     bbox_format='xywh'
                 ))
 
-            # Radial scaling jitter (geometric, bbox-aware)
-            # CRITICAL: This fixes Audit Finding 2 (~19% IoU loss bug)
-            if config.get('enable_radial_jitter', False):  # Default disabled until tested
-                transforms.append(RadialScalingJitterBboxAware(
-                    scale_range=config.get('radial_scale_range', (0.9, 1.1)),
-                    prob=config.get('radial_jitter_prob', 0.3),
-                    bbox_format='xywh'
-                ))
-
-            # Sector occlusion (geometric, bbox-aware collision detection)
-            # CRITICAL: This fixes Audit Finding 3 (occluded bbox filtering)
-            if config.get('enable_sector_occlusion', False):  # Default disabled
-                transforms.append(SectorOcclusionBboxAware(
-                    min_angle=config.get('sector_min_angle', 10.0),
-                    max_angle=config.get('sector_max_angle', 40.0),
-                    prob=config.get('sector_occlusion_prob', 0.2),
-                    bbox_format='xywh'
-                ))
-
-        # Always apply intensity normalization and fan mask
+        # Always apply intensity normalization
+        # NOTE: Fan mask removed for rectangular coordinates (not applicable)
         transforms.append(IntensityNormalizationBboxAware(
-            mode=config.get('normalization_mode', 'adaptive'),
-            bbox_format='xywh'
-        ))
-        transforms.append(FanMaskApplicationBboxAware(
-            fov_angle=config.get('fov_angle', 130.0),
+            mode=config.get('normalization_mode', 'global'),
             bbox_format='xywh'
         ))
 
@@ -335,21 +283,6 @@ class TrackingAugmentation(BaseAugmentation):
                         dummy_bbox = np.array([[w // 2, h // 2, 1, 1]], dtype=np.float32)
                         current_sonar_bbox = dummy_bbox
 
-                # CRITICAL: Apply log-polar transform (fixes Audit 2025111801 Finding 1)
-                if self.use_logpolar and self.logpolar_transform is not None:
-                    result = self.logpolar_transform(
-                        image=current_sonar,
-                        bboxes=current_sonar_bbox
-                    )
-                    current_sonar = result['image']
-                    current_sonar_bbox = result['bboxes']
-
-                    # CRITICAL FIX (Audit 2025111903 Phase 2): Track validity when log-polar filters bbox
-                    if current_sonar_bbox.shape[0] == 0:
-                        is_valid_sonar = False  # Mark as invalid
-                        h, w = current_sonar.shape[:2]
-                        dummy_bbox = np.array([[w // 2, h // 2, 1, 1]], dtype=np.float32)
-                        current_sonar_bbox = dummy_bbox
 
             # Convert to tensor
             if not isinstance(current_sonar, torch.Tensor):
@@ -396,8 +329,6 @@ class TemplateSearchAugmentation(BaseAugmentation):
         template_config: Configuration dict for template augmentation
         search_config: Configuration dict for search augmentation
         enable_flip: Enable coordinated horizontal flip (default True)
-        use_logpolar: Enable log-polar transform for sonar (default False)
-        logpolar_config: Log-polar transform configuration
         seed: Random seed for reproducibility
 
     Example:
@@ -409,10 +340,9 @@ class TemplateSearchAugmentation(BaseAugmentation):
         ...     },
         ...     search_config={
         ...         'rgb': {'enable_color_jitter': True, 'enable_blur': True},
-        ...         'sonar': {'enable_speckle': True, 'enable_radial_jitter': True}
+        ...         'sonar': {'enable_speckle': True}
         ...     },
-        ...     enable_flip=True,
-        ...     use_logpolar=True
+        ...     enable_flip=True
         ... )
         >>> data = {
         ...     'template_rgb': np.array(...),
@@ -433,9 +363,8 @@ class TemplateSearchAugmentation(BaseAugmentation):
         template_config: Optional[Dict] = None,
         search_config: Optional[Dict] = None,
         enable_flip: bool = True,
-        use_logpolar: bool = False,
-        logpolar_config: Optional[Dict] = None,
         seed: Optional[int] = None,
+        **kwargs  # Accept but ignore legacy logpolar params
     ):
         super().__init__(is_train, seed)
 
@@ -443,28 +372,22 @@ class TemplateSearchAugmentation(BaseAugmentation):
             template_config = {}
         if search_config is None:
             search_config = {}
-        if logpolar_config is None:
-            logpolar_config = {}
 
         self.enable_flip = enable_flip and is_train
 
         # Initialize template augmentation (usually less aggressive)
-        self.template_aug = TrackingAugmentation(
+        self.template_aug = TrackingAugmentationBboxAware(
             is_train=is_train,
             rgb_config=template_config.get('rgb', {}),
             sonar_config=template_config.get('sonar', {}),
-            use_logpolar=use_logpolar,
-            logpolar_config=logpolar_config,
             seed=seed,
         )
 
         # Initialize search augmentation (more aggressive)
-        self.search_aug = TrackingAugmentation(
+        self.search_aug = TrackingAugmentationBboxAware(
             is_train=is_train,
             rgb_config=search_config.get('rgb', {}),
             sonar_config=search_config.get('sonar', {}),
-            use_logpolar=use_logpolar,
-            logpolar_config=logpolar_config,
             seed=seed,
         )
 
@@ -575,54 +498,25 @@ class NoAugmentation(BaseAugmentation):
     """
     Bbox-aware no-augmentation pipeline (evaluation mode).
 
-    Only applies normalization and optional log-polar transform,
-    with proper bbox synchronization.
+    Only applies normalization with proper bbox synchronization.
 
     Example:
-        >>> aug = NoAugmentationBboxAware(use_logpolar=True)
+        >>> aug = NoAugmentationBboxAware()
         >>> data = aug(data)
     """
 
-    def __init__(
-        self,
-        use_logpolar: bool = False,
-        logpolar_config: Optional[Dict] = None
-    ):
+    def __init__(self, **kwargs):
+        """No augmentation - only normalization."""
         super().__init__(is_train=False)
-
-        if logpolar_config is None:
-            logpolar_config = {}
-
-        self.use_logpolar = use_logpolar
 
         self.rgb_normalize = NormalizeBboxAware(bbox_format='xywh')
         self.to_tensor = ToTensor()
 
         # Sonar transforms (minimal)
+        # NOTE: Fan mask removed for rectangular coordinates (not applicable)
         self.sonar_normalize = IntensityNormalizationBboxAware(
             mode='adaptive', bbox_format='xywh'
         )
-        self.fan_mask = FanMaskApplicationBboxAware(
-            fov_angle=logpolar_config.get('fov_angle', 130.0),
-            bbox_format='xywh'
-        )
-
-        # Log-polar transform
-        # CRITICAL FIX (Audit 2025111901): NO hardcoded dimensions!
-        if use_logpolar:
-            self.logpolar_transform = LogPolarTransformBboxAware(
-                sonar_height=logpolar_config.get('sonar_height', None),  # None = auto-detect
-                sonar_width=logpolar_config.get('sonar_width', None),    # None = auto-detect
-                output_height=logpolar_config.get('output_height', 256),
-                output_width=logpolar_config.get('output_width', 256),
-                fov_angle=logpolar_config.get('fov_angle', 130.0),
-                alpha=logpolar_config.get('alpha', 1.0),
-                beta=logpolar_config.get('beta', 1.0),
-                min_radius=logpolar_config.get('min_radius', 1.0),
-                bbox_format='xywh'
-            )
-        else:
-            self.logpolar_transform = None
 
     def __call__(self, data: Dict) -> Dict:
         """Apply only normalization and tensor conversion."""
@@ -647,21 +541,10 @@ class NoAugmentation(BaseAugmentation):
 
         # Process Sonar with bbox awareness
         if sonar_img is not None:
-            # Normalize
+            # Normalize (fan mask removed for rectangular coordinates)
             result = self.sonar_normalize(image=sonar_img, bboxes=sonar_bbox)
             sonar_img = result['image']
             sonar_bbox = result['bboxes']
-
-            # Fan mask
-            result = self.fan_mask(image=sonar_img, bboxes=sonar_bbox)
-            sonar_img = result['image']
-            sonar_bbox = result['bboxes']
-
-            # Log-polar transform
-            if self.use_logpolar and self.logpolar_transform is not None:
-                result = self.logpolar_transform(image=sonar_img, bboxes=sonar_bbox)
-                sonar_img = result['image']
-                sonar_bbox = result['bboxes']
 
             # Convert to tensor
             if not isinstance(sonar_img, torch.Tensor):
@@ -686,19 +569,14 @@ class NoAugmentation(BaseAugmentation):
 
 def build_augmentation_bbox_aware(
     cfg: Dict,
-    is_train: bool = True,
-    use_logpolar: bool = False
+    is_train: bool = True
 ) -> BaseAugmentation:
     """
     Build bbox-aware augmentation pipeline from configuration.
 
-    CRITICAL: Use this builder for training with log-polar transforms enabled
-    to ensure proper bbox-image synchronization.
-
     Args:
         cfg: Configuration dictionary
         is_train: Training mode flag
-        use_logpolar: Enable log-polar transform (critical for sonar convergence)
 
     Returns:
         Bbox-aware augmentation pipeline instance
@@ -706,26 +584,20 @@ def build_augmentation_bbox_aware(
     Example:
         >>> cfg = {
         ...     'type': 'TrackingAugmentationBboxAware',
-        ...     'sonar_config': {'enable_speckle': True},
-        ...     'logpolar_config': {}  # No hardcoded dimensions - auto-detected
+        ...     'sonar_config': {'enable_speckle': True}
         ... }
-        >>> aug = build_augmentation_bbox_aware(cfg, is_train=True, use_logpolar=True)
+        >>> aug = build_augmentation_bbox_aware(cfg, is_train=True)
     """
     aug_type = cfg.get('type', 'TrackingAugmentationBboxAware')
 
     if not is_train or aug_type == 'NoAugmentationBboxAware':
-        return NoAugmentationBboxAware(
-            use_logpolar=use_logpolar,
-            logpolar_config=cfg.get('logpolar_config', {})
-        )
+        return NoAugmentationBboxAware()
 
     if aug_type == 'TrackingAugmentationBboxAware':
         return TrackingAugmentationBboxAware(
             is_train=is_train,
             rgb_config=cfg.get('rgb', {}),
             sonar_config=cfg.get('sonar', {}),
-            use_logpolar=use_logpolar,
-            logpolar_config=cfg.get('logpolar_config', {}),
             seed=cfg.get('seed'),
         )
 
@@ -735,8 +607,6 @@ def build_augmentation_bbox_aware(
             template_config=cfg.get('template_config', {}),
             search_config=cfg.get('search_config', {}),
             enable_flip=cfg.get('enable_flip', True),
-            use_logpolar=use_logpolar,
-            logpolar_config=cfg.get('logpolar_config', {}),
             seed=cfg.get('seed'),
         )
 

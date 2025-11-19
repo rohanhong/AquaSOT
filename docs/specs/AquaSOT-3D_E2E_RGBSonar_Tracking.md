@@ -115,7 +115,7 @@ AquaSOT-3D/
 │   ├─ rgb_sonar.py                     # Dual-modality dataloader with missing mask
 │   └─ transforms/{rgb_aug.py, sonar_aug.py, logpolar.py}
 ├─ models/
-│   ├─ backbones/{vit_rgb.py, sonar_logpolar_vit.py}
+│   ├─ backbones/{vit.py, convnext.py, factory.py}
 │   ├─ fusion/g2_dcma.py                # Geometry-Gated + Deformable + Dual Consistency
 │   ├─ temporal/{mamba_head.py, artrackv2_head.py}
 │   ├─ heads/{rgb_box.py, sonar_box.py, fusion_head.py, weak3d_head.py}

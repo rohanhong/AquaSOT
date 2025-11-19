@@ -41,10 +41,8 @@ def main():
     print("="*80)
 
     tests = [
-        # Backbone modules
-        ("aquasot3d.models.backbones", "ViTRGBBackbone"),
-        ("aquasot3d.models.backbones", "ConvNeXtRGBBackbone"),
-        ("aquasot3d.models.backbones", "SonarEncoder"),
+        # Backbone modules (unified ViT for RGB and Sonar)
+        ("aquasot3d.models.backbones", "ViTBackbone"),
         ("aquasot3d.models.backbones", "BackboneFactory"),
         ("aquasot3d.models.backbones", "MultiModalBackbone"),
         ("aquasot3d.models.backbones", "build_backbone"),
@@ -82,10 +80,8 @@ def main():
     print("-" * 80)
 
     expected_files = [
-        "src/aquasot3d/models/backbones/vit_rgb.py",
-        "src/aquasot3d/models/backbones/convnext_rgb.py",
-        "src/aquasot3d/models/backbones/sonar_encoder.py",
-        "src/aquasot3d/models/backbones/backbone_factory.py",
+        "src/aquasot3d/models/backbones/vit.py",
+        "src/aquasot3d/models/backbones/factory.py",
         "src/aquasot3d/models/backbones/__init__.py",
         "src/aquasot3d/models/__init__.py",
         "tests/test_backbones.py",

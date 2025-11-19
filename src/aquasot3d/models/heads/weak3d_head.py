@@ -37,9 +37,12 @@ def extract_radial_activation(
     averaging activations at similar distances from the sonar sensor origin.
     The profile serves as a depth proxy for weak 3D estimation.
 
+    NOTE: Sonar images are now preprocessed to rectangular coordinates (682x376).
+    The sensor position is fixed at bottom-center in the rectangular frame.
+
     Args:
-        sonar_img: Original sonar image, shape (B, 1, H_orig, W_orig)
-                   e.g., (B, 1, 376, 682) for standard FLS
+        sonar_img: Preprocessed rectangular sonar image, shape (B, 1, H, W)
+                   Standard size after preprocessing: (B, 1, 376, 682)
         sonar_feat_map: Sonar feature map, shape (B, C, H', W') or (B, N, C)
                         Supports both CNN features and ViT sequence features
         num_bins: Number of radial bins (default: 50)
@@ -83,27 +86,23 @@ def extract_radial_activation(
 
     B, C, H, W = sonar_feat_map.shape
 
-    # Calculate downsampling scale
-    # CRITICAL FIX (Audit 2025111407): Use index ranges instead of pixel counts
-    # for proper coordinate scaling. Pixel indices range from 0 to N-1, so the
-    # scaling factor should be (H-1)/(H_orig-1), not H/H_orig.
-    H_orig, W_orig = sonar_img.shape[-2:]
-    scale_h = (H - 1) / max(1, H_orig - 1)
-    scale_w = (W - 1) / max(1, W_orig - 1)
-
-    # Sensor position in feature map coordinates (scaled from original)
-    # Standard FLS: sensor at bottom center (cx=(W_orig-1)/2, cy=H_orig-1)
-    # For centered sensor, we can also directly compute from feature map size
-    cx = (W_orig - 1) / 2 * scale_w
-    cy = (H_orig - 1) * scale_h
+    # Sensor position in rectangular coordinate system
+    # After preprocessing, sonar sensor is at bottom-center in rectangular frame
+    # Feature map sensor position: directly computed from feature dimensions
+    cx = (W - 1) / 2.0  # Horizontal center (bearing axis)
+    cy = H - 1          # Bottom row (sensor position on range axis)
 
     # Create radial distance map in feature space
     y_coords = torch.arange(H, device=sonar_img.device, dtype=torch.float32)
     x_coords = torch.arange(W, device=sonar_img.device, dtype=torch.float32)
     y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
 
-    # Compute radial distance from sensor origin
-    r = torch.sqrt((x_grid - cx) ** 2 + (y_grid - cy) ** 2)  # (H, W)
+    # CRITICAL FIX: Sonar rectangular coordinates are (bearing_angle, range)
+    # - x-axis: X-direction angle (bearing, horizontal FOV)
+    # - y-axis: Z-direction distance (range from sensor)
+    # Cannot mix angle and distance with Euclidean formula!
+    # Correct radial distance is simply the y-axis coordinate (range axis)
+    r = cy - y_grid  # (H, W), range from sensor (bottom=0, top=max_range)
 
     # Normalize radial distance to bin indices [0, num_bins)
     r_max = r.max()
@@ -141,6 +140,9 @@ class Weak3DHead(BaseHead):
 
     Predicts 3D center (X, Y, Z) in Fusion Frame without extrinsic calibration.
     Uses sonar radial geometry for depth and dual-branch consistency for horizontal.
+
+    NOTE: Works with preprocessed rectangular sonar images (682x376). Sensor position
+    is fixed at bottom-center in the rectangular coordinate frame.
 
     Coordinate System (Fusion Frame):
         - X: Horizontal (right positive)

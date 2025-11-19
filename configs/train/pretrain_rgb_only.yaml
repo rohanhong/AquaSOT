@@ -48,8 +48,6 @@ data:
 
     sonar:
       enable_speckle: false
-      enable_radial_jitter: false
-      enable_sector_occlusion: false
 
 
 # ------------------------------------------------------------------------------

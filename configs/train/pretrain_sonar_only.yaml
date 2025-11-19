@@ -39,26 +39,11 @@ data:
       speckle_level: 0.1
       speckle_prob: 0.5
 
-      enable_radial_jitter: false  # Conservative: disabled until validated
-      radial_scale_range: [0.9, 1.1]
-      radial_jitter_prob: 0.3
-
-      enable_sector_occlusion: true
-      sector_min_angle: 10.0
-      sector_max_angle: 40.0
-      sector_occlusion_prob: 0.2
-
-      normalization_mode: adaptive
-      fov_angle: 130.0
-
-    # Log-polar transform in augmentation (single transform approach)
-    use_logpolar: true
-    logpolar_config:
-      output_height: 224  # Match ViT input size
-      output_width: 224
-      fov_angle: 130.0
-      alpha: 1.0
-      beta: 1.0
+      # Rectangular occlusion (similar to RGB, suitable for rect coordinates)
+      enable_occlusion: true
+      occlusion_prob: 0.2
+      occlusion_min_size: 0.05
+      occlusion_max_size: 0.3
 
 
 # ------------------------------------------------------------------------------
@@ -70,10 +55,13 @@ model:
       type: null
 
     sonar:
-      img_size: [224, 224]
-      sonar_fov_angle: 130.0
-      max_range_pixels: 224
-      use_logpolar: false  # Disabled: augmentation already applies log-polar
+      type: vit_sonar
+      model_name: vit_base_patch16_224
+      pretrained: true
+      in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
+      # NOTE: Sonar images are preprocessed to fixed 682x376, then resized to 224x224 for model input
+      img_size: 224
+      output_dim: 768
 
   fusion:
     type: null

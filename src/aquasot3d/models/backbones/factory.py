@@ -1,11 +1,11 @@
 """
 Backbone Factory for Creating RGB and Sonar Encoders
 
-This module provides a unified factory interface for creating various backbone
-networks (ViT, ConvNeXt, Sonar encoders) with consistent configuration.
+This module provides a unified factory interface for creating ViT backbone
+networks with consistent configuration.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-19
 """
 
 import torch
@@ -14,9 +14,7 @@ from typing import Optional, Dict, Any, Literal
 import logging
 
 from aquasot3d.core import BACKBONE_REGISTRY
-from aquasot3d.models.backbones.vit_rgb import ViTRGBBackbone
-from aquasot3d.models.backbones.convnext_rgb import ConvNeXtRGBBackbone
-from aquasot3d.models.backbones.sonar_encoder import SonarEncoder
+from aquasot3d.models.backbones.vit import ViTBackbone
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +27,7 @@ class DummyBackbone(nn.Module):
     Returns fixed-size random features for fast testing of downstream components
     without requiring actual pretrained weights or heavy computation.
 
-    Matches the interface of real backbones (ViTRGBBackbone, SonarEncoder):
+    Matches the interface of real backbones (ViTBackbone):
     - forward(template, search, return_separate=False)
     - Returns {'template_features': ..., 'search_features': ...} or {'features': ...}
 
@@ -103,19 +101,19 @@ class BackboneFactory:
     """
     Factory class for creating backbone networks.
 
-    Supports creating various backbone types:
-    - RGB backbones: ViT, ConvNeXt
-    - Sonar encoders: ViT-based, CNN-based
+    Supports creating ViT backbones for RGB and Sonar:
+    - RGB backbones: vit_rgb
+    - Sonar backbones: vit_sonar (unified ViT with 1-channel adapter)
 
     Example:
         >>> factory = BackboneFactory()
         >>> rgb_backbone = factory.create('vit_rgb', model_name='vit_base_patch16_224')
-        >>> sonar_backbone = factory.create('sonar', encoder_type='vit')
+        >>> sonar_backbone = factory.create('vit_sonar', model_name='vit_base_patch16_224', in_channels=1)
     """
 
     @staticmethod
     def create(
-        backbone_type: Literal['vit_rgb', 'convnext_rgb', 'sonar'],
+        backbone_type: Literal['vit_rgb', 'vit_sonar'],
         **kwargs
     ) -> nn.Module:
         """
@@ -133,17 +131,16 @@ class BackboneFactory:
 
         Example:
             >>> backbone = BackboneFactory.create('vit_rgb', pretrained=True)
+            >>> sonar_backbone = BackboneFactory.create('vit_sonar', in_channels=1, pretrained=True)
         """
         if backbone_type == 'vit_rgb':
             return BackboneFactory.create_vit_rgb(**kwargs)
-        elif backbone_type == 'convnext_rgb':
-            return BackboneFactory.create_convnext_rgb(**kwargs)
-        elif backbone_type == 'sonar':
-            return BackboneFactory.create_sonar_encoder(**kwargs)
+        elif backbone_type == 'vit_sonar':
+            return BackboneFactory.create_vit_sonar(**kwargs)
         else:
             raise ValueError(
                 f"Unsupported backbone_type: {backbone_type}. "
-                f"Supported types: ['vit_rgb', 'convnext_rgb', 'sonar']"
+                f"Supported types: ['vit_rgb', 'vit_sonar']"
             )
 
     @staticmethod
@@ -151,82 +148,55 @@ class BackboneFactory:
         model_name: str = 'vit_base_patch16_224',
         pretrained: bool = True,
         **kwargs
-    ) -> ViTRGBBackbone:
+    ) -> ViTBackbone:
         """
         Create ViT RGB backbone.
 
         Args:
             model_name: timm model name for ViT
             pretrained: Whether to load pretrained weights
-            **kwargs: Additional arguments for ViTRGBBackbone
+            **kwargs: Additional arguments for ViTBackbone
 
         Returns:
-            ViTRGBBackbone instance
+            ViTBackbone instance
 
         Example:
             >>> backbone = BackboneFactory.create_vit_rgb('vit_base_patch16_224')
         """
         logger.info(f"Creating ViT RGB backbone: {model_name}")
-        return ViTRGBBackbone(
+        return ViTBackbone(
             model_name=model_name,
             pretrained=pretrained,
             **kwargs
         )
 
     @staticmethod
-    def create_convnext_rgb(
-        model_name: str = 'convnext_base',
+    def create_vit_sonar(
+        model_name: str = 'vit_base_patch16_224',
         pretrained: bool = True,
+        in_channels: int = 1,
         **kwargs
-    ) -> ConvNeXtRGBBackbone:
+    ) -> ViTBackbone:
         """
-        Create ConvNeXt RGB backbone.
+        Create ViT Sonar backbone (unified ViT with 1-channel adapter).
 
         Args:
-            model_name: timm model name for ConvNeXt
+            model_name: timm model name for ViT
             pretrained: Whether to load pretrained weights
-            **kwargs: Additional arguments for ConvNeXtRGBBackbone
+            in_channels: Input channels (1 for sonar)
+            **kwargs: Additional arguments for ViTBackbone
 
         Returns:
-            ConvNeXtRGBBackbone instance
+            ViTBackbone instance configured for sonar
 
         Example:
-            >>> backbone = BackboneFactory.create_convnext_rgb('convnext_base')
+            >>> sonar_backbone = BackboneFactory.create_vit_sonar('vit_base_patch16_224')
         """
-        logger.info(f"Creating ConvNeXt RGB backbone: {model_name}")
-        return ConvNeXtRGBBackbone(
+        logger.info(f"Creating ViT Sonar backbone: {model_name} (in_channels={in_channels})")
+        return ViTBackbone(
             model_name=model_name,
             pretrained=pretrained,
-            **kwargs
-        )
-
-    @staticmethod
-    def create_sonar_encoder(
-        encoder_type: Literal['vit', 'conv'] = 'vit',
-        model_name: str = 'vit_tiny_patch16_224',
-        pretrained: bool = False,
-        **kwargs
-    ) -> SonarEncoder:
-        """
-        Create Sonar encoder.
-
-        Args:
-            encoder_type: Type of encoder architecture ('vit' or 'conv')
-            model_name: timm model name
-            pretrained: Whether to load pretrained weights
-            **kwargs: Additional arguments for SonarEncoder
-
-        Returns:
-            SonarEncoder instance
-
-        Example:
-            >>> encoder = BackboneFactory.create_sonar_encoder('vit')
-        """
-        logger.info(f"Creating Sonar encoder: type={encoder_type}, model={model_name}")
-        return SonarEncoder(
-            encoder_type=encoder_type,
-            model_name=model_name,
-            pretrained=pretrained,
+            in_channels=in_channels,
             **kwargs
         )
 
@@ -280,7 +250,7 @@ class BackboneFactory:
         Example:
             >>> models = BackboneFactory.list_available_models('vit_rgb')
         """
-        if backbone_type == 'vit_rgb':
+        if backbone_type in ['vit_rgb', 'vit_sonar']:
             return [
                 'vit_tiny_patch16_224',
                 'vit_small_patch16_224',
@@ -288,24 +258,6 @@ class BackboneFactory:
                 'vit_base_patch16_384',
                 'vit_large_patch16_224',
                 'vit_large_patch16_384',
-            ]
-        elif backbone_type == 'convnext_rgb':
-            return [
-                'convnext_tiny',
-                'convnext_small',
-                'convnext_base',
-                'convnext_large',
-                'convnext_xlarge',
-            ]
-        elif backbone_type == 'sonar':
-            return [
-                'vit_tiny_patch16_224',
-                'vit_small_patch16_224',
-                'resnet18',
-                'resnet34',
-                'resnet50',
-                'efficientnet_b0',
-                'efficientnet_b1',
             ]
         else:
             raise ValueError(f"Unknown backbone_type: {backbone_type}")
@@ -413,7 +365,7 @@ def build_backbone(
     Convenience function to build backbone.
 
     Args:
-        backbone_type: Type of backbone ('vit_rgb', 'convnext_rgb', 'sonar')
+        backbone_type: Type of backbone ('vit_rgb', 'vit_sonar')
         model_name: Model name (optional, uses default if None)
         pretrained: Whether to load pretrained weights
         **kwargs: Additional arguments
@@ -423,13 +375,13 @@ def build_backbone(
 
     Example:
         >>> backbone = build_backbone('vit_rgb', pretrained=True)
+        >>> sonar_backbone = build_backbone('vit_sonar', in_channels=1, pretrained=True)
     """
     # Set default model names if not provided
     if model_name is None:
         defaults = {
             'vit_rgb': 'vit_base_patch16_224',
-            'convnext_rgb': 'convnext_base',
-            'sonar': 'vit_tiny_patch16_224',
+            'vit_sonar': 'vit_base_patch16_224',
         }
         model_name = defaults.get(backbone_type, 'vit_base_patch16_224')
 
@@ -444,22 +396,22 @@ def build_backbone(
 def build_multimodal_backbone(
     rgb_type: str = 'vit_rgb',
     rgb_model: str = 'vit_base_patch16_224',
-    sonar_type: str = 'vit',
-    sonar_model: str = 'vit_tiny_patch16_224',
+    sonar_type: str = 'vit_sonar',
+    sonar_model: str = 'vit_base_patch16_224',
     rgb_pretrained: bool = True,
-    sonar_pretrained: bool = False,
+    sonar_pretrained: bool = True,
     **kwargs
 ) -> MultiModalBackbone:
     """
     Build multi-modal backbone with RGB and Sonar encoders.
 
     Args:
-        rgb_type: Type of RGB backbone
-        rgb_model: RGB model name
-        sonar_type: Type of Sonar encoder
-        sonar_model: Sonar model name
-        rgb_pretrained: Whether RGB backbone is pretrained
-        sonar_pretrained: Whether Sonar encoder is pretrained
+        rgb_type: Type of RGB backbone (default: 'vit_rgb')
+        rgb_model: RGB model name (default: 'vit_base_patch16_224')
+        sonar_type: Type of Sonar backbone (default: 'vit_sonar')
+        sonar_model: Sonar model name (default: 'vit_base_patch16_224')
+        rgb_pretrained: Whether RGB backbone is pretrained (default: True)
+        sonar_pretrained: Whether Sonar backbone is pretrained (default: True)
         **kwargs: Additional arguments
 
     Returns:
@@ -468,7 +420,7 @@ def build_multimodal_backbone(
     Example:
         >>> backbone = build_multimodal_backbone(
         ...     rgb_type='vit_rgb',
-        ...     sonar_type='vit'
+        ...     sonar_type='vit_sonar'
         ... )
     """
     rgb_config = {
@@ -478,10 +430,10 @@ def build_multimodal_backbone(
     }
 
     sonar_config = {
-        'type': 'sonar',
-        'encoder_type': sonar_type,
+        'type': sonar_type,
         'model_name': sonar_model,
         'pretrained': sonar_pretrained,
+        'in_channels': 1,  # Sonar is single-channel
     }
 
     return MultiModalBackbone(rgb_config, sonar_config)

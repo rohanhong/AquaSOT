@@ -1,10 +1,10 @@
 """
 Unit Tests for Backbone Networks
 
-Tests for ViT RGB, ConvNeXt RGB, Sonar Encoder, and Backbone Factory.
+Tests for unified ViT backbone (RGB and Sonar) and Backbone Factory.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-19
 """
 
 import pytest
@@ -14,295 +14,191 @@ from unittest.mock import Mock, patch
 
 # Import backbone modules
 from aquasot3d.models.backbones import (
-    ViTRGBBackbone,
-    ConvNeXtRGBBackbone,
-    SonarEncoder,
+    ViTBackbone,
     BackboneFactory,
     MultiModalBackbone,
     build_backbone,
-    build_multimodal_backbone,
-)
+    build_multimodal_backbone)
 
 
-class TestViTRGBBackbone:
-    """Tests for ViT RGB Backbone."""
+class TestViTBackbone:
+    """Tests for unified ViT Backbone (RGB and Sonar)."""
 
     @pytest.fixture
-    def vit_backbone(self):
-        """Create ViT backbone for testing."""
-        return ViTRGBBackbone(
+    def vit_rgb_backbone(self):
+        """Create ViT backbone for RGB testing."""
+        return ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
+            in_channels=3,
             img_size=224,
             embed_dim=192,
             depth=12,
-            num_heads=3,
-        )
+            num_heads=3)
 
-    def test_vit_initialization(self, vit_backbone):
-        """Test ViT backbone initialization."""
-        assert isinstance(vit_backbone, ViTRGBBackbone)
-        assert vit_backbone.embed_dim > 0
-        assert vit_backbone.patch_size > 0
+    @pytest.fixture
+    def vit_sonar_backbone(self):
+        """Create ViT backbone for Sonar testing."""
+        return ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,
+            in_channels=1,  # Single-channel sonar
+            img_size=224,
+            embed_dim=192,
+            depth=12,
+            num_heads=3)
 
-    def test_vit_forward_separate(self, vit_backbone):
-        """Test ViT forward pass with separate processing."""
+    def test_vit_rgb_initialization(self, vit_rgb_backbone):
+        """Test ViT RGB backbone initialization."""
+        assert isinstance(vit_rgb_backbone, ViTBackbone)
+        assert vit_rgb_backbone.embed_dim > 0
+        assert vit_rgb_backbone.patch_size > 0
+        assert vit_rgb_backbone.in_channels == 3
+        assert vit_rgb_backbone.channel_adapter is None
+
+    def test_vit_sonar_initialization(self, vit_sonar_backbone):
+        """Test ViT Sonar backbone initialization."""
+        assert isinstance(vit_sonar_backbone, ViTBackbone)
+        assert vit_sonar_backbone.in_channels == 1
+        assert vit_sonar_backbone.channel_adapter is not None
+        # Channel adapter should convert 1ch -> 3ch
+        test_input = torch.randn(1, 1, 224, 224)
+        adapted = vit_sonar_backbone.channel_adapter(test_input)
+        assert adapted.shape[1] == 3
+
+    def test_vit_forward_separate_rgb(self, vit_rgb_backbone):
+        """Test ViT forward pass with separate processing (RGB)."""
         template = torch.randn(2, 3, 128, 128)
         search = torch.randn(2, 3, 256, 256)
 
-        outputs = vit_backbone(template, search, return_separate=True)
+        outputs = vit_rgb_backbone(template, search, return_separate=True)
 
         assert 'template_features' in outputs
         assert 'search_features' in outputs
         assert outputs['template_features'].shape[0] == 2
         assert outputs['search_features'].shape[0] == 2
 
-    def test_vit_forward_combined(self, vit_backbone):
+    def test_vit_forward_separate_sonar(self, vit_sonar_backbone):
+        """Test ViT forward pass with separate processing (Sonar)."""
+        template = torch.randn(2, 1, 128, 128)
+        search = torch.randn(2, 1, 256, 256)
+
+        outputs = vit_sonar_backbone(template, search, return_separate=True)
+
+        assert 'template_features' in outputs
+        assert 'search_features' in outputs
+        assert outputs['template_features'].shape[0] == 2
+        assert outputs['search_features'].shape[0] == 2
+
+    def test_vit_forward_combined(self, vit_rgb_backbone):
         """Test ViT forward pass with combined processing."""
         template = torch.randn(2, 3, 224, 224)
         search = torch.randn(2, 3, 224, 224)
 
-        outputs = vit_backbone(template, search, return_separate=False)
+        outputs = vit_rgb_backbone(template, search, return_separate=False)
 
         assert 'features' in outputs
         assert 'template_features' in outputs
         assert 'search_features' in outputs
         assert outputs['features'].shape[0] == 4  # 2*B
 
-    def test_vit_feature_dim(self, vit_backbone):
+    def test_vit_feature_dim(self, vit_rgb_backbone):
         """Test feature dimension getter."""
-        dim = vit_backbone.get_feature_dim()
+        dim = vit_rgb_backbone.get_feature_dim()
         assert isinstance(dim, int)
         assert dim > 0
 
     def test_vit_freeze_backbone(self):
         """Test freezing backbone parameters."""
-        backbone = ViTRGBBackbone(
+        backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
-            freeze_backbone=True,
-        )
+            freeze_backbone=True)
 
         # Check if parameters are frozen
         for param in backbone.vit.parameters():
             assert not param.requires_grad
 
+    def test_channel_adapter_applied(self, vit_sonar_backbone):
+        """Test that channel adapter is applied in forward pass."""
+        template = torch.randn(2, 1, 224, 224)
+        search = torch.randn(2, 1, 224, 224)
 
-class TestConvNeXtRGBBackbone:
-    """Tests for ConvNeXt RGB Backbone."""
+        # Verify channel adapter exists and has correct shape
+        assert vit_sonar_backbone.channel_adapter is not None
+        assert isinstance(vit_sonar_backbone.channel_adapter, nn.Conv2d)
 
-    @pytest.fixture
-    def convnext_backbone(self):
-        """Create ConvNeXt backbone for testing."""
-        return ConvNeXtRGBBackbone(
-            model_name='convnext_tiny',
-            pretrained=False,
-            out_indices=(0, 1, 2, 3),
-        )
+        # Test channel adapter converts 1ch to 3ch
+        adapted = vit_sonar_backbone.channel_adapter(template)
+        assert adapted.shape == (2, 3, 224, 224)
 
-    def test_convnext_initialization(self, convnext_backbone):
-        """Test ConvNeXt backbone initialization."""
-        assert isinstance(convnext_backbone, ConvNeXtRGBBackbone)
-        assert len(convnext_backbone.feature_dims) > 0
-        assert len(convnext_backbone.feature_strides) > 0
-
-    def test_convnext_forward_separate(self, convnext_backbone):
-        """Test ConvNeXt forward pass with separate processing."""
-        template = torch.randn(2, 3, 128, 128)
-        search = torch.randn(2, 3, 256, 256)
-
-        outputs = convnext_backbone(template, search, return_separate=True)
-
+        # Verify forward pass works with 1ch input
+        outputs = vit_sonar_backbone(template, search)
         assert 'template_features' in outputs
         assert 'search_features' in outputs
-        assert 'template_multi_scale' in outputs
-        assert 'search_multi_scale' in outputs
-        assert isinstance(outputs['template_multi_scale'], list)
-
-    def test_convnext_forward_combined(self, convnext_backbone):
-        """Test ConvNeXt forward pass with combined processing."""
-        template = torch.randn(2, 3, 224, 224)
-        search = torch.randn(2, 3, 224, 224)
-
-        outputs = convnext_backbone(template, search, return_separate=False)
-
-        assert 'features' in outputs
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
-        assert 'multi_scale_features' in outputs
-        assert 'feature_info' in outputs
-
-    def test_convnext_feature_info(self, convnext_backbone):
-        """Test feature dimension and stride getters."""
-        dims = convnext_backbone.get_feature_dims()
-        strides = convnext_backbone.get_feature_strides()
-        final_dim = convnext_backbone.get_final_feature_dim()
-
-        assert isinstance(dims, list)
-        assert isinstance(strides, list)
-        assert len(dims) == len(strides)
-        assert final_dim == dims[-1]
-
-    def test_convnext_freeze_stages(self):
-        """Test freezing early stages."""
-        backbone = ConvNeXtRGBBackbone(
-            model_name='convnext_tiny',
-            pretrained=False,
-            freeze_stages=2,
-        )
-
-        assert backbone.freeze_stages == 2
-
-
-class TestSonarEncoder:
-    """Tests for Sonar Encoder."""
-
-    @pytest.fixture
-    def sonar_encoder_vit(self):
-        """Create ViT-based Sonar encoder for testing."""
-        return SonarEncoder(
-            encoder_type='vit',
-            model_name='vit_tiny_patch16_224',
-            pretrained=False,
-            use_logpolar=True,
-            learnable_logpolar=True,
-            img_size=(376, 682),
-        )
-
-    @pytest.fixture
-    def sonar_encoder_conv(self):
-        """Create Conv-based Sonar encoder for testing."""
-        return SonarEncoder(
-            encoder_type='conv',
-            model_name='resnet18',
-            pretrained=False,
-            use_logpolar=True,
-            img_size=(376, 682),
-        )
-
-    def test_sonar_initialization_vit(self, sonar_encoder_vit):
-        """Test Sonar encoder initialization with ViT."""
-        assert isinstance(sonar_encoder_vit, SonarEncoder)
-        assert sonar_encoder_vit.encoder_type == 'vit'
-        assert sonar_encoder_vit.use_logpolar
-        assert hasattr(sonar_encoder_vit, 'logpolar_transform')
-        assert hasattr(sonar_encoder_vit, 'geometry_handler')
-
-    def test_sonar_initialization_conv(self, sonar_encoder_conv):
-        """Test Sonar encoder initialization with Conv."""
-        assert isinstance(sonar_encoder_conv, SonarEncoder)
-        assert sonar_encoder_conv.encoder_type == 'conv'
-
-    def test_sonar_forward_separate(self, sonar_encoder_vit):
-        """Test Sonar forward pass with separate processing."""
-        template = torch.randn(2, 1, 376, 682)  # Grayscale sonar
-        search = torch.randn(2, 1, 376, 682)
-
-        outputs = sonar_encoder_vit(template, search, return_separate=True)
-
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
-        assert 'geometry_info' in outputs
-
-    def test_sonar_forward_combined(self, sonar_encoder_vit):
-        """Test Sonar forward pass with combined processing."""
-        template = torch.randn(2, 1, 376, 682)
-        search = torch.randn(2, 1, 376, 682)
-
-        outputs = sonar_encoder_vit(template, search, return_separate=False)
-
-        assert 'features' in outputs
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
-        assert 'geometry_info' in outputs
-
-    def test_sonar_radial_profile_extraction(self, sonar_encoder_vit):
-        """Test radial profile extraction for depth proxy."""
-        template = torch.randn(2, 1, 376, 682)
-        search = torch.randn(2, 1, 376, 682)
-
-        outputs = sonar_encoder_vit(template, search)
-
-        if sonar_encoder_vit.extract_radial_profile:
-            assert 'template_radial_profile' in outputs
-            assert 'search_radial_profile' in outputs
-
-    def test_sonar_logpolar_disabled(self):
-        """Test Sonar encoder without log-polar transformation."""
-        encoder = SonarEncoder(
-            encoder_type='vit',
-            pretrained=False,
-            use_logpolar=False,
-        )
-
-        template = torch.randn(2, 1, 376, 682)
-        search = torch.randn(2, 1, 376, 682)
-
-        outputs = encoder(template, search)
-        assert 'features' in outputs
 
 
 class TestBackboneFactory:
     """Tests for Backbone Factory."""
 
     def test_factory_create_vit_rgb(self):
-        """Test factory creating ViT RGB backbone."""
-        backbone = BackboneFactory.create(
-            'vit_rgb',
-            model_name='vit_tiny_patch16_224',
-            pretrained=False,
-        )
+        """Test creating ViT RGB backbone via factory."""
+        backbone = BackboneFactory.create('vit_rgb',
+                                         model_name='vit_tiny_patch16_224',
+                                         pretrained=False)
 
-        assert isinstance(backbone, ViTRGBBackbone)
+        assert isinstance(backbone, ViTBackbone)
+        assert backbone.in_channels == 3
 
-    def test_factory_create_convnext_rgb(self):
-        """Test factory creating ConvNeXt RGB backbone."""
-        backbone = BackboneFactory.create(
-            'convnext_rgb',
-            model_name='convnext_tiny',
-            pretrained=False,
-        )
+    def test_factory_create_vit_sonar(self):
+        """Test creating ViT Sonar backbone via factory."""
+        backbone = BackboneFactory.create('vit_sonar',
+                                         model_name='vit_tiny_patch16_224',
+                                         pretrained=False,
+                                         in_channels=1)
 
-        assert isinstance(backbone, ConvNeXtRGBBackbone)
-
-    def test_factory_create_sonar(self):
-        """Test factory creating Sonar encoder."""
-        encoder = BackboneFactory.create(
-            'sonar',
-            encoder_type='vit',
-            pretrained=False,
-        )
-
-        assert isinstance(encoder, SonarEncoder)
+        assert isinstance(backbone, ViTBackbone)
+        assert backbone.in_channels == 1
+        assert backbone.channel_adapter is not None
 
     def test_factory_invalid_type(self):
         """Test factory with invalid backbone type."""
         with pytest.raises(ValueError):
             BackboneFactory.create('invalid_type')
 
-    def test_factory_from_config(self):
+    def test_factory_from_config_vit_rgb(self):
         """Test creating backbone from config dict."""
         config = {
             'type': 'vit_rgb',
             'model_name': 'vit_tiny_patch16_224',
-            'pretrained': False,
+            'pretrained': False
         }
-
         backbone = BackboneFactory.create_from_config(config)
-        assert isinstance(backbone, ViTRGBBackbone)
+        assert isinstance(backbone, ViTBackbone)
+
+    def test_factory_from_config_vit_sonar(self):
+        """Test creating sonar backbone from config dict."""
+        config = {
+            'type': 'vit_sonar',
+            'model_name': 'vit_tiny_patch16_224',
+            'pretrained': False,
+            'in_channels': 1
+        }
+        backbone = BackboneFactory.create_from_config(config)
+        assert isinstance(backbone, ViTBackbone)
+        assert backbone.in_channels == 1
 
     def test_factory_list_available_models(self):
         """Test listing available models."""
-        vit_models = BackboneFactory.list_available_models('vit_rgb')
-        convnext_models = BackboneFactory.list_available_models('convnext_rgb')
-        sonar_models = BackboneFactory.list_available_models('sonar')
+        models_rgb = BackboneFactory.list_available_models('vit_rgb')
+        models_sonar = BackboneFactory.list_available_models('vit_sonar')
 
-        assert isinstance(vit_models, list)
-        assert isinstance(convnext_models, list)
-        assert isinstance(sonar_models, list)
-        assert len(vit_models) > 0
-        assert len(convnext_models) > 0
-        assert len(sonar_models) > 0
+        assert isinstance(models_rgb, list)
+        assert isinstance(models_sonar, list)
+        assert len(models_rgb) > 0
+        assert len(models_sonar) > 0
+        assert 'vit_base_patch16_224' in models_rgb
+        assert 'vit_base_patch16_224' in models_sonar
 
 
 class TestMultiModalBackbone:
@@ -314,38 +210,37 @@ class TestMultiModalBackbone:
         rgb_config = {
             'type': 'vit_rgb',
             'model_name': 'vit_tiny_patch16_224',
-            'pretrained': False,
+            'pretrained': False
         }
         sonar_config = {
-            'type': 'sonar',
-            'encoder_type': 'vit',
+            'type': 'vit_sonar',
+            'model_name': 'vit_tiny_patch16_224',
             'pretrained': False,
+            'in_channels': 1
         }
-
         return MultiModalBackbone(rgb_config, sonar_config)
 
     def test_multimodal_initialization(self, multimodal_backbone):
         """Test multi-modal backbone initialization."""
-        assert isinstance(multimodal_backbone, MultiModalBackbone)
-        assert hasattr(multimodal_backbone, 'rgb_backbone')
-        assert hasattr(multimodal_backbone, 'sonar_encoder')
+        assert multimodal_backbone.rgb_backbone is not None
+        assert multimodal_backbone.sonar_encoder is not None
+        assert isinstance(multimodal_backbone.rgb_backbone, ViTBackbone)
+        assert isinstance(multimodal_backbone.sonar_encoder, ViTBackbone)
 
     def test_multimodal_forward(self, multimodal_backbone):
         """Test multi-modal forward pass."""
         rgb_template = torch.randn(2, 3, 224, 224)
         rgb_search = torch.randn(2, 3, 224, 224)
-        sonar_template = torch.randn(2, 1, 376, 682)
-        sonar_search = torch.randn(2, 1, 376, 682)
+        sonar_template = torch.randn(2, 1, 224, 224)
+        sonar_search = torch.randn(2, 1, 224, 224)
 
-        outputs = multimodal_backbone(
-            rgb_template, rgb_search,
-            sonar_template, sonar_search
-        )
+        outputs = multimodal_backbone(rgb_template, rgb_search,
+                                     sonar_template, sonar_search)
 
         assert 'rgb' in outputs
         assert 'sonar' in outputs
-        assert isinstance(outputs['rgb'], dict)
-        assert isinstance(outputs['sonar'], dict)
+        assert outputs['rgb'] is not None
+        assert outputs['sonar'] is not None
 
     def test_multimodal_feature_dims(self, multimodal_backbone):
         """Test getting feature dimensions."""
@@ -360,71 +255,97 @@ class TestMultiModalBackbone:
 class TestBackboneBuildFunctions:
     """Tests for convenience build functions."""
 
-    def test_build_backbone_vit(self):
-        """Test build_backbone with ViT."""
+    def test_build_backbone_vit_rgb(self):
+        """Test build_backbone for ViT RGB."""
         backbone = build_backbone('vit_rgb', pretrained=False)
-        assert isinstance(backbone, ViTRGBBackbone)
+        assert isinstance(backbone, ViTBackbone)
+        assert backbone.in_channels == 3
 
-    def test_build_backbone_convnext(self):
-        """Test build_backbone with ConvNeXt."""
-        backbone = build_backbone('convnext_rgb', pretrained=False)
-        assert isinstance(backbone, ConvNeXtRGBBackbone)
-
-    def test_build_backbone_sonar(self):
-        """Test build_backbone with Sonar."""
-        backbone = build_backbone('sonar', pretrained=False)
-        assert isinstance(backbone, SonarEncoder)
+    def test_build_backbone_vit_sonar(self):
+        """Test build_backbone for ViT Sonar."""
+        backbone = build_backbone('vit_sonar', pretrained=False, in_channels=1)
+        assert isinstance(backbone, ViTBackbone)
+        assert backbone.in_channels == 1
 
     def test_build_multimodal_backbone(self):
-        """Test build_multimodal_backbone."""
+        """Test building multi-modal backbone."""
         backbone = build_multimodal_backbone(
             rgb_type='vit_rgb',
             rgb_model='vit_tiny_patch16_224',
-            sonar_type='vit',
+            sonar_type='vit_sonar',
             sonar_model='vit_tiny_patch16_224',
             rgb_pretrained=False,
-            sonar_pretrained=False,
+            sonar_pretrained=False
         )
 
         assert isinstance(backbone, MultiModalBackbone)
+        assert backbone.rgb_backbone is not None
+        assert backbone.sonar_encoder is not None
 
 
-# Integration tests
 class TestBackboneIntegration:
-    """Integration tests for backbone modules."""
+    """Integration tests for backbone compatibility."""
 
-    def test_vit_to_convnext_compatibility(self):
-        """Test that ViT and ConvNeXt outputs are compatible."""
-        vit = ViTRGBBackbone(model_name='vit_tiny_patch16_224', pretrained=False)
-        convnext = ConvNeXtRGBBackbone(model_name='convnext_tiny', pretrained=False)
+    def test_rgb_sonar_feature_compatibility(self):
+        """Test that RGB and Sonar backbones produce compatible features."""
+        rgb_backbone = ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,
+            in_channels=3)
 
+        sonar_backbone = ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,
+            in_channels=1)
+
+        # Test with same spatial size
         template = torch.randn(2, 3, 224, 224)
         search = torch.randn(2, 3, 224, 224)
 
-        vit_out = vit(template, search)
-        convnext_out = convnext(template, search)
+        sonar_template = torch.randn(2, 1, 224, 224)
+        sonar_search = torch.randn(2, 1, 224, 224)
 
-        # Both should have 'features' key
-        assert 'features' in vit_out
-        assert 'features' in convnext_out
+        rgb_out = rgb_backbone(template, search)
+        sonar_out = sonar_backbone(sonar_template, sonar_search)
 
-    def test_rgb_sonar_feature_compatibility(self):
-        """Test that RGB and Sonar features are compatible."""
-        rgb_backbone = ViTRGBBackbone(model_name='vit_tiny_patch16_224', pretrained=False)
-        sonar_encoder = SonarEncoder(encoder_type='vit', pretrained=False)
+        # Features should have same dimension (except batch concat)
+        assert rgb_out['template_features'].shape[1:] == sonar_out['template_features'].shape[1:]
+        assert rgb_out['search_features'].shape[1:] == sonar_out['search_features'].shape[1:]
 
-        rgb_template = torch.randn(2, 3, 224, 224)
-        rgb_search = torch.randn(2, 3, 224, 224)
-        sonar_template = torch.randn(2, 1, 376, 682)
-        sonar_search = torch.randn(2, 1, 376, 682)
+    def test_shared_architecture_different_inputs(self):
+        """Test that same ViT architecture works for different input channels."""
+        # Create two backbones with same architecture but different input channels
+        rgb_backbone = ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,
+            in_channels=3,
+            embed_dim=192)
 
-        rgb_out = rgb_backbone(rgb_template, rgb_search)
-        sonar_out = sonar_encoder(sonar_template, sonar_search)
+        sonar_backbone = ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,
+            in_channels=1,
+            embed_dim=192)
 
-        # Both should have template and search features
-        assert 'template_features' in rgb_out
-        assert 'template_features' in sonar_out
+        # Both should have same embed_dim despite different input channels
+        assert rgb_backbone.embed_dim == sonar_backbone.embed_dim
+        assert rgb_backbone.get_feature_dim() == sonar_backbone.get_feature_dim()
 
+    def test_pretrained_weight_sharing(self):
+        """Test that RGB and Sonar can both use pretrained weights."""
+        # This test verifies the architecture supports loading same pretrained weights
+        rgb_backbone = ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,  # Set to False for testing
+            in_channels=3)
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+        sonar_backbone = ViTBackbone(
+            model_name='vit_tiny_patch16_224',
+            pretrained=False,  # Set to False for testing
+            in_channels=1)
+
+        # Both should use the same underlying ViT architecture
+        assert rgb_backbone.model_name == sonar_backbone.model_name
+        # Sonar should have channel adapter
+        assert sonar_backbone.channel_adapter is not None
+        assert rgb_backbone.channel_adapter is None

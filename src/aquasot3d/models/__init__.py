@@ -2,7 +2,7 @@
 Neural Network Models for AquaSOT-3D
 
 This package contains all neural network components:
-- backbones: RGB and Sonar feature extractors
+- backbones: Unified ViT for RGB and Sonar feature extraction
 - fusion: Cross-modal fusion modules (G2-DCMA)
 - temporal: Temporal modeling heads (Vision-Mamba, ARTrack)
 - heads: Prediction heads for tracking and 3D estimation
@@ -11,13 +11,11 @@ This package contains all neural network components:
 - tracker: Complete end-to-end tracking system
 
 Author: AquaSOT-3D Team
-Date: 2025-11-10
+Date: 2025-11-19
 """
 
 from aquasot3d.models.backbones import (
-    ViTRGBBackbone,
-    ConvNeXtRGBBackbone,
-    SonarEncoder,
+    ViTBackbone,
     BackboneFactory,
     MultiModalBackbone,
     build_backbone,
@@ -32,9 +30,7 @@ from aquasot3d.models.tracker import (
 
 __all__ = [
     # Backbones
-    'ViTRGBBackbone',
-    'ConvNeXtRGBBackbone',
-    'SonarEncoder',
+    'ViTBackbone',
     'BackboneFactory',
     'MultiModalBackbone',
     'build_backbone',

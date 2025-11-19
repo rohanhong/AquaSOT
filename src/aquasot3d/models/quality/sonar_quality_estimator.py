@@ -308,7 +308,7 @@ class SonarQualityEstimator(BaseModule):
         Args:
             sonar_frame: Sonar frames (B, 1, H, W)
             bbox: Bounding boxes (B, 4) for ROI-based quality estimation
-            geometry_weights: Sonar geometry weights (B, H, W) from SonarGeometryHandler
+            geometry_weights: Sonar geometry weights (B, H, W) for quality weighting
             metadata: Optional dict or list of dicts containing padding info:
                       - pad_x: left padding offset
                       - pad_y: top padding offset

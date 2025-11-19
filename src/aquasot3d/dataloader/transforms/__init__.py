@@ -2,7 +2,7 @@
 Data transforms for AquaSOT-3D.
 
 This module contains transformation and augmentation functions for
-RGB and Sonar images.
+RGB and Sonar images (preprocessed to rectangular coordinates).
 """
 
 from .rgb_transforms import (
@@ -22,33 +22,11 @@ from .rgb_transforms import (
 
 from .sonar_transforms import (
     SpeckleNoise,
-    RadialScalingJitter,
-    SectorOcclusion,
     IntensityNormalization,
-    FanMaskApplication,
-    LogPolarTransform,
-    letterbox_resize,
+    # Note: letterbox_resize removed - unified with RGB strategy (2025-11-19)
     # Bbox-aware versions
     SpeckleNoiseBboxAware,
-    RadialScalingJitterBboxAware,
-    SectorOcclusionBboxAware,
     IntensityNormalizationBboxAware,
-    FanMaskApplicationBboxAware,
-    LogPolarTransformBboxAware,
-)
-
-from .sonar_geometry import (
-    generate_fan_mask,
-    compute_radial_weights,
-    compute_angular_resolution,
-    SonarGeometryHandler,
-)
-
-from .logpolar import (
-    LogPolarTransform,
-    LogPolarPreprocessor,
-    transform_bboxes_logpolar,
-    transform_bboxes_logpolar_inverse,
 )
 
 __all__ = [
@@ -67,26 +45,9 @@ __all__ = [
     'NormalizeBboxAware',
     # Sonar transforms (legacy names)
     'SpeckleNoise',
-    'RadialScalingJitter',
-    'SectorOcclusion',
     'IntensityNormalization',
-    'FanMaskApplication',
-    'LogPolarTransform',
-    'letterbox_resize',
+    # Note: letterbox_resize removed - unified with RGB strategy (2025-11-19)
     # Sonar transforms (bbox-aware)
     'SpeckleNoiseBboxAware',
-    'RadialScalingJitterBboxAware',
-    'SectorOcclusionBboxAware',
     'IntensityNormalizationBboxAware',
-    'FanMaskApplicationBboxAware',
-    'LogPolarTransformBboxAware',
-    # Sonar geometry
-    'generate_fan_mask',
-    'compute_radial_weights',
-    'compute_angular_resolution',
-    'SonarGeometryHandler',
-    # Log-polar
-    'LogPolarPreprocessor',
-    'transform_bboxes_logpolar',
-    'transform_bboxes_logpolar_inverse',
 ]

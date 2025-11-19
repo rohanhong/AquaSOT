@@ -1,8 +1,40 @@
 # AquaSOT-3D Training Guide
 
-**Version:** 2.0
-**Date:** 2025-11-14
-**Multi-Sequence Architecture**
+**Version:** 3.0
+**Date:** 2025-11-19
+**Multi-Sequence Architecture with Preprocessed Sonar Data**
+
+---
+
+## Data Preprocessing (Required First Step)
+
+**IMPORTANT:** Before training, convert all sonar images from polar to rectangular coordinates. This eliminates runtime coordinate transformations and unifies sonar resolution to 682×376.
+
+### Quick Start
+
+```bash
+# Preprocess all 12 sequences (required before first training)
+python scripts/preprocess_sonar.py --all
+```
+
+### Output Structure
+
+```
+data/uuvX/sonar/
+├── img/                    # Original polar images (preserved)
+├── img_rect/               # Rectangular images (TRAINING USES THIS)
+├── groundtruth.txt         # Original polar bboxes
+└── groundtruth_rect.txt    # Rectangular bboxes (TRAINING USES THIS)
+```
+
+All preprocessed images are unified to **682×376 pixels**.
+
+**Data Augmentation Note:**
+Sonar augmentation pipeline uses rectangular-coordinate-appropriate transforms:
+- ✅ Speckle noise (intensity perturbation)
+- ✅ Rectangular occlusion (similar to RGB)
+- ✅ Intensity normalization
+- ❌ Polar-specific transforms (radial jitter, sector occlusion, fan mask) are disabled
 
 ---
 
@@ -301,4 +333,4 @@ find data/uuv2/rgb -name "*.jpg" -exec sh -c \
 
 ---
 
-**Last Updated:** 2025-11-14
+**Last Updated:** 2025-11-19

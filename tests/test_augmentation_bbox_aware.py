@@ -15,8 +15,7 @@ import torch
 from aquasot3d.dataloader.datasets.augmentation import (
     TrackingAugmentationBboxAware,
     NoAugmentationBboxAware,
-    build_augmentation_bbox_aware,
-)
+    build_augmentation_bbox_aware)
 
 
 class TestTrackingAugmentationBboxAware:
@@ -27,9 +26,7 @@ class TestTrackingAugmentationBboxAware:
         aug = TrackingAugmentationBboxAware(
             is_train=True,
             rgb_config={'enable_color_jitter': True},
-            sonar_config={'enable_speckle': True},
-            use_logpolar=False
-        )
+            sonar_config={'enable_speckle': True})
 
         data = {
             'rgb_img': np.random.randint(0, 255, (376, 682, 3), dtype=np.uint8),
@@ -50,24 +47,16 @@ class TestTrackingAugmentationBboxAware:
         assert result['rgb_img'].shape == (3, 376, 682)
         assert result['sonar_img'].shape == (1, 376, 682)
 
-    def test_augmentation_with_logpolar(self):
+    def test_augmentation_with_rect_sonar(self):
         """
-        Test augmentation with log-polar transform enabled.
+        Test augmentation with rectangular sonar (preprocessed data).
 
-        CRITICAL: This validates the fix for Audit Finding 1.
+        NOTE: Previously tested log-polar transform (removed 2025-11-19).
+        Now validates rectangular coordinate augmentation pipeline.
         """
         aug = TrackingAugmentationBboxAware(
             is_train=True,
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-                'fov_angle': 130.0
-            }
-        )
+            sonar_config={'enable_speckle': True})
 
         data = {
             'rgb_img': np.random.randint(0, 255, (376, 682, 3), dtype=np.uint8),
@@ -81,12 +70,12 @@ class TestTrackingAugmentationBboxAware:
         # RGB unchanged (376×682)
         assert result['rgb_img'].shape == (3, 376, 682)
 
-        # Sonar transformed to log-polar (256×256)
-        assert result['sonar_img'].shape == (1, 256, 256)
+        # Sonar maintains rectangular coordinates (376×682)
+        assert result['sonar_img'].shape == (1, 376, 682)
 
-        # Sonar bbox transformed to log-polar coordinates
-        assert 0 <= result['sonar_bbox'][0].item() < 256
-        assert 0 <= result['sonar_bbox'][1].item() < 256
+        # Sonar bbox remains in rectangular coordinates
+        assert 0 <= result['sonar_bbox'][0].item() < 682
+        assert 0 <= result['sonar_bbox'][1].item() < 376
 
     def test_radial_jitter_bbox_sync(self):
         """
@@ -101,9 +90,7 @@ class TestTrackingAugmentationBboxAware:
                 'enable_radial_jitter': True,
                 'radial_scale_range': (1.05, 1.05),  # Fixed scale for testing
                 'radial_jitter_prob': 1.0
-            },
-            use_logpolar=False
-        )
+            })
 
         # Create image with target at bbox location
         sonar_img = np.zeros((376, 682, 1), dtype=np.uint8)
@@ -145,9 +132,7 @@ class TestTrackingAugmentationBboxAware:
     def test_metadata_passthrough(self):
         """Test that metadata is preserved through pipeline."""
         aug = TrackingAugmentationBboxAware(
-            is_train=True,
-            use_logpolar=False
-        )
+            is_train=True)
 
         data = {
             'rgb_img': np.random.randint(0, 255, (376, 682, 3), dtype=np.uint8),
@@ -168,9 +153,7 @@ class TestTrackingAugmentationBboxAware:
         """Test handling None RGB images (sonar-only training)."""
         aug = TrackingAugmentationBboxAware(
             is_train=True,
-            sonar_config={'enable_speckle': True},
-            use_logpolar=False
-        )
+            sonar_config={'enable_speckle': True})
 
         data = {
             'rgb_img': None,
@@ -205,38 +188,82 @@ class TestNoAugmentationBboxAware:
         assert result['rgb_img'].shape == (3, 376, 682)
         assert result['sonar_img'].shape == (1, 376, 682)
 
-    def test_evaluation_mode_with_logpolar(self):
-        """Test evaluation mode with log-polar enabled."""
-        aug = NoAugmentationBboxAware(
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
-        )
-
-        data = {
-            'rgb_img': np.random.randint(0, 255, (376, 682, 3), dtype=np.uint8),
-            'sonar_img': np.random.randint(0, 255, (376, 682, 1), dtype=np.uint8),
-            'rgb_bbox': np.array([100, 200, 50, 80]),
-            'sonar_bbox': np.array([250, 120, 80, 60]),
-        }
-
-        result = aug(data)
-
-        # RGB unchanged
-        assert result['rgb_img'].shape == (3, 376, 682)
-
-        # Sonar transformed to log-polar
-        assert result['sonar_img'].shape == (1, 256, 256)
-
-        # Sonar bbox transformed
-        assert 0 <= result['sonar_bbox'][0].item() < 256
-        assert 0 <= result['sonar_bbox'][1].item() < 256
+    # DEPRECATED (2025-11-19): Log-polar transform removed
 
 
+    # See: docs/audits/2025111904_Sonar_Preprocessing_Refactoring_Audit.md
+
+
+    # def test_evaluation_mode_with_logpolar(self):
+
+
+    #         """Test evaluation mode with log-polar enabled."""
+
+
+    #         aug = NoAugmentationBboxAware()
+
+
+    # 
+
+
+    #         data = {
+
+
+    #             'rgb_img': np.random.randint(0, 255, (376, 682, 3), dtype=np.uint8),
+
+
+    #             'sonar_img': np.random.randint(0, 255, (376, 682, 1), dtype=np.uint8),
+
+
+    #             'rgb_bbox': np.array([100, 200, 50, 80]),
+
+
+    #             'sonar_bbox': np.array([250, 120, 80, 60]),
+
+
+    #         }
+
+
+    # 
+
+
+    #         result = aug(data)
+
+
+    # 
+
+
+    #         # RGB unchanged
+
+
+    #         assert result['rgb_img'].shape == (3, 376, 682)
+
+
+    # 
+
+
+    #         # Sonar transformed to log-polar
+
+
+    #         assert result['sonar_img'].shape == (1, 256, 256)
+
+
+    # 
+
+
+    #         # Sonar bbox transformed
+
+
+    #         assert 0 <= result['sonar_bbox'][0].item() < 256
+
+
+    #         assert 0 <= result['sonar_bbox'][1].item() < 256
+
+
+    # 
+
+
+    # 
 class TestBuildAugmentationBboxAware:
     """Test augmentation pipeline builder."""
 
@@ -245,19 +272,12 @@ class TestBuildAugmentationBboxAware:
         cfg = {
             'type': 'TrackingAugmentationBboxAware',
             'rgb_config': {'enable_color_jitter': True},
-            'sonar_config': {'enable_speckle': True},
-            'logpolar_config': {
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
+            'sonar_config': {'enable_speckle': True}
         }
 
-        aug = build_augmentation_bbox_aware(cfg, is_train=True, use_logpolar=True)
+        aug = build_augmentation_bbox_aware(cfg, is_train=True)
 
         assert isinstance(aug, TrackingAugmentationBboxAware)
-        assert aug.use_logpolar is True
 
     def test_build_evaluation_pipeline(self):
         """Test building evaluation pipeline from config."""
@@ -269,7 +289,7 @@ class TestBuildAugmentationBboxAware:
             }
         }
 
-        aug = build_augmentation_bbox_aware(cfg, is_train=False, use_logpolar=True)
+        aug = build_augmentation_bbox_aware(cfg, is_train=False)
 
         assert isinstance(aug, NoAugmentationBboxAware)
 
@@ -286,30 +306,20 @@ class TestIntegrationScenarios:
 
     def test_full_sonar_pretraining_pipeline(self):
         """
-        Test complete sonar pretraining pipeline with log-polar.
+        Test complete sonar pretraining pipeline with rectangular coordinates.
 
-        This is the critical test for sonar convergence (val_loss 2.0 → < 0.5).
+        NOTE: Previously tested log-polar (removed 2025-11-19). Now validates
+        rectangular coordinate preprocessing pipeline for sonar pretraining.
         """
         aug = TrackingAugmentationBboxAware(
             is_train=True,
             sonar_config={
                 'enable_speckle': True,
                 'speckle_level': 0.1,
-                'enable_radial_jitter': False,  # Disabled until tested
-            },
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-                'fov_angle': 130.0,
-                'alpha': 1.0,
-                'beta': 1.0
-            }
-        )
+                'enable_radial_jitter': False,
+            })
 
-        # Simulate dataloader output
+        # Simulate dataloader output (preprocessed rectangular sonar)
         data = {
             'rgb_img': None,  # Sonar-only pretraining
             'sonar_img': np.random.randint(0, 255, (376, 682, 1), dtype=np.uint8),
@@ -320,25 +330,17 @@ class TestIntegrationScenarios:
         result = aug(data)
 
         # Verify outputs ready for training
-        assert result['sonar_img'].shape == (1, 256, 256)  # Log-polar space
-        assert result['sonar_bbox'].shape == (4,)  # Transformed bbox
-        assert 0 <= result['sonar_bbox'][0].item() < 256  # Valid coordinates
-        assert 0 <= result['sonar_bbox'][1].item() < 256
+        assert result['sonar_img'].shape == (1, 376, 682)  # Rectangular coordinates
+        assert result['sonar_bbox'].shape == torch.Size([4])  # Bbox in rectangular coords
+        assert 0 <= result['sonar_bbox'][0].item() < 682  # Valid x coordinate
+        assert 0 <= result['sonar_bbox'][1].item() < 376  # Valid y coordinate
 
     def test_multi_modal_fusion_pipeline(self):
-        """Test multi-modal fusion training pipeline."""
+        """Test multi-modal fusion training pipeline with rectangular sonar."""
         aug = TrackingAugmentationBboxAware(
             is_train=True,
             rgb_config={'enable_color_jitter': True},
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256
-            }
-        )
+            sonar_config={'enable_speckle': True})
 
         data = {
             'rgb_img': np.random.randint(0, 255, (376, 682, 3), dtype=np.uint8),
@@ -353,7 +355,7 @@ class TestIntegrationScenarios:
         assert result['rgb_img'] is not None
         assert result['sonar_img'] is not None
         assert result['rgb_img'].shape == (3, 376, 682)
-        assert result['sonar_img'].shape == (1, 256, 256)
+        assert result['sonar_img'].shape == (1, 376, 682)  # Rectangular coords
 
     def test_bbox_image_sync_maintained_end_to_end(self):
         """
@@ -367,16 +369,7 @@ class TestIntegrationScenarios:
             sonar_config={
                 'enable_speckle': True,
                 'enable_radial_jitter': False,
-            },
-            use_logpolar=True,
-            logpolar_config={
-                'sonar_height': 376,
-                'sonar_width': 682,
-                'output_height': 256,
-                'output_width': 256,
-                'fov_angle': 130.0
-            }
-        )
+            })
 
         # Create synthetic image with target at bbox location
         sonar_img = np.zeros((376, 682, 1), dtype=np.uint8)

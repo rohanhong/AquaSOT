@@ -167,6 +167,13 @@ def collate_fn_tracking(batch: List[Dict]) -> Dict:
             values = [sample[key] for sample in batch]
             batched[key] = torch.tensor(values)
 
+    # Handle string values (sequence names, etc.)
+    string_keys = ['sequence_name', 'template_sequence', 'search_sequence']
+    for key in string_keys:
+        if key in batch[0]:
+            # Keep as list of strings (cannot convert to tensor)
+            batched[key] = [sample[key] for sample in batch]
+
     return batched
 
 
@@ -226,8 +233,8 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
                     # Stack to [B, C, H, W]
                     batched[key] = torch.stack(imgs, dim=0)  # [B, C, H, W]
             elif isinstance(imgs[0], np.ndarray):
-                # Convert numpy arrays to tensors
-                imgs_tensor = [torch.from_numpy(img) for img in imgs]
+                # Convert numpy arrays to tensors (HWC → CHW)
+                imgs_tensor = [torch.from_numpy(img).permute(2, 0, 1) for img in imgs]
                 if is_sequence_batch and 'search' in key:
                     batched[key] = torch.stack(imgs_tensor, dim=0)  # [B, T, C, H, W]
                 else:
@@ -348,7 +355,7 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             batched[key] = torch.tensor(values)
 
     # Handle string values (sequence names, etc.)
-    string_keys = ['sequence_name']
+    string_keys = ['sequence_name', 'template_sequence', 'search_sequence']
     for key in string_keys:
         if key in batch[0]:
             # Keep as list of strings (cannot convert to tensor)

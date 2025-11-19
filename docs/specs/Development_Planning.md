@@ -363,17 +363,18 @@ scipy>=1.10.0             # Signal processing for sonar SNR estimation
 ### Phase 3: Backbone Networks (Weeks 5-6) ✅ COMPLETED
 
 #### 3.1 RGB Backbones
-- [x] Implement `models/backbones/vit_rgb.py` ✅
-  - Load pretrained ViT from timm
+- [x] Implement `models/backbones/vit.py` ✅
+  - Unified ViT for RGB (3-channel) and Sonar (1-channel)
+  - Channel adapter for single-channel inputs
   - Extract multi-scale features
   - Patch embedding adaptation
   - Position embedding adapter for variable input sizes
-- [x] Implement `models/backbones/convnext_rgb.py` ✅
+- [x] Implement `models/backbones/convnext.py` ✅
   - Load pretrained ConvNeXt
   - Feature pyramid extraction
   - Multi-scale hierarchical features
   - Stage freezing support
-- [x] Implement `models/backbones/backbone_factory.py` ✅
+- [x] Implement `models/backbones/factory.py` ✅
   - Registry-based backbone selection
   - Pretrained weight loading
   - Multi-modal backbone wrapper
@@ -401,27 +402,21 @@ scipy>=1.10.0             # Signal processing for sonar SNR estimation
 - Registry integration complete via @BACKBONE_REGISTRY.register decorators
 
 **Module Details:**
-1. **vit_rgb.py** (11KB, ~320 lines)
-   - ViTRGBBackbone: Vision Transformer for RGB
+1. **vit.py** (11KB, ~396 lines)
+   - ViTRGBBackbone: Unified Vision Transformer for RGB and Sonar
+   - Channel adapter for 1-channel (sonar) to 3-channel conversion
    - PositionEmbeddingAdapter: Adaptive position embeddings
    - Template-search paradigm support
    - Pretrained weight loading from timm
 
-2. **convnext_rgb.py** (11KB, ~280 lines)
-   - ConvNeXtRGBBackbone: ConvNeXt architecture
+2. **convnext.py** (11KB, ~280 lines)
+   - ConvNeXtRGBBackbone: ConvNeXt architecture for RGB
    - ConvNeXtFeaturePyramid: FPN adapter
    - Multi-scale feature extraction
    - Hierarchical feature output
 
-3. **sonar_encoder.py** (15KB, ~380 lines)
-   - SonarEncoder: Unified sonar feature extractor
-   - LightweightSonarCNN: Fallback CNN encoder
-   - RadialProfileExtractor: Depth proxy extraction
-   - Log-polar transformation integration
-   - Sonar geometry handling
-
-4. **backbone_factory.py** (12KB, ~340 lines)
-   - BackboneFactory: Unified creation interface
+3. **factory.py** (12KB, ~479 lines)
+   - BackboneFactory: Unified creation interface for RGB and Sonar backbones
    - MultiModalBackbone: RGB+Sonar wrapper
    - Configuration-based instantiation
    - Model listing utilities
@@ -1093,7 +1088,6 @@ configs/
     ├── ablation_no_gating.yaml
     ├── ablation_no_cycle3d.yaml
     ├── ablation_no_deformable.yaml
-    ├── ablation_no_logpolar.yaml
     ├── ablation_no_quality_gating.yaml
     └── ablation_transformer_vs_mamba.yaml
 ```
@@ -1154,11 +1148,11 @@ configs/
 - ✅ Multi-modal result analysis
 - ✅ Report generation utilities
 
-**scripts/preprocess_data.py** (~140 lines)
-- ✅ Raw data preprocessing pipeline
-- ✅ RGBS50 format support
-- ✅ Data validation and conversion
-- ✅ Directory structure setup
+**scripts/preprocess_sonar.py** (~456 lines)
+- ✅ Polar-to-rectangular sonar conversion
+- ✅ Unified resolution (682×376)
+- ✅ 4-corner bbox transformation
+- ✅ Batch processing (~120 fps)
 
 **scripts/analyze_dataset.py** (~110 lines)
 - ✅ Dataset statistics analysis
@@ -1234,7 +1228,7 @@ scripts/
 ├── eval.py (130 lines)
 ├── demo.py (120 lines)
 ├── visualize_results.py (150 lines)
-├── preprocess_data.py (140 lines)
+├── preprocess_sonar.py (456 lines)
 ├── analyze_dataset.py (110 lines)
 ├── export.py (120 lines)
 └── README.md (188 lines)
@@ -1589,7 +1583,6 @@ AquaSOT-3D/
 │       ├── ablation_no_gating.yaml
 │       ├── ablation_no_cycle3d.yaml
 │       ├── ablation_no_deformable.yaml
-│       ├── ablation_no_logpolar.yaml
 │       ├── ablation_no_quality_gating.yaml
 │       └── ablation_transformer_vs_mamba.yaml
 │
@@ -1643,10 +1636,9 @@ AquaSOT-3D/
 │       │   ├── __init__.py
 │       │   ├── backbones/
 │       │   │   ├── __init__.py
-│       │   │   ├── vit_rgb.py             # Vision Transformer for RGB
-│       │   │   ├── convnext_rgb.py        # ConvNeXt backbone for RGB
-│       │   │   ├── sonar_encoder.py       # Sonar feature encoder
-│       │   │   └── backbone_factory.py    # Backbone factory
+│       │   │   ├── vit.py                 # Unified ViT for RGB and Sonar
+│       │   │   ├── convnext.py            # ConvNeXt backbone for RGB
+│       │   │   └── factory.py             # Backbone factory
 │       │   ├── fusion/
 │       │   │   ├── __init__.py
 │       │   │   ├── g2_dcma.py             # G²-DCMA fusion module
@@ -1695,7 +1687,7 @@ AquaSOT-3D/
 │   ├── eval.py
 │   ├── demo.py
 │   ├── export.py
-│   ├── preprocess_data.py
+│   ├── preprocess_sonar.py
 │   ├── analyze_dataset.py
 │   └── visualize_results.py
 │
@@ -1908,16 +1900,12 @@ Weak 3D Center:
    - Remove Vision-Mamba temporal head
    - Use direct feature aggregation without temporal context
 
-6. **No Log-Polar Transform** (`configs/ablation_no_logpolar.yaml`)
-   - Process sonar images directly in Cartesian coordinates
-   - Skip differentiable log-polar transformation
-
-7. **No Quality-Aware Gating** (`configs/ablation_no_quality_gating.yaml`)
+6. **No Quality-Aware Gating** (`configs/ablation_no_quality_gating.yaml`)
    - Disable uncertainty-aware quality estimation
    - Use fixed fusion weights (w_rgb = w_sonar = 0.5)
    - No adaptive modality weighting
 
-8. **Transformer vs Mamba** (`configs/ablation_transformer_vs_mamba.yaml`)
+7. **Transformer vs Mamba** (`configs/ablation_transformer_vs_mamba.yaml`)
    - Replace Vision-Mamba with standard Transformer temporal head
    - Compare linear-complexity SSM vs quadratic-complexity self-attention
 

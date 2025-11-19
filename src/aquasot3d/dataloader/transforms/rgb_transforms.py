@@ -389,8 +389,7 @@ class RandomOcclusionBboxAware(BboxAwareTransform):
     Bbox-aware random occlusion augmentation (CutMix-style).
 
     Randomly masks rectangular regions to simulate temporary occlusions.
-    Filters out bboxes that are heavily occluded (similar to SectorOcclusion
-    for sonar).
+    Filters out bboxes that are heavily occluded by the masked region.
 
     Args:
         min_size: Minimum occlusion size ratio (default 0.05)
@@ -467,8 +466,7 @@ class RandomOcclusionBboxAware(BboxAwareTransform):
         """
         Filter bboxes that are heavily occluded.
 
-        CRITICAL: This method prevents training on invisible targets, similar
-        to SectorOcclusion for sonar.
+        CRITICAL: This method prevents training on invisible targets.
 
         Args:
             bboxes: Bounding boxes (N, 4)

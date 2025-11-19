@@ -195,14 +195,14 @@ class RGBSonarDataset(Dataset):
         self.rgb_dir = self.sequence_dir / "light"
         self.sonar_dir = self.sequence_dir / "sonar"
         self.rgb_img_dir = self.rgb_dir / "img"
-        self.sonar_img_dir = self.sonar_dir / "img"
+        self.sonar_img_dir = self.sonar_dir / "img_rect"  # Use preprocessed rectangular sonar images
 
         # Validate directory structure
         self._validate_structure()
 
         # Load annotations
         self.rgb_bboxes = parse_groundtruth(self.rgb_dir / "groundtruth.txt")
-        self.sonar_bboxes = parse_groundtruth(self.sonar_dir / "groundtruth.txt")
+        self.sonar_bboxes = parse_groundtruth(self.sonar_dir / "groundtruth_rect.txt")  # Use preprocessed rectangular annotations
 
         # Validate frame consistency
         if len(self.rgb_bboxes) != len(self.sonar_bboxes):
@@ -237,7 +237,7 @@ class RGBSonarDataset(Dataset):
 
         required_files = [
             self.rgb_dir / "groundtruth.txt",
-            self.sonar_dir / "groundtruth.txt",
+            self.sonar_dir / "groundtruth_rect.txt",  # Preprocessed rectangular annotations
         ]
 
         for file_path in required_files:
@@ -427,44 +427,14 @@ class RGBSonarDataset(Dataset):
 
     def get_sequence_info(self) -> Dict:
         """
-        Get sequence metadata with actual resolution detection.
+        Get sequence metadata with fixed resolutions.
 
         Returns:
-            Dictionary with sequence information including detected resolutions
+            Dictionary with sequence information including resolutions
         """
-        # Detect actual resolutions by reading first valid frame
-        rgb_resolution = (1920, 1080)  # Default fallback
-        sonar_resolution = (682, 376)   # Default fallback
-
-        if len(self.valid_indices) > 0:
-            try:
-                # Get first valid frame
-                first_valid_idx = self.valid_indices[0]
-                first_frame_id = first_valid_idx + 1
-
-                # Try to read RGB resolution
-                rgb_img_path = self.rgb_img_dir / f"{first_frame_id}.jpg"
-                if rgb_img_path.exists():
-                    rgb_img = cv2.imread(str(rgb_img_path))
-                    if rgb_img is not None:
-                        h, w = rgb_img.shape[:2]
-                        rgb_resolution = (w, h)
-
-                # Try to read Sonar resolution
-                sonar_img_path = self.sonar_img_dir / f"{first_frame_id}.jpg"
-                if sonar_img_path.exists():
-                    sonar_img = cv2.imread(str(sonar_img_path), cv2.IMREAD_GRAYSCALE)
-                    if sonar_img is not None:
-                        h, w = sonar_img.shape[:2]
-                        sonar_resolution = (w, h)
-            except Exception as e:
-                # Fall back to defaults if detection fails
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    f"Failed to detect resolution for {self.sequence_name}: {e}. "
-                    f"Using defaults: RGB {rgb_resolution}, Sonar {sonar_resolution}"
-                )
+        # Fixed resolutions (preprocessed data)
+        rgb_resolution = (1920, 1080)    # Standard RGB resolution
+        sonar_resolution = (682, 376)    # Fixed preprocessed sonar resolution
 
         return {
             "sequence_name": self.sequence_name,
@@ -596,50 +566,13 @@ class MultiSequenceRGBSonarDataset(Dataset):
 
         self.total_frames = sum(len(seq.valid_indices) for seq in self.sequences)
 
-    def _detect_resolution(self, sequence_name: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-        """
-        Detect resolution by reading the first valid frame from a sequence.
-
-        Args:
-            sequence_name: Name of the sequence
-
-        Returns:
-            Tuple of (rgb_resolution, sonar_resolution) where each is (width, height)
-        """
-        sequence_dir = self.data_root / sequence_name
-        rgb_img_dir = sequence_dir / "light" / "img"
-        sonar_img_dir = sequence_dir / "sonar" / "img"
-
-        # Try to find first valid image
-        for frame_id in range(1, 100):  # Check first 100 frames
-            rgb_img_path = rgb_img_dir / f"{frame_id}.jpg"
-            sonar_img_path = sonar_img_dir / f"{frame_id}.jpg"
-
-            if rgb_img_path.exists() and sonar_img_path.exists():
-                # Read RGB resolution
-                rgb_img = cv2.imread(str(rgb_img_path))
-                if rgb_img is not None:
-                    rgb_h, rgb_w = rgb_img.shape[:2]
-                    rgb_resolution = (rgb_w, rgb_h)
-                else:
-                    rgb_resolution = (1920, 1080)  # Default fallback
-
-                # Read Sonar resolution
-                sonar_img = cv2.imread(str(sonar_img_path), cv2.IMREAD_GRAYSCALE)
-                if sonar_img is not None:
-                    sonar_h, sonar_w = sonar_img.shape[:2]
-                    sonar_resolution = (sonar_w, sonar_h)
-                else:
-                    sonar_resolution = (682, 376)  # Default fallback
-
-                return rgb_resolution, sonar_resolution
-
-        # Fallback to standard resolutions if no valid frame found
-        return (1920, 1080), (682, 376)
-
     def _build_sequence_metadata(self):
         """Build metadata for all sequences."""
         global_idx = 0
+
+        # Fixed resolutions (preprocessed data)
+        RGB_RESOLUTION = (1920, 1080)    # Standard RGB resolution
+        SONAR_RESOLUTION = (682, 376)    # Fixed preprocessed sonar resolution
 
         for seq_name in self.sequence_names:
             # Create single-sequence dataset
@@ -651,13 +584,10 @@ class MultiSequenceRGBSonarDataset(Dataset):
                 return_occluded=self.return_occluded,
             )
 
-            # Detect actual resolution
-            rgb_res, sonar_res = self._detect_resolution(seq_name)
-
             # Store dataset
             self.sequence_datasets[seq_name] = seq_dataset
 
-            # Create metadata
+            # Create metadata with fixed resolutions
             num_valid = len(seq_dataset.valid_indices)
             metadata = SequenceMetadata(
                 sequence_name=seq_name,
@@ -666,8 +596,8 @@ class MultiSequenceRGBSonarDataset(Dataset):
                 valid_indices=seq_dataset.valid_indices,
                 start_idx=global_idx,
                 end_idx=global_idx + num_valid,
-                rgb_resolution=rgb_res,
-                sonar_resolution=sonar_res,
+                rgb_resolution=RGB_RESOLUTION,
+                sonar_resolution=SONAR_RESOLUTION,
             )
 
             self.sequences.append(metadata)

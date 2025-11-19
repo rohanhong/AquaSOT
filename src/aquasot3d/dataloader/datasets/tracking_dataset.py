@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset, MultiSequenceRGBSonarDataset
-from ..transforms.sonar_transforms import letterbox_resize
+# Note: letterbox_resize removed - unified with RGB strategy (2025-11-19)
 
 
 class TrackingDataset(Dataset):
@@ -717,23 +717,14 @@ class TrackingDataset(Dataset):
 
         original_h, original_w = img.shape[:2]
 
-        # Branch based on modality
-        if is_sonar:
-            # Sonar: Use letterbox padding to preserve aspect ratio (Audit 2025111408 Finding 2)
-            img_resized, (scale, pad_y, pad_x) = letterbox_resize(
-                img, (target_size, target_size), fill_value=0
-            )
-            # Letterbox returns isotropic scale, so scale_x = scale_y = scale
-            scale_x = scale
-            scale_y = scale
-        else:
-            # RGB: Direct resize (no geometric constraints)
-            import cv2
-            img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
-            scale_x = target_size / original_w
-            scale_y = target_size / original_h
-            pad_x = 0
-            pad_y = 0
+        # Unified resize strategy for both RGB and Sonar
+        # Note: Sonar now uses rectangular coordinates (682×376), no special handling needed
+        import cv2
+        img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+        scale_x = target_size / original_w
+        scale_y = target_size / original_h
+        pad_x = 0
+        pad_y = 0
 
         # Convert to tensor and normalize
         # Handle different channel formats

@@ -39,9 +39,7 @@ class TestTrainingAugmentation(unittest.TestCase):
         aug = TrackingAugmentationBboxAware(
             is_train=True,
             rgb_config={'enable_color_jitter': True, 'enable_blur': True},
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-        )
+            sonar_config={'enable_speckle': True})
 
         result = aug(self.test_data)
 
@@ -64,9 +62,7 @@ class TestTrainingAugmentation(unittest.TestCase):
     def test_evaluation_pipeline(self):
         """Test evaluation pipeline (no augmentation)."""
         aug = TrackingAugmentationBboxAware(
-            is_train=False,
-            use_logpolar=True,
-        )
+            is_train=False)
 
         result = aug(self.test_data)
 
@@ -83,9 +79,7 @@ class TestTrainingAugmentation(unittest.TestCase):
                 'enable_blur': True,
                 'enable_horizontal_flip': True,
                 'enable_occlusion': True,
-            },
-            use_logpolar=False,
-        )
+            })
 
         result = aug(self.test_data)
 
@@ -100,9 +94,7 @@ class TestTrainingAugmentation(unittest.TestCase):
                 'enable_speckle': True,
                 'enable_radial_jitter': True,
                 'enable_sector_occlusion': False,  # Keep disabled
-            },
-            use_logpolar=True,
-        )
+            })
 
         result = aug(self.test_data)
 
@@ -116,9 +108,7 @@ class TestDynamicResolution(unittest.TestCase):
     def test_multiple_resolutions(self):
         """Test pipeline works with all 5 dataset resolutions."""
         aug = TrackingAugmentationBboxAware(
-            is_train=False,
-            use_logpolar=True,
-        )
+            is_train=False)
 
         resolutions = [
             (376, 682, "uuv2-9"),
@@ -151,9 +141,7 @@ class TestBboxFormatConsistency(unittest.TestCase):
         aug = TrackingAugmentationBboxAware(
             is_train=True,
             rgb_config={'enable_color_jitter': True},
-            sonar_config={'enable_speckle': True},
-            use_logpolar=True,
-        )
+            sonar_config={'enable_speckle': True})
 
         test_data = {
             'rgb_img': np.random.randint(0, 256, (480, 640, 3), dtype=np.uint8),

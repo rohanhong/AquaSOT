@@ -42,7 +42,7 @@ def temp_dataset_dir():
         rgb_dir = seq_dir / "light"
         sonar_dir = seq_dir / "sonar"
         rgb_img_dir = rgb_dir / "img"
-        sonar_img_dir = sonar_dir / "img"
+        sonar_img_dir = sonar_dir / "img_rect"  # Use rectangular coordinates (post-preprocessing)
 
         rgb_img_dir.mkdir(parents=True, exist_ok=True)
         sonar_img_dir.mkdir(parents=True, exist_ok=True)
@@ -54,8 +54,8 @@ def temp_dataset_dir():
             rgb_img = Image.new('RGB', (1920, 1080), color=(i * 10, i * 10, i * 10))
             rgb_img.save(rgb_img_dir / f"{i}.jpg")
 
-            # Sonar image (682x376)
-            sonar_img = Image.new('RGB', (682, 376), color=(i * 20, i * 20, i * 20))
+            # Sonar image (682x376, grayscale for rectangular coordinates)
+            sonar_img = Image.new('L', (682, 376), color=(i * 20))
             sonar_img.save(sonar_img_dir / f"{i}.jpg")
 
         # Create groundtruth files
@@ -90,7 +90,8 @@ def temp_dataset_dir():
             for bbox in rgb_gt:
                 f.write(','.join(map(str, bbox)) + '\n')
 
-        with open(sonar_dir / "groundtruth.txt", 'w') as f:
+        # Sonar uses groundtruth_rect.txt (rectangular coordinate annotations)
+        with open(sonar_dir / "groundtruth_rect.txt", 'w') as f:
             for bbox in sonar_gt:
                 f.write(','.join(map(str, bbox)) + '\n')
 
@@ -223,7 +224,8 @@ class TestDatasetAccess:
 
         assert sample['frame_id'] == 1  # 1-based frame ID
         assert sample['rgb_img'].shape == (1080, 1920, 3)
-        assert sample['sonar_img'].shape == (376, 682, 3)
+        # Sonar is grayscale (rectangular coordinates)
+        assert sample['sonar_img'].shape == (376, 682) or sample['sonar_img'].shape == (376, 682, 1)
 
     def test_getitem_occluded_frame(self, temp_dataset_dir):
         """Test accessing occluded frame."""
@@ -237,7 +239,9 @@ class TestDatasetAccess:
         sample = dataset[2]
 
         assert sample['is_rgb_valid'] is False
-        assert np.array_equal(sample['rgb_bbox'], [0, 0, 0, 0])
+        # CRITICAL FIX: Occluded bboxes are replaced with centered 1x1 bbox for collate_fn consistency
+        # Expected bbox: [w//2, h//2, 1, 1] = [960, 540, 1, 1] for 1920x1080 image
+        assert np.array_equal(sample['rgb_bbox'], np.array([960, 540, 1, 1], dtype=np.float32))
 
     def test_get_frame_by_id(self, temp_dataset_dir):
         """Test get_frame_by_id method."""

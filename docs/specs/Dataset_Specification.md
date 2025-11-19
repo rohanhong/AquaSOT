@@ -55,7 +55,14 @@ data/
   - Standard rectangular field of view
 
 ### Forward-Looking Sonar (FLS)
-- **Resolution:** Variable across sequences (~680×375 pixels typical)
+
+**PREPROCESSING REQUIRED:** Sonar images must be converted from polar to rectangular coordinates before training (see Training Guide).
+
+#### Original Format (Polar)
+
+**Location:** `data/uuvX/sonar/img/` and `groundtruth.txt`
+
+- **Resolution:** Variable across sequences
   - 682×376 pixels: `uuv2`, `uuv3`, `uuv4`, `uuv6`, `uuv7`, `uuv8`, `uuv9` (7 sequences)
   - 684×377 pixels: `uuv5`, `uuv12` (2 sequences)
   - 680×375 pixels: `uuv10` (1 sequence)
@@ -65,11 +72,27 @@ data/
 - **Characteristics:**
   - **Fan-shaped field of view** (sector scan pattern)
   - Non-uniform spatial resolution (radial vs. angular)
-  - Low signal-to-noise ratio with acoustic artifacts
-  - Black background regions outside effective scanning area
-  - Targets appear as bright reflective regions
+  - Sensor positioned at bottom-center
+  - Angular resolution decreases with range
 
-**Important:** Sonar images exhibit a characteristic fan/sector shape due to the acoustic beam pattern. The spatial resolution is not uniform - angular resolution decreases with range while radial resolution remains relatively constant. Resolution variations across sequences are minor (within ±2% of base ~680×376) and are handled adaptively by the model architecture.
+**Status:** Preserved for reference, NOT used for training.
+
+#### Preprocessed Format (Rectangular) **← TRAINING USES THIS**
+
+**Location:** `data/uuvX/sonar/img_rect/` and `groundtruth_rect.txt`
+
+- **Resolution:** Unified 682×376 pixels (all sequences)
+- **Format:** JPEG images, rectangular representation
+- **Transformation:**
+  - Horizontal axis: Angle (left=−FOV/2, right=+FOV/2)
+  - Vertical axis: Range (top=far, bottom=near)
+  - Bounding boxes transformed using 4-corner method
+- **Generation Command:**
+  ```bash
+  python scripts/preprocess_sonar.py --all
+  ```
+
+**Status:** Required for training (eliminates runtime coordinate transforms).
 
 ## Annotation Format
 

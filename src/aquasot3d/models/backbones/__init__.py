@@ -1,36 +1,21 @@
 """
 Backbone Networks for AquaSOT-3D
 
-This package provides various backbone architectures for RGB and Sonar feature extraction:
-- ViT RGB: Vision Transformer for RGB images
-- ConvNeXt RGB: ConvNeXt architecture for RGB images
-- Sonar Encoder: Specialized encoder for sonar images with log-polar preprocessing
-- Backbone Factory: Unified interface for creating backbones
+This package provides ViT backbone for unified RGB and Sonar feature extraction:
+- ViT: Unified Vision Transformer for RGB (3-channel) and Sonar (1-channel) images
+- Factory: Unified interface for creating backbones
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-19
 """
 
-from aquasot3d.models.backbones.vit_rgb import (
-    ViTRGBBackbone,
+from aquasot3d.models.backbones.vit import (
+    ViTBackbone,
     PositionEmbeddingAdapter,
-    create_vit_rgb_backbone,
+    create_vit_backbone,
 )
 
-from aquasot3d.models.backbones.convnext_rgb import (
-    ConvNeXtRGBBackbone,
-    ConvNeXtFeaturePyramid,
-    create_convnext_rgb_backbone,
-)
-
-from aquasot3d.models.backbones.sonar_encoder import (
-    SonarEncoder,
-    LightweightSonarCNN,
-    RadialProfileExtractor,
-    create_sonar_encoder,
-)
-
-from aquasot3d.models.backbones.backbone_factory import (
+from aquasot3d.models.backbones.factory import (
     BackboneFactory,
     MultiModalBackbone,
     build_backbone,
@@ -39,21 +24,10 @@ from aquasot3d.models.backbones.backbone_factory import (
 
 
 __all__ = [
-    # ViT RGB
-    'ViTRGBBackbone',
+    # ViT (unified for RGB and Sonar)
+    'ViTBackbone',
     'PositionEmbeddingAdapter',
-    'create_vit_rgb_backbone',
-
-    # ConvNeXt RGB
-    'ConvNeXtRGBBackbone',
-    'ConvNeXtFeaturePyramid',
-    'create_convnext_rgb_backbone',
-
-    # Sonar Encoder
-    'SonarEncoder',
-    'LightweightSonarCNN',
-    'RadialProfileExtractor',
-    'create_sonar_encoder',
+    'create_vit_backbone',
 
     # Factory
     'BackboneFactory',
