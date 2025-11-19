@@ -485,16 +485,15 @@ class TrackingEvaluator:
 
             rgb_boxes = outputs['rgb_boxes'].cpu()  # Keep as tensor for wrapper
 
-            # Wrap model outputs as cxcywh (model convention)
+            # CRITICAL FIX (Audit 2025111920): Keep cxcywh format for denormalization
+            # _denormalize_bbox() expects cxcywh normalized input (see line 314-321)
+            # Previous code incorrectly converted to xywh, causing format mismatch
             rgb_boxes_cxcywh = BBoxCXCYWH(rgb_boxes)
-
-            # Convert to xywh for denormalization (evaluation convention)
-            rgb_boxes_xywh = rgb_boxes_cxcywh.to_xywh()
-            rgb_boxes_np = rgb_boxes_xywh.numpy()
+            rgb_boxes_np = rgb_boxes_cxcywh.numpy()  # Keep as cxcywh
 
             predictions['rgb_pred'] = [
                 self._denormalize_bbox(
-                    rgb_boxes_np[i],
+                    rgb_boxes_np[i],  # cxcywh normalized [0,1]
                     self.search_size,
                     scale_x=rgb_metadata_list[i].get('scale_x') if i < len(rgb_metadata_list) else None,
                     scale_y=rgb_metadata_list[i].get('scale_y') if i < len(rgb_metadata_list) else None,
@@ -509,17 +508,16 @@ class TrackingEvaluator:
             ]
 
         if 'sonar_boxes' in outputs:
-            # Type-safe conversion: cxcywh -> xywh
+            # CRITICAL FIX (Audit 2025111920): Keep cxcywh format for denormalization
             from aquasot3d.utils import BBoxCXCYWH
 
             sonar_boxes = outputs['sonar_boxes'].cpu()
             sonar_boxes_cxcywh = BBoxCXCYWH(sonar_boxes)
-            sonar_boxes_xywh = sonar_boxes_cxcywh.to_xywh()
-            sonar_boxes_np = sonar_boxes_xywh.numpy()
+            sonar_boxes_np = sonar_boxes_cxcywh.numpy()  # Keep as cxcywh
 
             predictions['sonar_pred'] = [
                 self._denormalize_bbox(
-                    sonar_boxes_np[i],
+                    sonar_boxes_np[i],  # cxcywh normalized [0,1]
                     self.search_size,
                     scale_x=sonar_metadata_list[i].get('scale_x') if i < len(sonar_metadata_list) else None,
                     scale_y=sonar_metadata_list[i].get('scale_y') if i < len(sonar_metadata_list) else None,
@@ -534,17 +532,17 @@ class TrackingEvaluator:
             ]
 
         if 'fusion_boxes' in outputs:
-            # Type-safe conversion: cxcywh -> xywh (fusion uses RGB coordinate space)
+            # CRITICAL FIX (Audit 2025111920): Keep cxcywh format for denormalization
+            # Fusion uses RGB coordinate space for metadata
             from aquasot3d.utils import BBoxCXCYWH
 
             fusion_boxes = outputs['fusion_boxes'].cpu()
             fusion_boxes_cxcywh = BBoxCXCYWH(fusion_boxes)
-            fusion_boxes_xywh = fusion_boxes_cxcywh.to_xywh()
-            fusion_boxes_np = fusion_boxes_xywh.numpy()
+            fusion_boxes_np = fusion_boxes_cxcywh.numpy()  # Keep as cxcywh
 
             predictions['fusion_pred'] = [
                 self._denormalize_bbox(
-                    fusion_boxes_np[i],
+                    fusion_boxes_np[i],  # cxcywh normalized [0,1]
                     self.search_size,
                     scale_x=rgb_metadata_list[i].get('scale_x') if i < len(rgb_metadata_list) else None,
                     scale_y=rgb_metadata_list[i].get('scale_y') if i < len(rgb_metadata_list) else None,

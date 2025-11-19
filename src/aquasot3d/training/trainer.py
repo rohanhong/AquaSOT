@@ -31,7 +31,6 @@ from collections import defaultdict
 from aquasot3d.training.loss_manager import LossManager
 from aquasot3d.training.checkpoint import CheckpointManager
 from aquasot3d.training.optimizer import clip_gradients
-from aquasot3d.utils import convert_bbox_format
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -337,14 +336,16 @@ class Trainer:
                 validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
             # Prepare ground truth boxes
-            # CRITICAL FIX (Audit 2025111901): Convert xywh→cxcywh for BoxHead
-            # Dataset outputs xywh format, but BoxHead.compute_loss expects cxcywh.
-            # Without conversion, center coordinates are wrong by ~30-40 pixels (~28-37% error).
+            # CRITICAL FIX (Audit 2025111920): Remove double format conversion bug
+            # Collate_fn already converts xywh→cxcywh and normalizes (loader.py:318-334)
+            # batch['rgb_boxes'] and batch['sonar_boxes'] are already in normalized cxcywh format
+            # Previous code (Audit 2025111901) incorrectly converted again, causing 50% bbox shift
+            # Bug introduced in commit aec2792, now fixed by reverting to pre-refactor behavior
             gt_boxes = {}
             if 'rgb_boxes' in batch:
-                gt_boxes['rgb'] = convert_bbox_format(batch['rgb_boxes'], 'xywh', 'cxcywh')
+                gt_boxes['rgb'] = batch['rgb_boxes']  # Already normalized cxcywh from collate_fn
             if 'sonar_boxes' in batch:
-                gt_boxes['sonar'] = convert_bbox_format(batch['sonar_boxes'], 'xywh', 'cxcywh')
+                gt_boxes['sonar'] = batch['sonar_boxes']  # Already normalized cxcywh from collate_fn
 
             # CRITICAL FIX (Audit 2025111408 Finding 3):
             # Add pixel coordinates for quality estimators
@@ -560,13 +561,14 @@ class Trainer:
                     validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
                 # Prepare ground truth boxes (for validation loss computation)
-                # CRITICAL FIX (Audit 2025111901): Convert xywh→cxcywh for BoxHead
-                # Dataset outputs xywh format, but BoxHead.compute_loss expects cxcywh.
+                # CRITICAL FIX (Audit 2025111920): Remove double format conversion bug
+                # Collate_fn already converts xywh→cxcywh and normalizes (loader.py:318-334)
+                # batch['rgb_boxes'] and batch['sonar_boxes'] are already in normalized cxcywh format
                 gt_boxes = {}
                 if 'rgb_boxes' in batch:
-                    gt_boxes['rgb'] = convert_bbox_format(batch['rgb_boxes'], 'xywh', 'cxcywh')
+                    gt_boxes['rgb'] = batch['rgb_boxes']  # Already normalized cxcywh from collate_fn
                 if 'sonar_boxes' in batch:
-                    gt_boxes['sonar'] = convert_bbox_format(batch['sonar_boxes'], 'xywh', 'cxcywh')
+                    gt_boxes['sonar'] = batch['sonar_boxes']  # Already normalized cxcywh from collate_fn
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
                 # Add pixel coordinates for quality estimators
