@@ -753,71 +753,18 @@ class SonarBoxHead(BoxHead):
     Sonar-specific 2D Box Prediction Head.
 
     Specialized version of BoxHead optimized for Sonar features.
-    Uses sonar-specific initialization to match target distribution.
+    Uses generic initialization (same as RGB) for simplicity and consistency.
 
-    CRITICAL FIX (Audit 2025111918): Sonar targets exhibit concentrated distribution
-    with bias toward specific regions. Standard initialization [0.5, 0.5, 0.3, 0.3]
-    causes Sigmoid saturation and gradient vanishing.
-
-    NOTE: Bias values empirically derived. Should be validated for preprocessed
-    rectangular coordinates (682x376) if distribution differs from original analysis.
+    NOTE: Previously used data-driven initialization based on polar coordinates.
+    Changed to generic initialization to match RGB modality and simplify maintenance.
+    Uses parent class BoxHead._init_weights() which initializes to:
+    - cx, cy: 0.5 (image center)
+    - w, h: 0.3 (moderate box size)
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
-        # Override initialization for Sonar-specific target distribution
-        self._init_sonar_weights()
-
-        self.logger.info("Initialized Sonar-specific BoxHead with empirical initialization")
-
-    def _init_sonar_weights(self):
-        """
-        Sonar-specific weight initialization for target distribution.
-
-        Based on empirical target distribution analysis (Audit 2025111918):
-        - cx: ~0.37 (slightly left of center)
-        - cy: ~0.92 (concentrated in specific region)
-        - w:  ~0.11 (small horizontal extent)
-        - h:  ~0.03 (small vertical extent)
-
-        NOTE: These values were derived from original analysis. For preprocessed
-        rectangular coordinates (682x376), distribution should be revalidated.
-        This initialization prevents Sigmoid saturation and enables learning.
-        """
-        import math
-
-        reg_output_layer = self.reg_head[-2]  # Last linear before sigmoid
-        if isinstance(reg_output_layer, nn.Linear):
-            # Keep weight initialization small for stability
-            nn.init.normal_(reg_output_layer.weight, mean=0.0, std=0.01)
-
-            if reg_output_layer.bias is not None:
-                # Set bias to match empirical Sonar target distribution
-                # logit(p) = log(p / (1-p))
-
-                # cx ≈ 0.37: logit(0.37) ≈ -0.53
-                reg_output_layer.bias.data[0] = -0.53
-
-                # cy ≈ 0.92: logit(0.92) ≈ 2.44
-                reg_output_layer.bias.data[1] = 2.44
-
-                # w ≈ 0.11: logit(0.11) ≈ -2.09 (small width)
-                reg_output_layer.bias.data[2] = -2.09
-
-                # h ≈ 0.03: logit(0.03) ≈ -3.47 (small height)
-                reg_output_layer.bias.data[3] = -3.47
-
-                # Compute sigmoid for logging (1 / (1 + exp(-x)))
-                sigmoid = lambda x: 1.0 / (1.0 + math.exp(-x))
-
-                self.logger.info(
-                    f"Initialized Sonar regression bias (empirical): "
-                    f"cx={sigmoid(reg_output_layer.bias.data[0].item()):.3f}, "
-                    f"cy={sigmoid(reg_output_layer.bias.data[1].item()):.3f}, "
-                    f"w={sigmoid(reg_output_layer.bias.data[2].item()):.3f}, "
-                    f"h={sigmoid(reg_output_layer.bias.data[3].item()):.3f}"
-                )
+        self.logger.info("Initialized Sonar-specific BoxHead with generic initialization")
 
 
 @PREDICTION_HEAD_REGISTRY.register("FusionBoxHead")
