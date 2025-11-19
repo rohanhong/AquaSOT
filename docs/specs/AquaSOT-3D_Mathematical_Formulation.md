@@ -8,7 +8,7 @@
 
 1. [Introduction and Problem Formulation](#1-introduction-and-problem-formulation)
 2. [Mathematical Notation](#2-mathematical-notation)
-3. [Differentiable Log-Polar Transform](#3-differentiable-log-polar-transform)
+3. [Sonar Coordinate System Transformation](#3-sonar-coordinate-system-transformation)
 4. [G²-DCMA: Geometry-Gated Deformable Cross-Modal Attention](#4-g-dcma-geometry-gated-deformable-cross-modal-attention)
    - 4.1 [Geometric Gating Mechanism](#41-geometric-gating-mechanism)
    - 4.2 [Deformable Cross-Modal Attention](#42-deformable-cross-modal-attention)
@@ -41,7 +41,7 @@ $$
 
 where:
 - $I_t^{\text{rgb}} \in \mathbb{R}^{3 \times H_{\text{rgb}} \times W_{\text{rgb}}}$: RGB image (standard: $1080 \times 1920$)
-- $I_t^{\text{sonar}} \in \mathbb{R}^{1 \times H_{\text{sonar}} \times W_{\text{sonar}}}$: Sonar intensity image (standard: $376 \times 682$, fan-shaped FOV)
+- $I_t^{\text{sonar}} \in \mathbb{R}^{1 \times H_{\text{sonar}} \times W_{\text{sonar}}}$: Sonar intensity image (preprocessed to rectangular coordinates: $376 \times 682$ pixels)
 - $B_t^{\text{rgb}} = (c_x^{\text{rgb}}, c_y^{\text{rgb}}, w_t^{\text{rgb}}, h_t^{\text{rgb}})$: RGB bounding box in cxcywh format (training only)
 - $B_t^{\text{sonar}} = (c_x^{\text{sonar}}, c_y^{\text{sonar}}, w_t^{\text{sonar}}, h_t^{\text{sonar}})$: Sonar bounding box in cxcywh format (training only)
 - $V_t^{\text{rgb}}, V_t^{\text{sonar}} \in \{0, 1\}$: **Validity flags** indicating whether the sample is valid for loss computation
@@ -96,7 +96,7 @@ $$
 
 **1. G²-DCMA Fusion Module** (Sections 3-4)
 Calibration-free cross-modal attention combining:
-- Learnable log-polar warping with end-to-end scales ($\alpha, \beta$)
+- Fixed polar-to-rectangular coordinate preprocessing
 - Geometric gating $g(\mathbf{r}, \mathbf{s})$ from sonar radial and RGB scale cues
 - Deformable sampling offsets $\Delta \mathbf{p}$ adapted from Deformable DETR [Zhu et al., 2021]
 - Dual consistency: component-level ($X$ coordinate agreement) + representation-level (InfoNCE)
@@ -153,7 +153,6 @@ Linear-complexity SSM for long-sequence tracking:
 
 | Symbol | Description | Dimension |
 |--------|-------------|-----------|
-| $\alpha, \beta$ | Learnable log-polar scales | $\mathbb{R}_{+}$ (initialized to 1.0) |
 | $\mathbf{r}$ | Radial activation profile | $\mathbb{R}^{B \times N_{\text{bins}}}$ ($N_{\text{bins}} = 50$) |
 | $\mathbf{s}$ | Scale pyramid encoding | $\mathbb{R}^{B \times D_s}$ |
 | $\mathbf{g}$ | Geometric gating weights | $\mathbb{R}^{B \times N_{\text{heads}}}$ ($N_{\text{heads}} = 8$) |
@@ -178,120 +177,127 @@ Linear-complexity SSM for long-sequence tracking:
 
 ---
 
-## 3. Differentiable Log-Polar Transform
+## 3. Sonar Coordinate System Transformation
 
 ### 3.1 Motivation
 
 Forward-Looking Sonar (FLS) images exhibit:
 - **Fan-shaped field of view** with radial structure
 - **Non-uniform spatial resolution**: higher near sensor, lower at range
-- **Radial-angular parameterization** more natural than Cartesian grid
+- **Radial-angular parameterization** in native polar coordinates
 
-### 3.2 Log-Polar Coordinate Transformation
+To simplify the learning process and improve training stability, AquaSOT-3D employs a **polar-to-rectangular coordinate transformation** as a preprocessing step, eliminating the need for runtime coordinate transformations.
 
-Given Cartesian coordinates $(x, y)$ in sonar image space, define:
+### 3.2 Polar-to-Rectangular Transformation
 
+The transformation maps from polar coordinates to rectangular coordinates, where the rectangular representation provides a more uniform spatial structure for neural network processing.
+
+#### 3.2.1 Mathematical Formulation
+
+For each output pixel $(x_{\text{rect}}, y_{\text{rect}})$ in the rectangular coordinate system with dimensions $W_{\text{out}} \times H_{\text{out}}$:
+
+**Step 1: Normalize rectangular coordinates to unit range**
 $$
 \begin{aligned}
-r &= \sqrt{(x - c_x)^2 + (y - c_y)^2} \\
-\theta &= \arctan\left(\frac{x - c_x}{c_y - y}\right)
+\theta_{\text{norm}} &= \frac{x_{\text{rect}}}{W_{\text{out}} - 1} \in [0, 1] \\
+r_{\text{norm}} &= \frac{H_{\text{out}} - 1 - y_{\text{rect}}}{H_{\text{out}} - 1} \in [0, 1]
 \end{aligned}
 $$
 
-where $(c_x, c_y)$ is the sensor origin (e.g., $(W_{\text{sonar}}/2, H_{\text{sonar}}-1)$ for bottom-center FLS).
-
-**Log-Polar Transformation** with **learnable scales** $\alpha, \beta$:
-
+**Step 2: Map to physical polar coordinates**
 $$
 \begin{aligned}
-\rho &= \alpha \cdot \log(r + 1) \\
-\phi &= \beta \cdot \theta
+\theta &= -\frac{\text{FOV}}{2} + \theta_{\text{norm}} \cdot \text{FOV} \\
+r &= r_{\text{norm}} \cdot r_{\max}
 \end{aligned}
-$$
-
-**Key Properties**:
-- $\alpha > 0$: Logarithmic radial scaling (compresses far ranges, expands near ranges)
-- $\beta > 0$: Angular scaling (adapts to sensor-specific FOV)
-- Both parameters are **learnable** via backpropagation
-
-### 3.3 Differentiable Sampling
-
-**Inverse Transformation** (Log-Polar → Cartesian) for sampling:
-
-$$
-\begin{aligned}
-r &= \exp\left(\frac{\rho}{\alpha + \epsilon}\right) - 1 \\
-\theta &= \frac{\phi}{\beta + \epsilon} \\
-x &= c_x + r \sin(\theta) \\
-y &= c_y - r \cos(\theta)
-\end{aligned}
-$$
-
-where $\epsilon = 10^{-6}$ for numerical stability.
-
-**Grid Sampling**: Given sonar image $I^{\text{sonar}} \in \mathbb{R}^{1 \times H \times W}$ and log-polar grid $(\rho, \phi)$:
-
-$$
-I^{\text{logpolar}} = \mathcal{S}\big(I^{\text{sonar}}, \mathcal{G}(\rho, \phi; \alpha, \beta)\big)
 $$
 
 where:
-- $\mathcal{G}(\rho, \phi; \alpha, \beta)$: Computes Cartesian sampling coordinates
-- $\mathcal{S}(\cdot, \cdot)$: Bilinear interpolation (differentiable via `grid_sample`)
+- FOV: Field of view angle in radians (typically $130° \approx 2.27$ radians)
+- $r_{\max}$: Maximum sensing range
 
-**Gradient Flow**:
-
-$$
-\frac{\partial I^{\text{logpolar}}}{\partial \alpha}, \quad \frac{\partial I^{\text{logpolar}}}{\partial \beta} \quad \text{(via chain rule)}
-$$
-
-This enables end-to-end learning of geometric scales without calibration.
-
-### 3.4 Dynamic Size Adaptation
-
-For input size $(H, W) \neq (H_{\text{init}}, W_{\text{init}})$, scale sensor position and max range proportionally:
-
+**Step 3: Convert to Cartesian source coordinates**
 $$
 \begin{aligned}
-c_x^{\text{scaled}} &= c_x \cdot \frac{W}{W_{\text{init}}} \\
-c_y^{\text{scaled}} &= c_y \cdot \frac{H}{H_{\text{init}}} \\
-r_{\max}^{\text{scaled}} &= r_{\max} \cdot \frac{H}{H_{\text{init}}}
+x_{\text{src}} &= c_x + r \sin(\theta) \\
+y_{\text{src}} &= c_y - r \cos(\theta)
 \end{aligned}
 $$
 
-This preserves geometric relationships across different image resolutions.
+where $(c_x, c_y)$ represents the sensor position in the original polar coordinate frame.
 
-### 3.5 Bbox-Aware Log-Polar Transform
-
-**Problem**: Standard log-polar transform causes bbox desynchronization (~250 pixel error).
-
-**Solution**: 8-point corner sampling algorithm for bbox transformation:
-
-1. **Denormalize bbox** to image coordinates: $(c_x, c_y, w, h) \rightarrow$ pixel space
-2. **Sample 8 points**: 4 corners + 4 midpoints of bbox edges
-3. **Transform points** via log-polar: $(x_i, y_i) \rightarrow (\rho_i, \phi_i) \rightarrow (x'_i, y'_i)$
-4. **Compute bounding box** of transformed points: $\text{bbox} = \text{minmax}(x'_i, y'_i)$
-5. **Renormalize** to [0,1] range
-
-**Mathematical Formulation**:
-
-Given bbox $B = (c_x, c_y, w, h)$ and 8 sample points:
-
+**Step 4: Bilinear interpolation**
 $$
-\mathcal{P} = \{(c_x \pm \frac{w}{2}, c_y \pm \frac{h}{2}), (c_x \pm \frac{w}{2}, c_y), (c_x, c_y \pm \frac{h}{2})\}
+I_{\text{rect}}(x_{\text{rect}}, y_{\text{rect}}) = \sum_{i,j \in \mathcal{N}} w_{ij} \cdot I_{\text{polar}}(i, j)
 $$
 
-Transform each point:
+where $\mathcal{N}$ denotes the 2×2 neighborhood around $(x_{\text{src}}, y_{\text{src}})$ and $w_{ij}$ are bilinear interpolation weights.
+
+#### 3.2.2 Field-of-View Determination
+
+The field of view is determined by the geometric configuration of the sonar sensor:
+
 $$
-\mathcal{P}' = \{\mathcal{T}_{\text{logpolar}}(p_i) : p_i \in \mathcal{P}\}
+\text{FOV} = \theta_{\max} - \theta_{\min}
 $$
 
-New bbox:
+where $\theta_{\min}$ and $\theta_{\max}$ represent the angular boundaries of the sonar's sensing region.
+
+### 3.3 Rectangular Coordinate Properties
+
+After transformation, the sonar data exhibits the following properties in rectangular coordinates:
+
+- **X-axis**: Represents bearing angle $\theta$ (horizontal dimension)
+- **Y-axis**: Represents range distance $r$ (vertical dimension, with near range at bottom)
+- **Sensor position**: Located at bottom-center $(c_x, c_y) = ((W-1)/2, H-1)$
+
+**Important Note**: The rectangular coordinates encode **heterogeneous physical quantities** - angle along the X-axis and distance along the Y-axis. This has critical implications for distance computations (see Section 4.1).
+
+### 3.4 Bounding Box Transformation
+
+Target annotations must also be transformed from polar to rectangular coordinates. The transformation preserves object boundaries through a corner-based mapping approach.
+
+#### 3.4.1 Corner-Based Transformation Algorithm
+
+Given a bounding box $B_{\text{polar}} = (x, y, w, h)$ in polar coordinates:
+
+1. **Extract corner points**:
 $$
-B' = \left(\frac{\min x'_i + \max x'_i}{2}, \frac{\min y'_i + \max y'_i}{2}, \max x'_i - \min x'_i, \max y'_i - \min y'_i\right)
+\mathcal{C} = \{(x, y), (x+w, y), (x+w, y+h), (x, y+h)\}
 $$
 
-This ensures bbox-image synchronization with sub-pixel accuracy.
+2. **Transform each corner** $(x_c, y_c) \in \mathcal{C}$:
+$$
+\begin{aligned}
+\Delta x &= x_c - c_x, \quad \Delta y = c_y - y_c \\
+\theta_c &= \arctan2(\Delta x, \Delta y) \\
+r_c &= \sqrt{\Delta x^2 + \Delta y^2} \\
+\end{aligned}
+$$
+
+Then normalize and map to rectangular coordinates:
+$$
+\begin{aligned}
+\theta_{\text{norm}} &= \frac{\theta_c - \theta_{\min}}{\theta_{\max} - \theta_{\min}} \\
+r_{\text{norm}} &= \frac{r_c}{r_{\max}} \\
+x_{\text{rect}} &= \theta_{\text{norm}} \cdot (W_{\text{out}} - 1) \\
+y_{\text{rect}} &= (1 - r_{\text{norm}}) \cdot (H_{\text{out}} - 1)
+\end{aligned}
+$$
+
+3. **Compute axis-aligned bounding box**:
+$$
+B_{\text{rect}} = \left(\min_{i}(x_i), \min_{i}(y_i), \max_{i}(x_i) - \min_{i}(x_i), \max_{i}(y_i) - \min_{i}(y_i)\right)
+$$
+
+### 3.5 Theoretical Advantages
+
+The polar-to-rectangular transformation provides several theoretical benefits:
+
+1. **Spatial Uniformity**: Rectangular grids align better with convolutional neural network architectures
+2. **Training Stability**: Fixed transformation eliminates gradient flow through coordinate warping
+3. **Computational Efficiency**: No runtime transformation overhead during training
+4. **Resolution Consistency**: Unified spatial dimensions across all data samples
 
 ---
 
@@ -311,13 +317,21 @@ G²-DCMA is the **core fusion module** that integrates three complementary mecha
 
 Given sonar feature map $\mathcal{F}^{\text{sonar}} \in \mathbb{R}^{B \times C \times H' \times W'}$:
 
-1. **Compute radial distance map** (sensor at bottom-center):
+1. **Compute radial distance map**:
+
+After polar-to-rectangular transformation, the coordinate system has special properties:
+- X-axis represents bearing angle (horizontal field of view)
+- Y-axis represents range distance from sensor
+
+Therefore, the radial distance in rectangular coordinates is:
 
 $$
-R(i, j) = \sqrt{(j - c_x)^2 + (i - c_y)^2}, \quad \forall (i, j) \in [0, H') \times [0, W')
+R(i, j) = c_y - i, \quad \forall (i, j) \in [0, H') \times [0, W')
 $$
 
-where $(c_x, c_y) = (W'/2, H'-1)$ for standard upward-facing FLS.
+where $(c_x, c_y) = (W'/2, H'-1)$ with sensor positioned at bottom-center.
+
+**Important**: The Euclidean distance formula $\sqrt{(j - c_x)^2 + (i - c_y)^2}$ is **incorrect** here because it mixes heterogeneous physical quantities (angle and distance).
 
 2. **Discretize into $N_{\text{bins}} = 50$ radial bins**:
 
@@ -759,16 +773,13 @@ $$
 
 #### 6.2.4 Combined Depth Estimate
 
-**Optional residual connection**:
+**Residual formulation**:
 
 $$
-Z = \begin{cases}
-Z_{\text{mlp}} + Z_{\text{weighted}} & \text{if } \texttt{use\_residual\_z} = \texttt{True} \\
-Z_{\text{mlp}} & \text{otherwise}
-\end{cases}
+Z = Z_{\text{mlp}} + Z_{\text{weighted}}
 $$
 
-Default: `use_residual_z=True` for improved depth estimation stability.
+where the weighted integral term acts as a residual correction to the MLP-predicted depth, improving estimation stability.
 
 ### 6.3 Horizontal Coordinate (X) with Dual-Branch Consistency
 
@@ -1122,8 +1133,8 @@ Typical progression:
 #### 8.7.1 Three-Stage Training
 
 **Stage 1: Single-Modality Pretraining** (40 epochs each)
-- RGB-only: OSTrack-style tracking loss
-- Sonar-only: With log-polar preprocessing
+- RGB-only: Standard tracking loss formulation
+- Sonar-only: With rectangular coordinate preprocessing
 
 **Stage 2: Multi-Modal Joint Training** (60 epochs)
 - Initialize from pretrained backbones
@@ -1135,12 +1146,25 @@ Typical progression:
 - Enable EMA aggregation (Section 5.8)
 - Fine-tune temporal components
 
-#### 8.7.2 Batch Size and Accumulation
+**Warmup Configuration**:
+- Pretraining stages: 20% warmup ratio (8 epochs out of 40)
+- Fine-tuning stage: 12-15% warmup ratio (5-6 epochs out of 40)
+- Linear scaling rule: When batch size increases by factor $k$, scale warmup steps and learning rate proportionally
 
-- Physical batch size: 64 (optimized for RTX 3070)
-- Gradient accumulation: 2 steps (for memory efficiency)
-- Effective batch size: physical_batch_size × accumulation_steps × num_gpus
-- Global synchronization in distributed training (DistributedDataParallel)
+#### 8.7.2 Batch Size and Gradient Accumulation
+
+**Effective Batch Size Computation**:
+
+$$
+B_{\text{eff}} = B_{\text{phys}} \times N_{\text{accum}} \times N_{\text{gpu}}
+$$
+
+where:
+- $B_{\text{phys}}$: Physical batch size per GPU
+- $N_{\text{accum}}$: Number of gradient accumulation steps
+- $N_{\text{gpu}}$: Number of GPUs in distributed training
+
+**Gradient Synchronization**: In multi-GPU training, gradients are averaged across all devices before the optimizer step to ensure consistency.
 
 ---
 
@@ -1217,62 +1241,6 @@ $$\text{3D-CE} = \frac{1}{N} \sum_{t=1}^{N} \|\mathbf{C}_{3D,\text{pred}}^t - \m
 ### Additional References
 
 - **AdamW Optimizer**: Loshchilov, I., & Hutter, F. (2019). *Decoupled Weight Decay Regularization*. ICLR 2019. [arXiv:1711.05101](https://arxiv.org/abs/1711.05101)
-- **Log-Polar Transform**: Differentiable implementation using PyTorch `grid_sample` for sonar image warping
 - **Multi-Head Attention**: Vaswani, A., et al. (2017). *Attention is All You Need*. NeurIPS 2017. [arXiv:1706.03762](https://arxiv.org/abs/1706.03762)
 - **Zero-Order Hold Discretization**: Franklin, G. F., Powell, J. D., & Workman, M. L. (1998). *Digital Control of Dynamic Systems*. Addison-Wesley.
-
----
-
-## Appendix: Implementation Notes
-
-### Data Augmentation
-
-**RGB Augmentation**:
-- **ColorJitter**: Brightness, contrast, saturation, hue variations (probability = 0.5)
-- **RandomBlur**: Gaussian blur for turbidity effects (probability = 0.3)
-- **RandomOcclusion**: Synthetic rectangular occlusions (probability = 0.2, size 5-30%)
-
-**Sonar Augmentation**:
-- **SpeckleNoise**: Multiplicative speckle noise $I' = I \cdot (1 + 0.1 \cdot \mathcal{N}(0,1))$ (probability = 0.5)
-- **SectorOcclusion**: Fan-shaped masks matching sonar geometry (probability = 0.2, angle 10°-40°)
-- **RadialScalingJitter**: DISABLED due to bbox synchronization issues
-
-### Computational Complexity
-
-| Module | Complexity | Notes |
-|:-------|:-----------|:------|
-| Log-Polar Transform | $O(BHW)$ | Grid sampling with bilinear interpolation |
-| Geometric Gating | $O(BC H W)$ | Linear in spatial size |
-| Deformable Attention | $O(B N_q H K d_k)$ | $K=4$ points per head |
-| Vision-Mamba | $O(BTD^2)$ | Linear in sequence length $T$ |
-| Weak 3D Head | $O(BD)$ | Per-frame prediction |
-
-### Memory Optimization
-
-- **Gradient Checkpointing**: For deep Mamba stacks
-- **FP16 Mixed Precision**: Reduces memory by ~50%
-- **Distributed Data Parallel**: Multi-GPU scaling
-
-### Numerical Stability
-
-- $\epsilon = 10^{-6}$ or $10^{-7}$ added to denominators (division by zero prevention)
-- Gradient clipping at norm 1.0 (prevents gradient explosion)
-- Softplus for positive constraints: $\text{softplus}(x) = \log(1 + e^x)$ (ensures positive width/height)
-- Clamp operations: $Z_{\text{safe}} = \max(Z, 0.1)$ for perspective projection stability
-
-### Key Hyperparameters
-
-| Parameter | Value | Description |
-|:-------------------|:------|:------------|
-| Batch Size | 32 | Training batch size |
-| Epochs | 60 | Total training epochs |
-| Template Size | $128 \times 128$ | Template patch size |
-| Search Size | $256 \times 256$ | Search region size |
-| Embed Dim | 256 | Fusion embedding dimension |
-| Num Heads | 8 | Attention heads in G²-DCMA |
-| Num Radial Bins | 50 | Sonar radial profile discretization |
-| Num Deform Points | 4 | Sampling points per attention head |
-| Dropout | 0.1 | Dropout probability |
-| Learning Rate | $2 \times 10^{-4}$ | Base learning rate |
-| Weight Decay | $10^{-4}$ | AdamW weight decay |
-| Gradient Clip | 1.0 | Max gradient norm |
+- **Bilinear Interpolation**: Keys, R. (1981). *Cubic convolution interpolation for digital image processing*. IEEE Transactions on Acoustics, Speech, and Signal Processing, 29(6), 1153-1160.
