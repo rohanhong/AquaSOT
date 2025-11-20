@@ -270,74 +270,68 @@ class MultiModalBackbone(nn.Module):
     This module manages separate encoders for RGB and Sonar modalities
     and provides a unified interface for multi-modal feature extraction.
 
+    IMPORTANT: Both RGB and Sonar backbones are required for training.
+    Single-modality training is not supported.
+
     Args:
-        rgb_config: Configuration dict for RGB backbone
-        sonar_config: Configuration dict for Sonar encoder
+        rgb_config: Configuration dict for RGB backbone (required)
+        sonar_config: Configuration dict for Sonar encoder (required)
 
     Example:
         >>> rgb_config = {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224'}
-        >>> sonar_config = {'type': 'sonar', 'encoder_type': 'vit'}
+        >>> sonar_config = {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224'}
         >>> backbone = MultiModalBackbone(rgb_config, sonar_config)
-        >>> rgb_t, rgb_s = torch.randn(4, 3, 128, 128), torch.randn(4, 3, 256, 256)
-        >>> son_t, son_s = torch.randn(4, 1, 682, 376), torch.randn(4, 1, 682, 376)
-        >>> outputs = backbone(rgb_t, rgb_s, son_t, son_s)
+        >>> rgb_frames = torch.randn(4, 5, 3, 512, 512)
+        >>> sonar_frames = torch.randn(4, 5, 1, 512, 512)
+        >>> outputs = backbone(rgb_frames, sonar_frames)
     """
 
     def __init__(
         self,
-        rgb_config: Optional[Dict[str, Any]],
-        sonar_config: Optional[Dict[str, Any]]
+        rgb_config: Dict[str, Any],
+        sonar_config: Dict[str, Any]
     ):
         super().__init__()
 
-        # Create backbones (can be None for single-modal training)
-        self.rgb_backbone = BackboneFactory.create_from_config(rgb_config) if rgb_config else None
-        self.sonar_encoder = BackboneFactory.create_from_config(sonar_config) if sonar_config else None
+        # Validate that both configs are provided
+        if not rgb_config or not sonar_config:
+            raise ValueError("Both RGB and Sonar configurations are required for MultiModalBackbone")
 
-        # Log initialization status
-        if self.rgb_backbone and self.sonar_encoder:
-            logger.info("Initialized MultiModalBackbone with RGB and Sonar encoders")
-        elif self.rgb_backbone:
-            logger.info("Initialized MultiModalBackbone with RGB encoder only (sonar disabled)")
-        elif self.sonar_encoder:
-            logger.info("Initialized MultiModalBackbone with Sonar encoder only (RGB disabled)")
-        else:
-            raise ValueError("At least one modality (RGB or Sonar) must be enabled")
+        # Create backbones
+        self.rgb_backbone = BackboneFactory.create_from_config(rgb_config)
+        self.sonar_encoder = BackboneFactory.create_from_config(sonar_config)
+
+        logger.info("Initialized MultiModalBackbone with RGB and Sonar encoders")
 
     def forward(
         self,
-        rgb_template: torch.Tensor,
-        rgb_search: torch.Tensor,
-        sonar_template: torch.Tensor,
-        sonar_search: torch.Tensor,
-        return_separate: bool = False
+        rgb_frames: torch.Tensor,
+        sonar_frames: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through both modalities.
 
+        Frame-level processing: processes consecutive frames for temporal tracking.
+        Input frames can be:
+        - Single frame: (B, C, H, W)
+        - Frame sequence: (B, T, C, H, W)
+
         Args:
-            rgb_template: RGB template frame (B, 3, H_t, W_t)
-            rgb_search: RGB search frame (B, 3, H_s, W_s)
-            sonar_template: Sonar template frame (B, 1, H_t, W_t)
-            sonar_search: Sonar search frame (B, 1, H_s, W_s)
-            return_separate: Whether to process modalities separately
+            rgb_frames: RGB frames (B, C, H, W) or (B, T, C, H, W) where C=3
+            sonar_frames: Sonar frames (B, C, H, W) or (B, T, C, H, W) where C=1
 
         Returns:
-            Dictionary containing features from both modalities
+            Dictionary containing features from both modalities:
+            {
+                'rgb': {'features': ..., 'is_sequence': bool, 'batch_size': int, 'sequence_length': int},
+                'sonar': {'features': ..., 'is_sequence': bool, 'batch_size': int, 'sequence_length': int}
+            }
         """
-        # Extract RGB features (if RGB encoder is available)
-        rgb_outputs = None
-        if self.rgb_backbone is not None:
-            rgb_outputs = self.rgb_backbone(
-                rgb_template, rgb_search, return_separate=return_separate
-            )
+        # Extract RGB features
+        rgb_outputs = self.rgb_backbone(rgb_frames)
 
-        # Extract Sonar features (if Sonar encoder is available)
-        sonar_outputs = None
-        if self.sonar_encoder is not None:
-            sonar_outputs = self.sonar_encoder(
-                sonar_template, sonar_search, return_separate=return_separate
-            )
+        # Extract Sonar features
+        sonar_outputs = self.sonar_encoder(sonar_frames)
 
         # Combine outputs
         outputs = {

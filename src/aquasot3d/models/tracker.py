@@ -448,19 +448,17 @@ class AquaSOT3DTracker(BaseModule):
         Returns:
             Dictionary containing extracted features
         """
-        # Extract multi-modal features
+        # Extract multi-modal features using frame-level processing
         backbone_outputs = self.backbone(
-            rgb_template=rgb_template,
-            rgb_search=rgb_search,
-            sonar_template=sonar_template,
-            sonar_search=sonar_search,
-            return_separate=True
+            rgb_frames=rgb_search,
+            sonar_frames=sonar_search
         )
 
-        # Extract features from nested structure (handle None for single-modal training)
-        # backbone_outputs = {'rgb': {...} or None, 'sonar': {...} or None}
-        rgb_features = backbone_outputs['rgb']['search_features'] if backbone_outputs['rgb'] is not None else None
-        sonar_features = backbone_outputs['sonar']['search_features'] if backbone_outputs['sonar'] is not None else None
+        # Extract features from nested structure
+        # backbone_outputs = {'rgb': {...}, 'sonar': {...}}
+        # Each modality output: {'features': ..., 'is_sequence': ..., 'batch_size': ..., 'sequence_length': ...}
+        rgb_features = backbone_outputs['rgb']['features']
+        sonar_features = backbone_outputs['sonar']['features']
 
         return {
             'rgb_features': rgb_features,
@@ -484,38 +482,10 @@ class AquaSOT3DTracker(BaseModule):
         Returns:
             Dictionary containing fused features and losses
         """
-        # Handle single-modal case (fusion module disabled)
-        if self.fusion is None:
-            # Return available modality features as fused features
-            if rgb_features is not None:
-                # Reshape RGB features if needed
-                if rgb_features.dim() == 3:
-                    B, N, C = rgb_features.shape
-                    # Check if class token is present
-                    if int((N - 1) ** 0.5) ** 2 == N - 1:
-                        rgb_features = rgb_features[:, 1:, :]
-                        N = N - 1
-                    H = W = int(N ** 0.5)
-                    rgb_features = rgb_features.permute(0, 2, 1).reshape(B, C, H, W)
-                return {'fused_features': rgb_features}
-            elif sonar_features is not None:
-                if isinstance(sonar_features, list):
-                    sonar_features = sonar_features[0]
-                # Reshape Sonar features if needed (ViT outputs tokens)
-                if sonar_features.dim() == 3:
-                    B, N, C = sonar_features.shape
-                    # Check if class token is present (N = H*W + 1)
-                    if int((N - 1) ** 0.5) ** 2 == N - 1:
-                        sonar_features = sonar_features[:, 1:, :]
-                        N = N - 1
-                    H = W = int(N ** 0.5)
-                    sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
-                return {'fused_features': sonar_features}
-            else:
-                raise ValueError("At least one modality must be available")
+        # Note: Both RGB and Sonar features are required (fusion is always enabled)
 
-        # Handle ViT sequence features: reshape (B, N, C) -> (B, C, H, W)
-        if rgb_features is not None and rgb_features.dim() == 3:
+        # Handle RGB ViT sequence features: reshape (B, N, C) -> (B, C, H, W)
+        if rgb_features.dim() == 3:
             B, N, C = rgb_features.shape
             # Check if class token is present (N = H*W + 1)
             if int((N - 1) ** 0.5) ** 2 == N - 1:
@@ -527,22 +497,21 @@ class AquaSOT3DTracker(BaseModule):
             rgb_features = rgb_features.permute(0, 2, 1).reshape(B, C, H, W)
 
         # Handle Sonar ViT sequence features: reshape (B, N, C) -> (B, C, H, W)
-        if sonar_features is not None:
-            # Ensure sonar_features is a tensor, not a list
-            if isinstance(sonar_features, list):
-                sonar_features = sonar_features[0]
+        # Ensure sonar_features is a tensor, not a list
+        if isinstance(sonar_features, list):
+            sonar_features = sonar_features[0]
 
-            # Reshape sequence format to spatial format (symmetric to RGB handling)
-            if sonar_features.dim() == 3:
-                B, N, C = sonar_features.shape
-                # Check if class token is present (N = H*W + 1)
-                if int((N - 1) ** 0.5) ** 2 == N - 1:
-                    # Has class token, remove it
-                    sonar_features = sonar_features[:, 1:, :]  # Remove class token
-                    N = N - 1
-                # Assume square spatial layout
-                H = W = int(N ** 0.5)
-                sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
+        # Reshape sequence format to spatial format (symmetric to RGB handling)
+        if sonar_features.dim() == 3:
+            B, N, C = sonar_features.shape
+            # Check if class token is present (N = H*W + 1)
+            if int((N - 1) ** 0.5) ** 2 == N - 1:
+                # Has class token, remove it
+                sonar_features = sonar_features[:, 1:, :]  # Remove class token
+                N = N - 1
+            # Assume square spatial layout
+            H = W = int(N ** 0.5)
+            sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
 
         fusion_outputs = self.fusion(
             rgb_features=rgb_features,

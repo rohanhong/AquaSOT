@@ -1,18 +1,20 @@
 # ==============================================================================
-# Multi-Sequence Training Configuration (Stage 3)
+# AquaSOT-3D Full Training Configuration
 # ==============================================================================
+# Single-stage end-to-end training with RGB + Sonar dual-modality
+# No pretraining - trains from scratch using ImageNet-pretrained ViT backbones
 
-_base_: ../base/default.yaml
+_base_: default.yaml
 
 
 # ------------------------------------------------------------------------------
 # Experiment Configuration
 # ------------------------------------------------------------------------------
 experiment:
-  name: aquasot3d_multiseq_full
-  tags: [production, multimodal, fusion]
-  notes: "Full multi-modal training with bbox-aware augmentation"
-  group: multiseq_training
+  name: aquasot3d_full_training
+  tags: [end-to-end, dual-modality, fusion]
+  notes: "Single-stage full training from scratch with dual-modality fusion"
+  group: full_training
 
 
 # ------------------------------------------------------------------------------
@@ -137,25 +139,24 @@ model:
 # Training Configuration
 # ------------------------------------------------------------------------------
 training:
-  init_backbones:
-    rgb: outputs/pretrain_rgb/checkpoints/checkpoint_best.pth
-    sonar: outputs/pretrain_sonar/checkpoints/checkpoint_best.pth
+  # Single-stage training: no pretraining required
+  # Backbones initialized from ImageNet-pretrained weights (timm)
 
-  num_epochs: 40
+  num_epochs: 100  # Extended for end-to-end convergence
 
-  batch_size: 1  # Higher performance: 2 (A4000 16GB, 5-frame temporal uses ~10GB per batch)
-  gradient_accumulation_steps: 4  # Higher performance: 2 (effective batch = 2×2 = 4)
+  batch_size: 2  # Increased from 1 for better gradient estimates
+  gradient_accumulation_steps: 2  # Effective batch = 2×2 = 4
 
   optimizer:
-    lr: 0.0001  # Higher performance: Keep 0.0001 if effective batch unchanged
+    lr: 0.0001  # Standard learning rate for ViT fine-tuning
     weight_decay: 0.0001
-    backbone_lr_multiplier: 0.1
+    backbone_lr_multiplier: 0.1  # Lower LR for pretrained backbones
 
   scheduler:
     type: cosine
-    warmup_epochs: 5  # Higher performance: 5-6 (balance pretrained stability and batch=2)
-    warmup_lr: 1.0e-06  # Higher performance: 1.0e-06 (no change, lr unchanged for batch=2)
-    t_max: 40
+    warmup_epochs: 10  # Extended warmup for training from scratch
+    warmup_lr: 1.0e-06
+    t_max: 100  # Matches num_epochs
     eta_min: 1.0e-06
 
   # Gradient clipping

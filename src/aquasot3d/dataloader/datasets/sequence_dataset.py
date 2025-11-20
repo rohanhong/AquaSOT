@@ -379,11 +379,29 @@ class FrameSequenceDataset(Dataset):
         """
         Apply temporal-consistent augmentation to sequence.
 
-        TODO: Implement temporal-consistent augmentation wrapper.
-        For now, apply per-frame augmentation (less ideal but functional).
+        DEPRECATED (2025-11-20): Augmentation moved to base_dataset for higher quality.
+        This method is preserved as a placeholder for future temporal-consistent augmentation.
+
+        Current architecture:
+        - Augmentation applied in RGBSonarDataset (on original resolution)
+        - Each frame augmented independently before letterbox
+        - Higher quality: RGB 1920x1080, Sonar 682x376 (vs 512x512 letterboxed)
+
+        Future enhancement (optional):
+        - Implement sequence-level augmentation wrapper
+        - Apply SAME random transform to all T frames
+        - Benefits: temporal consistency, better for Mamba/LSTM modeling
+        - Complexity: Medium (requires augmentation pipeline modification)
+        - Priority: Low (not blocking current training)
+
+        Args:
+            sample: Sequence sample dictionary with stacked frames
+
+        Returns:
+            Augmented sample (currently unchanged)
         """
-        # Placeholder: Per-frame augmentation
-        # In full implementation, should apply same random transform to all T frames
+        # Placeholder for future temporal-consistent augmentation
+        # If implemented, should synchronize random states across all T frames
         return sample
 
     def _prepare_image(self, img, target_size, is_sonar=False):

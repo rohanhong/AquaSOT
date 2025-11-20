@@ -47,38 +47,33 @@ AquaSOT-3D supports **multi-sequence training** across the full AquaSOT-3D datas
 
 ### Training Strategy
 
-AquaSOT-3D uses a **three-stage training approach**:
+AquaSOT-3D uses **single-stage end-to-end training** with RGB + Sonar dual-modality:
 
-1. **Stage 1:** RGB-only pretraining (40 epochs, single-frame pairs)
-2. **Stage 2:** Sonar-only pretraining (40 epochs, single-frame pairs)
-3. **Stage 3:** Multi-modal fusion training (60 epochs, **multi-frame sequences**)
+- **Duration**: 100 epochs (extended for end-to-end convergence)
+- **Initialization**: ImageNet-pretrained ViT backbones (via timm library)
+- **Modalities**: RGB + Sonar (both required, no single-modality support)
+- **Temporal Modeling**: Multi-frame sequences (5 consecutive frames) for Vision-Mamba
 
-**Key Difference: Multi-Frame Temporal Training**
+**Key Features:**
 
-Stage 3 operates on **multi-frame sequences** rather than single-frame pairs:
+- **No pretraining stages**: Direct end-to-end optimization from scratch
+- **Dual-modality fusion**: G2-DCMA fusion module enabled from the start
+- **Temporal tracking**: `sequence_length=5` enables learning across consecutive frames
+- **Quality-adaptive gating**: RGB and Sonar quality estimators for dynamic modality weighting
 
-- **Stages 1 & 2**: `search_sequence_length=1` (traditional template-search pairs)
-- **Stage 3**: `search_sequence_length=5` (5 consecutive search frames per template)
-
-This enables Vision-Mamba to learn temporal dependencies across frames, improving tracking robustness under occlusions and motion blur.
+This approach simplifies the training pipeline while enabling the model to jointly learn modality-specific features and cross-modal fusion strategies.
 
 ---
 
 ## Quick Start
 
-### Multi-Sequence Training
+### Full Training Command
 
-Train on all 9 training sequences:
+Train the complete model end-to-end:
 
 ```bash
-# Stage 1: RGB Pretraining (multi-sequence)
-python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
-
-# Stage 2: Sonar Pretraining (multi-sequence)
-python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
-
-# Stage 3: Fusion Training (multi-sequence)
-python scripts/train.py --config configs/train/train.yaml
+# Single-stage full training (100 epochs)
+python scripts/train.py --config configs/train.yaml
 ```
 
 ---
@@ -98,16 +93,18 @@ Available configs in `configs/` directory:
 
 ```
 configs/
-├── base/default.yaml              # Base configuration (multi-sequence defaults)
-└── train/
-    ├── pretrain_rgb_only.yaml     # Stage 1: RGB pretraining
-    ├── pretrain_sonar_only.yaml   # Stage 2: Sonar pretraining
-    └── train.yaml        # Stage 3: All 9 sequences
+├── default.yaml          # Base configuration (shared defaults)
+├── train.yaml            # Main training configuration (100 epochs, dual-modality)
+├── eval.yaml             # Evaluation configuration
+└── ablation/             # Ablation study configurations
+    ├── ablation_no_mamba.yaml
+    ├── ablation_no_quality_gating.yaml
+    └── ...
 ```
 
-### Multi-Frame Temporal Training Configuration
+### Training Configuration
 
-**Stage 3 Configuration** (`configs/train/train.yaml`):
+**Main Configuration** (`configs/train.yaml`):
 
 ```yaml
 data:

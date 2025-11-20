@@ -612,7 +612,7 @@ def build_augmentation_bbox_aware(
     if not is_train or aug_type == 'NoAugmentationBboxAware':
         return NoAugmentationBboxAware()
 
-    if aug_type == 'TrackingAugmentationBboxAware':
+    if aug_type == 'TrackingAugmentationBboxAware' or aug_type == 'TrackingAugmentation':
         return TrackingAugmentationBboxAware(
             is_train=is_train,
             rgb_config=cfg.get('rgb', {}),
