@@ -50,7 +50,7 @@ AquaSOT-3D supports **multi-sequence training** across the full AquaSOT-3D datas
 AquaSOT-3D uses **single-stage end-to-end training** with RGB + Sonar dual-modality:
 
 - **Duration**: 100 epochs (extended for end-to-end convergence)
-- **Initialization**: ImageNet-pretrained ViT backbones (via timm library)
+- **Backbone**: ViT-Small (vit_small_patch16_224) with ImageNet pretraining (via timm library)
 - **Modalities**: RGB + Sonar (both required, no single-modality support)
 - **Temporal Modeling**: Multi-frame sequences (5 consecutive frames) for Vision-Mamba
 
@@ -62,6 +62,48 @@ AquaSOT-3D uses **single-stage end-to-end training** with RGB + Sonar dual-modal
 - **Quality-adaptive gating**: RGB and Sonar quality estimators for dynamic modality weighting
 
 This approach simplifies the training pipeline while enabling the model to jointly learn modality-specific features and cross-modal fusion strategies.
+
+### Model Architecture
+
+**Backbone Choice: ViT-Small**
+
+The default configuration uses **ViT-Small (vit_small_patch16_224)** for both RGB and Sonar backbones:
+
+- **Parameters**: ~22M per backbone (44M total for dual-modality)
+- **Embedding Dimension**: 384
+- **Memory Footprint**: ~1.2 GB activation memory per batch (FP32, T=5, batch_size=1)
+- **Training Hardware**: Optimized for 8GB VRAM (e.g., RTX 3070 Ti)
+
+**Alternative: ViT-Base**
+
+For high-end GPUs with >16GB VRAM, you can optionally upgrade to ViT-Base:
+
+```yaml
+# configs/train.yaml
+model:
+  backbone:
+    rgb:
+      model_name: vit_base_patch16_224
+      output_dim: 768
+    sonar:
+      model_name: vit_base_patch16_224
+      output_dim: 768
+  fusion:
+    embed_dim: 768
+  heads:
+    rgb_box:
+      in_channels: 768
+    # ... (update all head in_channels to 768)
+```
+
+**ViT-Small vs ViT-Base Comparison:**
+
+| Model | Params/Backbone | Embed Dim | Memory (FP32) | Recommended VRAM |
+|-------|----------------|-----------|---------------|------------------|
+| ViT-Small | 22M | 384 | ~1.2 GB | 8GB+ |
+| ViT-Base | 86M | 768 | ~3.8 GB | 16GB+ |
+
+**Note**: Memory estimates include forward activations, gradients, and optimizer states for batch_size=1, T=5. Actual memory usage may vary based on sequence length and fusion module complexity.
 
 ---
 
@@ -245,16 +287,41 @@ python scripts/train.py \
 
 ### Out of Memory
 
-Reduce batch size:
-```bash
-python scripts/train.py --config <config> --opts training.batch_size=2
+**Default Configuration (Recommended)**
+
+The default configuration already uses **ViT-Small** backbones optimized for 8GB VRAM:
+
+```yaml
+# configs/train.yaml and configs/default.yaml
+model:
+  backbone:
+    rgb:
+      model_name: vit_small_patch16_224  # 22M params
+    sonar:
+      model_name: vit_small_patch16_224  # 22M params
 ```
 
-Use gradient accumulation to maintain effective batch size:
+**If OOM persists on 8GB GPU:**
+
+Option 1: Reduce batch size (already default=2, try 1):
+```bash
+python scripts/train.py --config <config> --opts training.batch_size=1
+```
+
+Option 2: Reduce sequence length (default T=5, try T=3):
+```bash
+python scripts/train.py --config <config> --opts data.sequence_length=3
+```
+
+Option 3: Use gradient accumulation to maintain effective batch size:
 ```bash
 python scripts/train.py --config <config> \
-    --opts training.batch_size=2 training.gradient_accumulation_steps=8
+    --opts training.batch_size=1 training.gradient_accumulation_steps=4
 ```
+
+**For High-End GPUs (16GB+)**
+
+If you have more VRAM and want better performance, upgrade to ViT-Base (see Model Architecture section above). This requires updating both configs and all head in_channels from 384 to 768.
 
 ### NaN Loss / CUDA Assertion Failures
 

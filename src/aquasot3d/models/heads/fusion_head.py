@@ -455,19 +455,28 @@ class FusionHead(BaseHead):
         self,
         rgb_features: torch.Tensor,
         sonar_features: torch.Tensor,
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None,
         return_uncertainty: bool = True,
         metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass for multi-modal fusion.
+        Forward pass for multi-modal fusion with validity-aware confidence.
 
         CRITICAL FIX (Audit 2025111412 Finding 1):
         Now accepts metadata to enable physical alignment awareness. This prevents
         fusion from overweighting modality artifacts in padded/scaled regions.
 
+        CRITICAL FIX (Audit 2025112101 Phase 1.3):
+        Added validity supervision. When is_rgb_valid/is_sonar_valid are False,
+        confidence is forced to 0.0 to train the model to output low confidence
+        for invalid modalities (occlusions, out-of-FOV targets).
+
         Args:
             rgb_features: RGB features, shape (B, C_rgb) or (B, C_rgb, H, W)
             sonar_features: Sonar features, shape (B, C_sonar) or (B, C_sonar, H, W)
+            is_rgb_valid: [B] boolean tensor, True if RGB has valid target (optional)
+            is_sonar_valid: [B] boolean tensor, True if Sonar has valid target (optional)
             return_uncertainty: Whether to return uncertainty estimates
             metadata: Optional dict with 'rgb_search_metadata' and 'sonar_search_metadata'
                      lists containing per-sample scale/padding info for physical alignment
@@ -481,13 +490,25 @@ class FusionHead(BaseHead):
             through for future physical grid alignment (Finding 1 phase 1).
         """
         # Estimate confidence/uncertainty for each modality
-        rgb_confidence = self.rgb_uncertainty_estimator(rgb_features)  # (B,)
-        sonar_confidence = self.sonar_uncertainty_estimator(sonar_features)  # (B,)
+        rgb_confidence_base = self.rgb_uncertainty_estimator(rgb_features)  # (B,)
+        sonar_confidence_base = self.sonar_uncertainty_estimator(sonar_features)  # (B,)
 
         # CRITICAL: Clamp confidence scores to [0, 1] for numerical stability
         # Sigmoid in FP16/AMP mode can occasionally produce values slightly outside [0, 1]
-        rgb_confidence = torch.clamp(rgb_confidence, min=0.0, max=1.0)
-        sonar_confidence = torch.clamp(sonar_confidence, min=0.0, max=1.0)
+        rgb_confidence_base = torch.clamp(rgb_confidence_base, min=0.0, max=1.0)
+        sonar_confidence_base = torch.clamp(sonar_confidence_base, min=0.0, max=1.0)
+
+        # CRITICAL FIX (Audit 2025112101): Suppress confidence for invalid modalities
+        # This trains the model to output low confidence when target is absent
+        if is_rgb_valid is not None:
+            rgb_confidence = rgb_confidence_base * is_rgb_valid.float()
+        else:
+            rgb_confidence = rgb_confidence_base
+
+        if is_sonar_valid is not None:
+            sonar_confidence = sonar_confidence_base * is_sonar_valid.float()
+        else:
+            sonar_confidence = sonar_confidence_base
 
         # Adaptive fusion with metadata awareness
         fused_features, fusion_weights = self.fusion_gate(
@@ -504,6 +525,12 @@ class FusionHead(BaseHead):
         # CRITICAL: Clamp quality_score to [0, 1] for numerical stability
         # This prevents CUDA assertion failures in BCE loss computation
         quality_score = torch.clamp(quality_score, min=0.0, max=1.0)
+
+        # CRITICAL FIX (Audit 2025112101): Further suppress quality for zero-modality
+        # When both modalities are invalid, overall quality should be near zero
+        if is_rgb_valid is not None and is_sonar_valid is not None:
+            any_valid = (is_rgb_valid | is_sonar_valid).float()
+            quality_score = quality_score * any_valid
 
         outputs = {
             'fused_features': fused_features,
@@ -528,23 +555,90 @@ class FusionHead(BaseHead):
         rgb_quality: torch.Tensor,
         sonar_quality: torch.Tensor,
         fusion_weights: torch.Tensor,
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None,
         target_quality: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-        Compute fusion consistency loss.
+        Compute fusion consistency loss with validity supervision.
 
-        Encourages fusion weights to correlate with modality-specific quality scores.
+        CRITICAL FIX (Audit 2025112101 Phase 1.3):
+        Added validity-supervised fusion weight loss. This trains fusion weights
+        to correctly allocate attention based on modality availability:
+        - If RGB invalid: w_rgb -> 0, w_sonar -> 1
+        - If Sonar invalid: w_rgb -> 1, w_sonar -> 0
+        - If both valid: w based on quality scores
+        - If both invalid: w irrelevant (quality_score -> 0 already handled)
 
         Args:
             rgb_quality: RGB quality scores, shape (B,)
             sonar_quality: Sonar quality scores, shape (B,)
-            fusion_weights: Fusion weights, shape (B, 2)
+            fusion_weights: Fusion weights, shape (B, 2) where [:, 0] is RGB weight
+            is_rgb_valid: [B] boolean tensor, True if RGB has valid target (optional)
+            is_sonar_valid: [B] boolean tensor, True if Sonar has valid target (optional)
             target_quality: Target quality (e.g., IoU), shape (B,), optional
 
         Returns:
-            Fusion loss
+            Fusion loss (scalar)
         """
-        # Weighted quality
+        batch_size = fusion_weights.shape[0]
+
+        # Initialize loss components
+        quality_consistency_loss = torch.tensor(0.0, device=fusion_weights.device)
+        validity_supervision_loss = torch.tensor(0.0, device=fusion_weights.device)
+
+        # CRITICAL FIX (Audit 2025112101): Supervise fusion weights based on validity
+        if is_rgb_valid is not None and is_sonar_valid is not None:
+            # Convert boolean tensors to float for computation
+            rgb_valid_float = is_rgb_valid.float()  # [B]
+            sonar_valid_float = is_sonar_valid.float()  # [B]
+
+            # Compute target fusion weights based on validity
+            # If both valid: use quality-based weighting
+            # If only RGB valid: w_rgb=1, w_sonar=0
+            # If only Sonar valid: w_rgb=0, w_sonar=1
+            # If neither valid: no supervision (handled by quality_score suppression)
+
+            # Detect modality availability modes
+            both_valid = rgb_valid_float * sonar_valid_float  # [B]
+            only_rgb = rgb_valid_float * (1.0 - sonar_valid_float)  # [B]
+            only_sonar = (1.0 - rgb_valid_float) * sonar_valid_float  # [B]
+
+            # Target weights for single-modality scenarios
+            target_weights_single = torch.stack([
+                only_rgb + 0.5 * both_valid,  # RGB weight: 1.0 if only RGB, 0.5 if both
+                only_sonar + 0.5 * both_valid  # Sonar weight: 1.0 if only Sonar, 0.5 if both
+            ], dim=1)  # [B, 2]
+
+            # For dual-modality, refine weights based on quality
+            if target_quality is not None and both_valid.sum() > 0:
+                # Normalize quality scores for dual-modality samples
+                quality_sum = rgb_quality + sonar_quality + 1e-7
+                quality_based_rgb_weight = rgb_quality / quality_sum
+                quality_based_sonar_weight = sonar_quality / quality_sum
+
+                # Update target weights for dual-modality samples
+                target_weights_single[:, 0] = (
+                    only_rgb +
+                    both_valid * quality_based_rgb_weight
+                )
+                target_weights_single[:, 1] = (
+                    only_sonar +
+                    both_valid * quality_based_sonar_weight
+                )
+
+            # Compute L1 loss between predicted and target weights
+            # Only supervise samples where at least one modality is valid
+            any_valid = torch.clamp(rgb_valid_float + sonar_valid_float, min=0.0, max=1.0)
+            num_valid = any_valid.sum().clamp(min=1.0)
+
+            weight_error = F.l1_loss(fusion_weights, target_weights_single, reduction='none')  # [B, 2]
+            weight_error_per_sample = weight_error.mean(dim=1)  # [B]
+
+            validity_supervision_loss = (weight_error_per_sample * any_valid).sum() / num_valid
+
+        # Quality consistency loss (original behavior)
+        # Encourage weighted quality to match target quality
         weighted_quality = (
             fusion_weights[:, 0] * rgb_quality +
             fusion_weights[:, 1] * sonar_quality
@@ -552,13 +646,17 @@ class FusionHead(BaseHead):
 
         if target_quality is not None:
             # L1 loss between weighted quality and target
-            loss = F.l1_loss(weighted_quality, target_quality)
+            quality_consistency_loss = F.l1_loss(weighted_quality, target_quality)
         else:
             # Encourage high quality when both modalities agree
             agreement = 1.0 - torch.abs(rgb_quality - sonar_quality)
-            loss = -agreement.mean()  # Maximize agreement
+            quality_consistency_loss = -agreement.mean()  # Maximize agreement
 
-        return loss
+        # Combine losses
+        # Validity supervision is critical for single-modality learning
+        total_loss = validity_supervision_loss + 0.5 * quality_consistency_loss
+
+        return total_loss
 
 
 def build_fusion_head(

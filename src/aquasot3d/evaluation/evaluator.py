@@ -463,7 +463,9 @@ class TrackingEvaluator:
             'rgb_quality': [],
             'sonar_quality': [],
             'fusion_quality': [],
-            'fusion_weights': []
+            'fusion_weights': [],
+            # CRITICAL FIX (Audit 2025112101 Phase 4.2): Collect scenario labels
+            'scenario_labels': []
         }
 
         # Get predictions (model outputs plural keys: rgb_boxes, sonar_boxes, fusion_boxes)
@@ -620,6 +622,29 @@ class TrackingEvaluator:
         if 'fusion_weights' in outputs:
             predictions['fusion_weights'] = outputs['fusion_weights'].cpu().numpy().tolist()
 
+        # CRITICAL FIX (Audit 2025112101 Phase 4.2): Extract scenario labels
+        # Classify each frame into modality availability scenarios
+        if 'is_rgb_valid' in outputs and 'is_sonar_valid' in outputs:
+            is_rgb_valid = outputs['is_rgb_valid'].cpu()  # [B] boolean tensor
+            is_sonar_valid = outputs['is_sonar_valid'].cpu()  # [B] boolean tensor
+
+            # Convert to scenario labels
+            for i in range(len(is_rgb_valid)):
+                rgb_valid = is_rgb_valid[i].item()
+                sonar_valid = is_sonar_valid[i].item()
+
+                # Classify scenario
+                if rgb_valid and sonar_valid:
+                    scenario = 'dual'
+                elif rgb_valid and not sonar_valid:
+                    scenario = 'single_rgb'
+                elif not rgb_valid and sonar_valid:
+                    scenario = 'single_sonar'
+                else:
+                    scenario = 'zero'
+
+                predictions['scenario_labels'].append(scenario)
+
         return predictions
 
     def compute_sequence_metrics(
@@ -629,13 +654,19 @@ class TrackingEvaluator:
         """
         Compute metrics for a single sequence.
 
+        CRITICAL FIX (Audit 2025112101 Phase 4.2):
+        Now computes both standard and per-scenario metrics.
+
         Args:
             predictions: Dictionary with predictions and ground truth
 
         Returns:
-            Metrics dictionary for all modalities
+            Metrics dictionary for all modalities (standard + per-scenario)
         """
-        # Compute metrics for each modality (pass additional_metrics)
+        # Import scenario metric functions
+        from aquasot3d.evaluation.metrics import compute_scenario_metrics
+
+        # Compute standard metrics for each modality (pass additional_metrics)
         metrics = compute_multi_modal_metrics(
             predictions.get('rgb_pred', []),
             predictions.get('sonar_pred', []),
@@ -644,6 +675,42 @@ class TrackingEvaluator:
             predictions.get('sonar_gt', []),
             additional_metrics=self.additional_metrics
         )
+
+        # CRITICAL FIX (Audit 2025112101 Phase 4.2):
+        # Compute per-scenario metrics if scenario labels available
+        if 'scenario_labels' in predictions and len(predictions['scenario_labels']) > 0:
+            # Compute per-scenario metrics for fusion (primary output)
+            fusion_scenario_metrics = compute_scenario_metrics(
+                predictions.get('fusion_pred', []),
+                predictions.get('rgb_gt', []),  # Use RGB GT as reference for fusion
+                predictions.get('scenario_labels', []),
+                modality='fusion',
+                additional_metrics=self.additional_metrics
+            )
+
+            # Add scenario metrics to the results
+            metrics['fusion_scenarios'] = fusion_scenario_metrics
+
+            # Optionally compute per-scenario metrics for RGB and Sonar
+            if len(predictions.get('rgb_pred', [])) > 0:
+                rgb_scenario_metrics = compute_scenario_metrics(
+                    predictions.get('rgb_pred', []),
+                    predictions.get('rgb_gt', []),
+                    predictions.get('scenario_labels', []),
+                    modality='rgb',
+                    additional_metrics=self.additional_metrics
+                )
+                metrics['rgb_scenarios'] = rgb_scenario_metrics
+
+            if len(predictions.get('sonar_pred', [])) > 0:
+                sonar_scenario_metrics = compute_scenario_metrics(
+                    predictions.get('sonar_pred', []),
+                    predictions.get('sonar_gt', []),
+                    predictions.get('scenario_labels', []),
+                    modality='sonar',
+                    additional_metrics=self.additional_metrics
+                )
+                metrics['sonar_scenarios'] = sonar_scenario_metrics
 
         return metrics
 
@@ -654,15 +721,20 @@ class TrackingEvaluator:
         """
         Aggregate metrics across all sequences.
 
+        CRITICAL FIX (Audit 2025112101 Phase 4.2):
+        Now aggregates both standard and per-scenario metrics.
+
         Args:
             sequence_metrics: List of per-sequence metrics
 
         Returns:
-            Aggregated metrics for each modality
+            Aggregated metrics for each modality (standard + per-scenario)
         """
+        from aquasot3d.evaluation.metrics import aggregate_scenario_metrics
+
         aggregated = {}
 
-        # Aggregate for each modality
+        # Aggregate for each modality (standard metrics)
         for modality in ['rgb', 'sonar', 'fusion']:
             # Extract metrics for this modality
             modality_metrics = [
@@ -674,6 +746,25 @@ class TrackingEvaluator:
             # Aggregate
             if len(modality_metrics) > 0:
                 aggregated[modality] = aggregate_metrics(modality_metrics, modality)
+
+        # CRITICAL FIX (Audit 2025112101 Phase 4.2):
+        # Aggregate per-scenario metrics
+        for modality in ['rgb', 'sonar', 'fusion']:
+            scenario_key = f'{modality}_scenarios'
+
+            # Extract scenario metrics for this modality
+            scenario_metrics_list = [
+                seq_metrics[scenario_key]
+                for seq_metrics in sequence_metrics
+                if scenario_key in seq_metrics
+            ]
+
+            # Aggregate scenario metrics
+            if len(scenario_metrics_list) > 0:
+                aggregated[scenario_key] = aggregate_scenario_metrics(
+                    scenario_metrics_list,
+                    modality=modality
+                )
 
         return aggregated
 
@@ -746,6 +837,37 @@ class TrackingEvaluator:
             print(f"  Precision@20:       {metrics.get('precision_20_mean', 0.0):.4f} ± {metrics.get('precision_20_std', 0.0):.4f}")
             print(f"  Avg Center Error:   {metrics.get('avg_center_error_mean', 0.0):.2f} ± {metrics.get('avg_center_error_std', 0.0):.2f} px")
             print(f"  Mean IoU:           {metrics.get('mean_iou_mean', 0.0):.4f} ± {metrics.get('mean_iou_std', 0.0):.4f}")
+
+        # CRITICAL FIX (Audit 2025112101 Phase 4.2):
+        # Print per-scenario metrics for FUSION (primary output)
+        if 'fusion_scenarios' in self.overall_metrics:
+            print("\n" + "=" * 70)
+            print("PER-SCENARIO PERFORMANCE (Fusion)")
+            print("=" * 70)
+
+            scenario_metrics = self.overall_metrics['fusion_scenarios']
+
+            for scenario, scenario_name in [
+                ('dual', 'Dual-Modality (RGB + Sonar)'),
+                ('single_rgb', 'Single-RGB'),
+                ('single_sonar', 'Single-Sonar'),
+                ('zero', 'Zero-Modality')
+            ]:
+                if scenario in scenario_metrics:
+                    m = scenario_metrics[scenario]
+                    num_seqs = m.get('num_sequences', 0)
+
+                    print(f"\n{scenario_name}:")
+                    print("-" * 50)
+
+                    if num_seqs == 0:
+                        print("  No samples in this scenario")
+                        continue
+
+                    print(f"  Success (AUC):      {m.get('success_auc_mean', 0.0):.4f} ± {m.get('success_auc_std', 0.0):.4f}")
+                    print(f"  Precision@20:       {m.get('precision_20_mean', 0.0):.4f} ± {m.get('precision_20_std', 0.0):.4f}")
+                    print(f"  Avg Center Error:   {m.get('avg_center_error_mean', 0.0):.2f} ± {m.get('avg_center_error_std', 0.0):.2f} px")
+                    print(f"  Mean IoU:           {m.get('mean_iou_mean', 0.0):.4f} ± {m.get('mean_iou_std', 0.0):.4f}")
 
         print("\n" + "=" * 70)
 

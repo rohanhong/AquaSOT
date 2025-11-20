@@ -692,3 +692,217 @@ def format_metrics_report(
     report.append("\n" + "=" * 60)
 
     return "\n".join(report)
+
+
+def compute_scenario_metrics(
+    pred_bboxes: List[np.ndarray],
+    gt_bboxes: List[np.ndarray],
+    scenario_labels: List[str],
+    modality: str = 'fusion',
+    additional_metrics: Optional[List[str]] = None
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute metrics separately for each modality availability scenario.
+
+    CRITICAL FIX (Audit 2025112101 Phase 4.2):
+    Enables per-scenario evaluation to diagnose single-modality performance
+    and zero-modality handling.
+
+    Args:
+        pred_bboxes: List of predicted bounding boxes
+        gt_bboxes: List of ground truth bounding boxes
+        scenario_labels: List of scenario labels for each frame
+            - 'dual': Both RGB and Sonar valid
+            - 'single_rgb': Only RGB valid
+            - 'single_sonar': Only Sonar valid
+            - 'zero': Neither modality valid
+        modality: Modality name ('rgb', 'sonar', or 'fusion')
+        additional_metrics: Optional list of additional metrics to compute
+
+    Returns:
+        Dictionary with metrics for each scenario:
+        {
+            'dual': {...metrics...},
+            'single_rgb': {...metrics...},
+            'single_sonar': {...metrics...},
+            'zero': {...metrics...},
+            'overall': {...metrics...}
+        }
+
+    Example:
+        >>> scenario_labels = ['dual', 'dual', 'single_rgb', 'zero']
+        >>> metrics = compute_scenario_metrics(pred_boxes, gt_boxes, scenario_labels, 'fusion')
+        >>> print(f"Dual-modality AUC: {metrics['dual']['success_auc']:.4f}")
+        >>> print(f"Single-RGB AUC: {metrics['single_rgb']['success_auc']:.4f}")
+    """
+    scenario_metrics = {}
+
+    # Define all possible scenarios
+    scenarios = ['dual', 'single_rgb', 'single_sonar', 'zero']
+
+    # Split predictions by scenario
+    for scenario in scenarios:
+        # Extract predictions for this scenario
+        scenario_pred = []
+        scenario_gt = []
+
+        for i, label in enumerate(scenario_labels):
+            if label == scenario:
+                if i < len(pred_bboxes) and pred_bboxes[i] is not None:
+                    scenario_pred.append(pred_bboxes[i])
+                    scenario_gt.append(gt_bboxes[i])
+
+        # Compute metrics if we have samples
+        if len(scenario_pred) > 0:
+            scenario_metrics[scenario] = compute_sequence_metrics(
+                scenario_pred,
+                scenario_gt,
+                modality=f"{modality}_{scenario}",
+                additional_metrics=additional_metrics
+            )
+        else:
+            # No samples in this scenario - return empty metrics
+            scenario_metrics[scenario] = {
+                'modality': f"{modality}_{scenario}",
+                'num_frames': 0,
+                'num_valid_predictions': 0,
+                'success_auc': 0.0,
+                'precision_20': 0.0,
+                'avg_center_error': float('inf'),
+                'mean_iou': 0.0,
+                'success_0.5': 0.0
+            }
+
+    # Compute overall metrics (all scenarios combined)
+    scenario_metrics['overall'] = compute_sequence_metrics(
+        pred_bboxes,
+        gt_bboxes,
+        modality=modality,
+        additional_metrics=additional_metrics
+    )
+
+    return scenario_metrics
+
+
+def aggregate_scenario_metrics(
+    sequence_scenario_metrics: List[Dict[str, Dict[str, float]]],
+    modality: str = 'fusion'
+) -> Dict[str, Dict[str, float]]:
+    """
+    Aggregate per-scenario metrics across multiple sequences.
+
+    CRITICAL FIX (Audit 2025112101 Phase 4.2):
+    Enables dataset-level analysis of per-scenario performance.
+
+    Args:
+        sequence_scenario_metrics: List of per-sequence scenario metrics
+        modality: Modality name
+
+    Returns:
+        Aggregated metrics for each scenario
+
+    Example:
+        >>> seq_metrics = [compute_scenario_metrics(pred1, gt1, labels1), ...]
+        >>> aggregated = aggregate_scenario_metrics(seq_metrics, 'fusion')
+        >>> print(f"Avg Dual AUC: {aggregated['dual']['success_auc_mean']:.4f}")
+    """
+    aggregated = {}
+
+    scenarios = ['dual', 'single_rgb', 'single_sonar', 'zero', 'overall']
+
+    for scenario in scenarios:
+        # Extract metrics for this scenario from all sequences
+        scenario_metrics = []
+        for seq_metrics in sequence_scenario_metrics:
+            if scenario in seq_metrics:
+                scenario_metrics.append(seq_metrics[scenario])
+
+        # Aggregate
+        if len(scenario_metrics) > 0:
+            aggregated[scenario] = aggregate_metrics(
+                scenario_metrics,
+                modality=f"{modality}_{scenario}"
+            )
+        else:
+            # No data for this scenario
+            aggregated[scenario] = {
+                'modality': f"{modality}_{scenario}",
+                'num_sequences': 0
+            }
+
+    return aggregated
+
+
+def format_scenario_metrics_report(
+    scenario_metrics: Dict[str, Dict[str, float]],
+    sequence_name: Optional[str] = None
+) -> str:
+    """
+    Format per-scenario metrics into a readable report.
+
+    CRITICAL FIX (Audit 2025112101 Phase 4.2):
+    Provides detailed breakdown of performance by modality availability.
+
+    Args:
+        scenario_metrics: Scenario metrics dictionary
+        sequence_name: Optional sequence name
+
+    Returns:
+        Formatted report string
+
+    Example:
+        >>> report = format_scenario_metrics_report(scenario_metrics, 'sequence_001')
+        >>> print(report)
+    """
+    report = []
+
+    if sequence_name:
+        report.append(f"Per-Scenario Metrics for Sequence: {sequence_name}")
+    else:
+        report.append("Per-Scenario Tracking Metrics Report")
+
+    report.append("=" * 70)
+
+    # Display metrics for each scenario
+    scenarios = [
+        ('dual', 'Dual-Modality (RGB + Sonar)'),
+        ('single_rgb', 'Single-Modality (RGB only)'),
+        ('single_sonar', 'Single-Modality (Sonar only)'),
+        ('zero', 'Zero-Modality (Low confidence)')
+    ]
+
+    for scenario_key, scenario_name in scenarios:
+        if scenario_key not in scenario_metrics:
+            continue
+
+        m = scenario_metrics[scenario_key]
+        num_frames = m.get('num_frames', 0)
+
+        report.append(f"\n{scenario_name}:")
+        report.append("-" * 50)
+
+        if num_frames == 0:
+            report.append("  No frames in this scenario")
+            continue
+
+        report.append(f"  Num Frames:           {num_frames}")
+        report.append(f"  Success (AUC):        {m.get('success_auc', 0.0):.4f}")
+        report.append(f"  Precision@20:         {m.get('precision_20', 0.0):.4f}")
+        report.append(f"  Avg Center Error:     {m.get('avg_center_error', 0.0):.2f} px")
+        report.append(f"  Mean IoU:             {m.get('mean_iou', 0.0):.4f}")
+        report.append(f"  Success@0.5:          {m.get('success_0.5', 0.0):.4f}")
+
+    # Overall metrics
+    if 'overall' in scenario_metrics:
+        report.append(f"\nOverall (All Scenarios):")
+        report.append("-" * 50)
+        m = scenario_metrics['overall']
+        report.append(f"  Total Frames:         {m.get('num_frames', 0)}")
+        report.append(f"  Success (AUC):        {m.get('success_auc', 0.0):.4f}")
+        report.append(f"  Precision@20:         {m.get('precision_20', 0.0):.4f}")
+        report.append(f"  Avg Center Error:     {m.get('avg_center_error', 0.0):.2f} px")
+        report.append(f"  Mean IoU:             {m.get('mean_iou', 0.0):.4f}")
+
+    report.append("\n" + "=" * 70)
+
+    return "\n".join(report)

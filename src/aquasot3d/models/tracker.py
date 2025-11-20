@@ -28,7 +28,7 @@ import logging
 
 from aquasot3d.core import BaseModule, TRACKER_REGISTRY
 from aquasot3d.models.backbones import BackboneFactory, MultiModalBackbone
-from aquasot3d.models.fusion import build_g2_dcma, build_g2_dcma_lite
+from aquasot3d.models.fusion import build_g2_dcma, build_g2_dcma_lite, build_conditional_g2_dcma
 from aquasot3d.models.temporal import (
     build_vision_mamba_head,
     build_transformer_head,
@@ -100,6 +100,7 @@ class AquaSOT3DTracker(BaseModule):
         use_weak3d: bool = True,
         use_quality_gating: bool = True,
         temporal_aggregation: bool = False,
+        confidence_threshold: float = 0.3,
         **kwargs
     ):
         super().__init__()
@@ -108,6 +109,7 @@ class AquaSOT3DTracker(BaseModule):
         self.use_weak3d = use_weak3d
         self.use_quality_gating = use_quality_gating
         self.temporal_aggregation = temporal_aggregation
+        self.confidence_threshold = confidence_threshold
 
         # =====================================================
         # 1. Multi-Modal Backbones
@@ -147,6 +149,14 @@ class AquaSOT3DTracker(BaseModule):
                 self.fusion = build_g2_dcma(fusion_config_copy)
             elif fusion_type == 'g2_dcma_lite':
                 self.fusion = build_g2_dcma_lite(fusion_config_copy)
+            elif fusion_type == 'conditional_g2_dcma':
+                # CRITICAL FIX (Audit 2025112101 Phase 2.2):
+                # ConditionalG2DCMA requires rgb_channels and sonar_channels
+                self.fusion = build_conditional_g2_dcma(
+                    rgb_channels=self.rgb_feat_dim,
+                    sonar_channels=self.sonar_feat_dim,
+                    **fusion_config_copy
+                )
             else:
                 raise ValueError(f"Unknown fusion type: {fusion_type}")
 
@@ -429,6 +439,125 @@ class AquaSOT3DTracker(BaseModule):
 
         return reset_status
 
+    def detect_modality_availability(
+        self,
+        is_rgb_valid: torch.Tensor,
+        is_sonar_valid: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Detect modality availability mode for each sample.
+
+        CRITICAL FIX (Audit 2025112101): Enable single/zero-modality handling.
+        Returns masks indicating which samples belong to which modality configuration.
+
+        Args:
+            is_rgb_valid: [B] or [B, T] boolean tensor, True if RGB has valid target
+            is_sonar_valid: [B] or [B, T] boolean tensor, True if Sonar has valid target
+
+        Returns:
+            Tuple of four boolean masks:
+            - zero_modality_mask: [B] or [B, T], both modalities invalid
+            - single_rgb_mask: [B] or [B, T], only RGB valid
+            - single_sonar_mask: [B] or [B, T], only Sonar valid
+            - dual_modality_mask: [B] or [B, T], both valid
+
+        Example:
+            >>> is_rgb_valid = torch.tensor([True, False, True, False])
+            >>> is_sonar_valid = torch.tensor([True, True, False, False])
+            >>> zero, rgb, sonar, dual = tracker.detect_modality_availability(
+            ...     is_rgb_valid, is_sonar_valid
+            ... )
+            >>> # dual = [True, False, False, False]  # Sample 0: both valid
+            >>> # single_sonar = [False, True, False, False]  # Sample 1: only Sonar
+            >>> # single_rgb = [False, False, True, False]  # Sample 2: only RGB
+            >>> # zero = [False, False, False, True]  # Sample 3: neither valid
+        """
+        # Compute modality masks
+        zero_modality_mask = (~is_rgb_valid) & (~is_sonar_valid)
+        single_rgb_mask = is_rgb_valid & (~is_sonar_valid)
+        single_sonar_mask = (~is_rgb_valid) & is_sonar_valid
+        dual_modality_mask = is_rgb_valid & is_sonar_valid
+
+        # Log distribution for debugging (only if logger is in debug mode)
+        if self.logger.isEnabledFor(logging.DEBUG):
+            batch_size = is_rgb_valid.shape[0]
+            n_zero = zero_modality_mask.sum().item()
+            n_rgb = single_rgb_mask.sum().item()
+            n_sonar = single_sonar_mask.sum().item()
+            n_dual = dual_modality_mask.sum().item()
+
+            self.logger.debug(
+                f"Modality distribution: "
+                f"dual={n_dual}/{batch_size} ({n_dual/batch_size*100:.1f}%), "
+                f"RGB-only={n_rgb}/{batch_size} ({n_rgb/batch_size*100:.1f}%), "
+                f"Sonar-only={n_sonar}/{batch_size} ({n_sonar/batch_size*100:.1f}%), "
+                f"zero={n_zero}/{batch_size} ({n_zero/batch_size*100:.1f}%)"
+            )
+
+        return zero_modality_mask, single_rgb_mask, single_sonar_mask, dual_modality_mask
+
+    def detect_modality_by_confidence(
+        self,
+        rgb_confidence: Optional[torch.Tensor] = None,
+        sonar_confidence: Optional[torch.Tensor] = None,
+        threshold: Optional[float] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Detect modality validity based on confidence thresholding.
+
+        CRITICAL FIX (Audit 2025112101 Phase 4.1):
+        Enables automatic zero-modality detection when prediction quality is low.
+        Even if data exists, low confidence indicates unreliable predictions.
+
+        Args:
+            rgb_confidence: [B] confidence scores from RGB box head (0-1 range)
+            sonar_confidence: [B] confidence scores from Sonar box head (0-1 range)
+            threshold: Confidence threshold (default: self.confidence_threshold)
+
+        Returns:
+            Tuple of boolean tensors:
+            - is_rgb_valid: [B] True if RGB confidence >= threshold
+            - is_sonar_valid: [B] True if Sonar confidence >= threshold
+
+        Example:
+            >>> rgb_conf = torch.tensor([0.8, 0.2, 0.5, 0.1])  # threshold=0.3
+            >>> sonar_conf = torch.tensor([0.9, 0.4, 0.2, 0.05])
+            >>> is_rgb, is_sonar = tracker.detect_modality_by_confidence(rgb_conf, sonar_conf)
+            >>> # is_rgb = [True, False, True, False]
+            >>> # is_sonar = [True, True, False, False]
+        """
+        if threshold is None:
+            threshold = self.confidence_threshold
+
+        # Default to all valid if confidence not provided
+        device = rgb_confidence.device if rgb_confidence is not None else 'cpu'
+        batch_size = rgb_confidence.shape[0] if rgb_confidence is not None else 1
+
+        if rgb_confidence is None:
+            is_rgb_valid = torch.ones(batch_size, dtype=torch.bool, device=device)
+        else:
+            is_rgb_valid = rgb_confidence >= threshold
+
+        if sonar_confidence is None:
+            is_sonar_valid = torch.ones(batch_size, dtype=torch.bool, device=device)
+        else:
+            is_sonar_valid = sonar_confidence >= threshold
+
+        # Log confidence-based filtering
+        if self.logger.isEnabledFor(logging.DEBUG):
+            if rgb_confidence is not None:
+                n_rgb_filtered = (~is_rgb_valid).sum().item()
+                self.logger.debug(
+                    f"RGB confidence filtering: {n_rgb_filtered}/{batch_size} samples below threshold {threshold:.2f}"
+                )
+            if sonar_confidence is not None:
+                n_sonar_filtered = (~is_sonar_valid).sum().item()
+                self.logger.debug(
+                    f"Sonar confidence filtering: {n_sonar_filtered}/{batch_size} samples below threshold {threshold:.2f}"
+                )
+
+        return is_rgb_valid, is_sonar_valid
+
     def extract_backbone_features(
         self,
         rgb_template: torch.Tensor,
@@ -469,14 +598,22 @@ class AquaSOT3DTracker(BaseModule):
         self,
         rgb_features: torch.Tensor,
         sonar_features: torch.Tensor,
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None,
         return_consistency: bool = True
     ) -> Dict[str, torch.Tensor]:
         """
-        Fuse RGB and Sonar features using G2-DCMA.
+        Fuse RGB and Sonar features using G2-DCMA or ConditionalG2DCMA.
+
+        CRITICAL FIX (Audit 2025112101 Phase 2.2):
+        Now accepts is_rgb_valid and is_sonar_valid for conditional fusion.
+        When using ConditionalG2DCMA, these flags enable single-modality bypass.
 
         Args:
             rgb_features: RGB features, shape (B, C_rgb, H, W) or (B, N, C_rgb)
             sonar_features: Sonar features, shape (B, C_sonar, H, W)
+            is_rgb_valid: Optional [B] boolean tensor, True if RGB has valid target
+            is_sonar_valid: Optional [B] boolean tensor, True if Sonar has valid target
             return_consistency: Whether to compute consistency losses
 
         Returns:
@@ -513,11 +650,23 @@ class AquaSOT3DTracker(BaseModule):
             H = W = int(N ** 0.5)
             sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
 
-        fusion_outputs = self.fusion(
-            rgb_features=rgb_features,
-            sonar_features=sonar_features,
-            return_consistency=return_consistency
-        )
+        # CRITICAL FIX (Audit 2025112101 Phase 2.2):
+        # Pass is_rgb_valid and is_sonar_valid to ConditionalG2DCMA for modality-aware routing
+        # For standard G2DCMA, these parameters will be ignored
+        fusion_kwargs = {
+            'rgb_features': rgb_features,
+            'sonar_features': sonar_features,
+            'return_consistency': return_consistency
+        }
+
+        # Check if fusion module is ConditionalG2DCMA (has forward signature with is_rgb_valid)
+        from aquasot3d.models.fusion import ConditionalG2DCMA
+        if isinstance(self.fusion, ConditionalG2DCMA):
+            # ConditionalG2DCMA requires is_rgb_valid and is_sonar_valid
+            fusion_kwargs['is_rgb_valid'] = is_rgb_valid
+            fusion_kwargs['is_sonar_valid'] = is_sonar_valid
+
+        fusion_outputs = self.fusion(**fusion_kwargs)
 
         return fusion_outputs
 
@@ -632,6 +781,29 @@ class AquaSOT3DTracker(BaseModule):
                     gt_boxes['fusion']
                 )
                 outputs['fusion_box_loss'] = fusion_loss
+
+        # CRITICAL FIX (Audit 2025112101 Phase 4.2):
+        # Automatic modality detection from confidence scores for evaluation
+        # If modality validity not provided, detect from box prediction confidence
+        if is_rgb_valid is None or is_sonar_valid is None:
+            rgb_conf = outputs.get('rgb_quality', None)  # [B] confidence scores
+            sonar_conf = outputs.get('sonar_quality', None)
+
+            # Auto-detect validity from confidence thresholding
+            is_rgb_valid_computed, is_sonar_valid_computed = self.detect_modality_by_confidence(
+                rgb_confidence=rgb_conf,
+                sonar_confidence=sonar_conf
+            )
+
+            # Use computed validity if not provided
+            if is_rgb_valid is None:
+                is_rgb_valid = is_rgb_valid_computed
+            if is_sonar_valid is None:
+                is_sonar_valid = is_sonar_valid_computed
+
+        # Always output modality validity for evaluation/analysis
+        outputs['is_rgb_valid'] = is_rgb_valid
+        outputs['is_sonar_valid'] = is_sonar_valid
 
         return outputs
 
@@ -748,12 +920,18 @@ class AquaSOT3DTracker(BaseModule):
         sonar_template: torch.Tensor,
         sonar_search: torch.Tensor,
         gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None,
         return_losses: bool = True,
         return_intermediate: bool = False,
         metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Complete forward pass of AquaSOT-3D tracker.
+
+        CRITICAL FIX (Audit 2025112101 Phase 2.2):
+        Now accepts is_rgb_valid and is_sonar_valid for conditional fusion.
+        These flags enable single-modality bypass in ConditionalG2DCMA.
 
         Args:
             rgb_template: RGB template frame, shape (B, 3, H_t, W_t) OR (B, 1, 3, H_t, W_t) for sequence mode
@@ -762,6 +940,8 @@ class AquaSOT3DTracker(BaseModule):
             sonar_search: Sonar search frame, shape (B, 1, H_s, W_s) OR (B, T, 1, H_s, W_s) for sequence mode
             gt_boxes: Optional ground truth boxes for loss computation
                 Expected format: {'rgb': (B, 4), 'sonar': (B, 4), 'fusion': (B, 4)}
+            is_rgb_valid: Optional [B] boolean tensor, True if RGB has valid target
+            is_sonar_valid: Optional [B] boolean tensor, True if Sonar has valid target
             return_losses: Whether to compute and return losses
             return_intermediate: Whether to return intermediate features
             metadata: Optional metadata dict containing:
@@ -877,14 +1057,33 @@ class AquaSOT3DTracker(BaseModule):
             rgb_template, rgb_search, sonar_template, sonar_search
         )
 
-        rgb_features = backbone_outputs['rgb_features']  # (B, C_rgb, H, W)
-        sonar_features = backbone_outputs['sonar_features']  # (B, C_sonar, H, W)
+        rgb_features = backbone_outputs['rgb_features']  # (B*T, C_rgb, H, W)
+        sonar_features = backbone_outputs['sonar_features']  # (B*T, C_sonar, H, W)
 
         # =====================================================
         # Stage 2: Cross-Modal Fusion
         # =====================================================
+        # CRITICAL FIX (Audit 2025112101 Phase 2.2):
+        # If no validity flags provided, default to all valid (dual-modality)
+        if is_rgb_valid is None:
+            is_rgb_valid = torch.ones(batch_size, dtype=torch.bool, device=rgb_features.device)
+        if is_sonar_valid is None:
+            is_sonar_valid = torch.ones(batch_size, dtype=torch.bool, device=sonar_features.device)
+
+        # CRITICAL FIX: In temporal mode, features are [B*T, ...] but validity flags are [B]
+        # We need to expand validity flags to [B*T] for fusion
+        if is_temporal_sequence:
+            # Expand validity flags from [B] to [B*T]
+            is_rgb_valid_expanded = is_rgb_valid.unsqueeze(1).expand(-1, T).reshape(-1)  # [B*T]
+            is_sonar_valid_expanded = is_sonar_valid.unsqueeze(1).expand(-1, T).reshape(-1)  # [B*T]
+        else:
+            is_rgb_valid_expanded = is_rgb_valid
+            is_sonar_valid_expanded = is_sonar_valid
+
         fusion_outputs = self.fuse_features(
             rgb_features, sonar_features,
+            is_rgb_valid=is_rgb_valid_expanded,
+            is_sonar_valid=is_sonar_valid_expanded,
             return_consistency=return_losses
         )
 
@@ -1088,8 +1287,19 @@ class AquaSOT3DTracker(BaseModule):
             )
             self.temporal_state = new_temporal_state
 
-            # After temporal aggregation, we're back to [B, C, H, W] for downstream heads
-            # No need to reshape - temporal_head returns aggregated [B, C, H, W]
+            # CRITICAL FIX (Audit 2025112101 Finding 1): VisionMambaHead dual-mode output
+            # Training mode: returns [B, T, C, H, W] for multi-frame supervision
+            # Inference mode: returns [B, C, H, W] for single-frame prediction
+            # We need to aggregate temporal dimension for box prediction heads
+            if fused_features.ndim == 5:
+                # Training mode: aggregate temporal features to [B, C, H, W]
+                # Use temporal mean for robust aggregation across frames
+                B, T, C, H, W = fused_features.shape
+                fused_features = fused_features.mean(dim=1)  # [B, C, H, W]
+
+                # Also aggregate quality scores if present
+                if fusion_quality is not None and fusion_quality.ndim == 2:
+                    fusion_quality = fusion_quality.mean(dim=1)  # [B]
 
             # CRITICAL FIX (Audit 2025111703 Finding 1 - gt_boxes shape mismatch):
             # Restore original gt_boxes [B, 4] for loss computation

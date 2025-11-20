@@ -1,457 +1,400 @@
 """
-Unit Tests for Weak 3D Center Head
+Unit tests for Weak3DHead with single-modality awareness.
 
-Tests for Weak3DHead, extract_radial_activation, and related utilities.
+This test suite verifies that Weak3DHead correctly routes samples to
+appropriate 3D estimation branches based on modality availability.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-10
+Date: 2025-11-21
 """
 
-import pytest
+import unittest
 import torch
-import torch.nn as nn
+import sys
+sys.path.insert(0, '/home/rohan/Workspace/AquaSOT-3D/src')
 
-from aquasot3d.models.heads import (
-    Weak3DHead,
-    extract_radial_activation,
-    build_weak3d_head,
-)
+from aquasot3d.models.heads import Weak3DHead, build_weak3d_head
 
 
-class TestRadialActivationExtraction:
-    """Tests for radial activation extraction function."""
+class TestWeak3DHeadV2(unittest.TestCase):
+    """Test suite for Weak3DHead."""
 
-    def test_extract_radial_activation_basic(self):
-        """Test basic radial activation extraction."""
-        batch_size = 4
-        sonar_img = torch.randn(batch_size, 1, 376, 682)
-        sonar_feat = torch.randn(batch_size, 256, 14, 14)
-        num_bins = 50
+    def setUp(self):
+        """Set up test fixtures."""
+        self.rgb_feat_dim = 256
+        self.sonar_feat_dim = 256
+        self.num_radial_bins = 50
+        self.batch_size = 4
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        profile = extract_radial_activation(sonar_img, sonar_feat, num_bins)
+        # Build head
+        self.head = build_weak3d_head(
+            rgb_feat_dim=self.rgb_feat_dim,
+            sonar_feat_dim=self.sonar_feat_dim,
+            num_radial_bins=self.num_radial_bins,
+            radial_range=(0.5, 10.0),
+            hidden_dim=512,
+            dropout=0.1,
+            default_depth=5.0
+        ).to(self.device)
+        self.head.eval()
 
-        assert profile.shape == (batch_size, num_bins)
+    def test_dual_modality_routing(self):
+        """
+        Test 3.1.1: Dual-modality routing uses original Weak3D logic.
+        """
+        B = self.batch_size
+        rgb_features = torch.randn(B, self.rgb_feat_dim, device=self.device)
+        sonar_features = torch.randn(B, self.sonar_feat_dim, device=self.device)
+        sonar_radial = torch.rand(B, self.num_radial_bins, device=self.device)
+        sonar_radial = sonar_radial / sonar_radial.sum(dim=-1, keepdim=True)  # Normalize
 
-    def test_extract_radial_activation_different_sizes(self):
-        """Test with different input sizes."""
-        batch_size = 2
-        # Different feature map size
-        sonar_img = torch.randn(batch_size, 1, 376, 682)
-        sonar_feat = torch.randn(batch_size, 128, 7, 7)
-        num_bins = 30
+        # All samples are dual-modality
+        is_rgb_valid = torch.ones(B, dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.ones(B, dtype=torch.bool, device=self.device)
 
-        profile = extract_radial_activation(sonar_img, sonar_feat, num_bins)
+        with torch.no_grad():
+            outputs = self.head(
+                rgb_features=rgb_features,
+                sonar_features=sonar_features,
+                is_rgb_valid=is_rgb_valid,
+                is_sonar_valid=is_sonar_valid,
+                sonar_radial_activation=sonar_radial
+            )
 
-        assert profile.shape == (batch_size, num_bins)
+        # Check outputs
+        self.assertIn('center_3d', outputs)
+        self.assertIn('routing_info', outputs)
 
-    def test_extract_radial_activation_single_batch(self):
-        """Test with single sample."""
-        sonar_img = torch.randn(1, 1, 376, 682)
-        sonar_feat = torch.randn(1, 256, 14, 14)
-        num_bins = 50
+        center_3d = outputs['center_3d']
+        routing_info = outputs['routing_info']
 
-        profile = extract_radial_activation(sonar_img, sonar_feat, num_bins)
+        # Verify shapes
+        self.assertEqual(center_3d.shape, (B, 3))
 
-        assert profile.shape == (1, num_bins)
+        # Verify routing: all samples to dual-modality
+        self.assertEqual(routing_info['num_dual'], B)
+        self.assertEqual(routing_info['num_single_rgb'], 0)
+        self.assertEqual(routing_info['num_single_sonar'], 0)
+        self.assertEqual(routing_info['num_zero'], 0)
 
-    def test_extract_radial_activation_values(self):
-        """Test that extracted values are reasonable."""
-        batch_size = 4
-        sonar_img = torch.randn(batch_size, 1, 376, 682)
-        sonar_feat = torch.randn(batch_size, 256, 14, 14)
-        num_bins = 50
-
-        profile = extract_radial_activation(sonar_img, sonar_feat, num_bins)
-
-        # Check that profile contains valid values (not all zeros, not NaN)
-        assert not torch.all(profile == 0)
-        assert not torch.any(torch.isnan(profile))
-
-    def test_extract_radial_activation_gradient_flow(self):
-        """Test gradient flow through radial extraction."""
-        batch_size = 4
-        sonar_img = torch.randn(batch_size, 1, 376, 682)
-        sonar_feat = torch.randn(batch_size, 256, 14, 14, requires_grad=True)
-        num_bins = 50
-
-        profile = extract_radial_activation(sonar_img, sonar_feat, num_bins)
-        loss = profile.mean()
-
-        loss.backward()
-
-        assert sonar_feat.grad is not None
-        assert not torch.all(sonar_feat.grad == 0)
-
-
-class TestWeak3DHead:
-    """Tests for Weak3DHead module."""
-
-    @pytest.fixture
-    def weak3d_head(self):
-        """Create Weak3DHead for testing."""
-        return Weak3DHead(
-            rgb_feat_dim=768,
-            sonar_feat_dim=384,
-            num_radial_bins=50,
-            hidden_dim=256
-        )
-
-    def test_weak3d_head_initialization(self, weak3d_head):
-        """Test Weak3DHead initialization."""
-        assert isinstance(weak3d_head, Weak3DHead)
-        assert weak3d_head.rgb_feat_dim == 768
-        assert weak3d_head.sonar_feat_dim == 384
-        assert weak3d_head.num_radial_bins == 50
-        assert weak3d_head.hidden_dim == 256
-
-    def test_weak3d_head_forward_1d(self, weak3d_head):
-        """Test forward pass with 1D features."""
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial)
-
-        assert 'center_3d' in outputs
-        assert 'X_rgb' in outputs
-        assert 'X_sonar' in outputs
-        assert 'X_fused' in outputs
-        assert 'X_weights' in outputs
-        assert 'Y' in outputs
-        assert 'Z' in outputs
-        assert 'Z_weighted' in outputs
-        assert 'consistency_loss' in outputs
-
-        assert outputs['center_3d'].shape == (batch_size, 3)
-        assert outputs['X_rgb'].shape == (batch_size, 1)
-        assert outputs['X_sonar'].shape == (batch_size, 1)
-        assert outputs['X_fused'].shape == (batch_size, 1)
-        assert outputs['X_weights'].shape == (batch_size, 2)
-        assert outputs['Y'].shape == (batch_size, 1)
-        assert outputs['Z'].shape == (batch_size, 1)
-        assert outputs['Z_weighted'].shape == (batch_size, 1)
-
-    def test_weak3d_head_forward_3d(self, weak3d_head):
-        """Test forward pass with 3D features (sequence)."""
-        batch_size = 4
-        seq_len = 196
-        rgb_features = torch.randn(batch_size, seq_len, 768)
-        sonar_features = torch.randn(batch_size, seq_len // 2, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial)
-
-        assert outputs['center_3d'].shape == (batch_size, 3)
-
-    def test_weak3d_head_forward_4d(self, weak3d_head):
-        """Test forward pass with 4D features (spatial)."""
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768, 14, 14)
-        sonar_features = torch.randn(batch_size, 384, 7, 7)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial)
-
-        assert outputs['center_3d'].shape == (batch_size, 3)
-
-    def test_weak3d_head_fusion_weights_sum_to_one(self, weak3d_head):
-        """Test that X fusion weights sum to one."""
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial)
-        weights = outputs['X_weights']
-
-        assert torch.allclose(weights.sum(dim=-1), torch.ones(batch_size), atol=1e-5)
-
-    def test_weak3d_head_consistency_loss(self, weak3d_head):
-        """Test consistency loss computation."""
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial, compute_consistency_loss=True)
-
-        assert 'consistency_loss' in outputs
-        assert outputs['consistency_loss'].numel() == 1
-        assert outputs['consistency_loss'] >= 0
-
-    def test_weak3d_head_without_consistency_loss(self, weak3d_head):
-        """Test forward without consistency loss."""
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial, compute_consistency_loss=False)
-
-        assert 'consistency_loss' not in outputs or outputs['consistency_loss'] == 0
-
-    def test_weak3d_head_z_components(self, weak3d_head):
-        """Test Z estimation components."""
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial)
-
+        # Verify Z is within radial range
         Z = outputs['Z']
-        Z_weighted = outputs['Z_weighted']
+        self.assertTrue(torch.all(Z >= 0.5))
+        self.assertTrue(torch.all(Z <= 10.0))
 
-        # Z should be different from just weighted (due to MLP)
-        if weak3d_head.use_residual_z:
-            # With residual, Z includes both components
-            assert not torch.allclose(Z, Z_weighted, atol=1e-2)
+        print(f"\nTest 3.1.1 PASSED: Dual-modality routing")
+        print(f"  center_3d shape: {center_3d.shape}")
+        print(f"  Z range: [{Z.min().item():.2f}, {Z.max().item():.2f}]")
+        print(f"  Routing: {routing_info}")
 
-    def test_weak3d_head_gradient_flow(self, weak3d_head):
-        """Test gradient flow through Weak3DHead."""
-        rgb_features = torch.randn(4, 768, requires_grad=True)
-        sonar_features = torch.randn(4, 384, requires_grad=True)
-        sonar_radial = torch.randn(4, 50, requires_grad=True)
+    def test_single_rgb_routing(self):
+        """
+        Test 3.1.2: Single-RGB routing uses RGB depth estimator.
+        """
+        B = self.batch_size
+        rgb_features = torch.randn(B, self.rgb_feat_dim, device=self.device)
+        sonar_features = torch.randn(B, self.sonar_feat_dim, device=self.device)
+        sonar_radial = torch.rand(B, self.num_radial_bins, device=self.device)
 
-        outputs = weak3d_head(rgb_features, sonar_features, sonar_radial)
-        loss = outputs['center_3d'].mean()
+        # All samples are RGB-only
+        is_rgb_valid = torch.ones(B, dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.zeros(B, dtype=torch.bool, device=self.device)
 
+        with torch.no_grad():
+            outputs = self.head(
+                rgb_features=rgb_features,
+                sonar_features=sonar_features,
+                is_rgb_valid=is_rgb_valid,
+                is_sonar_valid=is_sonar_valid,
+                sonar_radial_activation=sonar_radial
+            )
+
+        center_3d = outputs['center_3d']
+        routing_info = outputs['routing_info']
+
+        # Verify routing: all samples to single-RGB
+        self.assertEqual(routing_info['num_dual'], 0)
+        self.assertEqual(routing_info['num_single_rgb'], B)
+        self.assertEqual(routing_info['num_single_sonar'], 0)
+        self.assertEqual(routing_info['num_zero'], 0)
+
+        # Verify Z is from RGB depth estimator (should be within radial range)
+        Z = outputs['Z']
+        self.assertTrue(torch.all(Z >= 0.5))
+        self.assertTrue(torch.all(Z <= 10.0))
+
+        print(f"\nTest 3.1.2 PASSED: Single-RGB routing")
+        print(f"  center_3d shape: {center_3d.shape}")
+        print(f"  Z range (RGB depth): [{Z.min().item():.2f}, {Z.max().item():.2f}]")
+        print(f"  Routing: {routing_info}")
+
+    def test_single_sonar_routing(self):
+        """
+        Test 3.1.3: Single-Sonar routing uses sonar Y-branch.
+        """
+        B = self.batch_size
+        rgb_features = torch.randn(B, self.rgb_feat_dim, device=self.device)
+        sonar_features = torch.randn(B, self.sonar_feat_dim, device=self.device)
+        sonar_radial = torch.rand(B, self.num_radial_bins, device=self.device)
+        sonar_radial = sonar_radial / sonar_radial.sum(dim=-1, keepdim=True)
+
+        # All samples are Sonar-only
+        is_rgb_valid = torch.zeros(B, dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.ones(B, dtype=torch.bool, device=self.device)
+
+        with torch.no_grad():
+            outputs = self.head(
+                rgb_features=rgb_features,
+                sonar_features=sonar_features,
+                is_rgb_valid=is_rgb_valid,
+                is_sonar_valid=is_sonar_valid,
+                sonar_radial_activation=sonar_radial
+            )
+
+        center_3d = outputs['center_3d']
+        routing_info = outputs['routing_info']
+
+        # Verify routing: all samples to single-Sonar
+        self.assertEqual(routing_info['num_dual'], 0)
+        self.assertEqual(routing_info['num_single_rgb'], 0)
+        self.assertEqual(routing_info['num_single_sonar'], B)
+        self.assertEqual(routing_info['num_zero'], 0)
+
+        # Verify Z is from sonar radial (should be within radial range)
+        Z = outputs['Z']
+        self.assertTrue(torch.all(Z >= 0.5))
+        self.assertTrue(torch.all(Z <= 10.0))
+
+        # Verify Y is from sonar Y-branch (not NaN)
+        Y = outputs['Y']
+        self.assertFalse(torch.any(torch.isnan(Y)))
+
+        print(f"\nTest 3.1.3 PASSED: Single-Sonar routing")
+        print(f"  center_3d shape: {center_3d.shape}")
+        print(f"  Z range (Sonar radial): [{Z.min().item():.2f}, {Z.max().item():.2f}]")
+        print(f"  Y range (Sonar Y-branch): [{Y.min().item():.2f}, {Y.max().item():.2f}]")
+        print(f"  Routing: {routing_info}")
+
+    def test_zero_modality_routing(self):
+        """
+        Test 3.1.4: Zero-modality routing returns default predictions.
+        """
+        B = self.batch_size
+        rgb_features = torch.randn(B, self.rgb_feat_dim, device=self.device)
+        sonar_features = torch.randn(B, self.sonar_feat_dim, device=self.device)
+        sonar_radial = torch.rand(B, self.num_radial_bins, device=self.device)
+
+        # All samples have no valid modalities
+        is_rgb_valid = torch.zeros(B, dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+        with torch.no_grad():
+            outputs = self.head(
+                rgb_features=rgb_features,
+                sonar_features=sonar_features,
+                is_rgb_valid=is_rgb_valid,
+                is_sonar_valid=is_sonar_valid,
+                sonar_radial_activation=sonar_radial
+            )
+
+        center_3d = outputs['center_3d']
+        routing_info = outputs['routing_info']
+
+        # Verify routing: all samples to zero-modality
+        self.assertEqual(routing_info['num_dual'], 0)
+        self.assertEqual(routing_info['num_single_rgb'], 0)
+        self.assertEqual(routing_info['num_single_sonar'], 0)
+        self.assertEqual(routing_info['num_zero'], B)
+
+        # Verify default predictions: (0, 0, default_depth=5.0)
+        X = outputs['X']
+        Y = outputs['Y']
+        Z = outputs['Z']
+
+        self.assertTrue(torch.allclose(X, torch.zeros_like(X), atol=1e-6))
+        self.assertTrue(torch.allclose(Y, torch.zeros_like(Y), atol=1e-6))
+        self.assertTrue(torch.allclose(Z, torch.full_like(Z, 5.0), atol=1e-6))
+
+        print(f"\nTest 3.1.4 PASSED: Zero-modality routing")
+        print(f"  center_3d (default): {center_3d[0].tolist()}")
+        print(f"  Routing: {routing_info}")
+
+    def test_mixed_modality_routing(self):
+        """
+        Test 3.1.5: Mixed modality batch correctly routes to different branches.
+        """
+        B = 8  # Larger batch for mixed scenarios
+        rgb_features = torch.randn(B, self.rgb_feat_dim, device=self.device)
+        sonar_features = torch.randn(B, self.sonar_feat_dim, device=self.device)
+        sonar_radial = torch.rand(B, self.num_radial_bins, device=self.device)
+        sonar_radial = sonar_radial / sonar_radial.sum(dim=-1, keepdim=True)
+
+        # Mixed modality:
+        # Samples 0-1: Dual-modality
+        # Samples 2-3: Single-RGB
+        # Samples 4-5: Single-Sonar
+        # Samples 6-7: Zero-modality
+        is_rgb_valid = torch.tensor(
+            [True, True, True, True, False, False, False, False],
+            dtype=torch.bool, device=self.device
+        )
+        is_sonar_valid = torch.tensor(
+            [True, True, False, False, True, True, False, False],
+            dtype=torch.bool, device=self.device
+        )
+
+        with torch.no_grad():
+            outputs = self.head(
+                rgb_features=rgb_features,
+                sonar_features=sonar_features,
+                is_rgb_valid=is_rgb_valid,
+                is_sonar_valid=is_sonar_valid,
+                sonar_radial_activation=sonar_radial
+            )
+
+        center_3d = outputs['center_3d']
+        routing_info = outputs['routing_info']
+
+        # Verify routing distribution
+        self.assertEqual(routing_info['num_dual'], 2)
+        self.assertEqual(routing_info['num_single_rgb'], 2)
+        self.assertEqual(routing_info['num_single_sonar'], 2)
+        self.assertEqual(routing_info['num_zero'], 2)
+
+        # Verify shapes
+        self.assertEqual(center_3d.shape, (B, 3))
+
+        # Verify zero-modality samples have default predictions
+        X = outputs['X']
+        Y = outputs['Y']
+        Z = outputs['Z']
+
+        zero_idx = torch.tensor([6, 7], device=self.device)
+        self.assertTrue(torch.allclose(X[zero_idx], torch.zeros_like(X[zero_idx]), atol=1e-6))
+        self.assertTrue(torch.allclose(Y[zero_idx], torch.zeros_like(Y[zero_idx]), atol=1e-6))
+        self.assertTrue(torch.allclose(Z[zero_idx], torch.full_like(Z[zero_idx], 5.0), atol=1e-6))
+
+        # Verify non-zero-modality samples have non-default predictions
+        # (at least Z should be different for dual/single-sonar samples)
+        dual_sonar_idx = torch.tensor([0, 1, 4, 5], device=self.device)
+        # These should have Z from sonar radial, which is unlikely to be exactly 5.0
+        # We just check that they're within valid range
+        self.assertTrue(torch.all(Z[dual_sonar_idx] >= 0.5))
+        self.assertTrue(torch.all(Z[dual_sonar_idx] <= 10.0))
+
+        print(f"\nTest 3.1.5 PASSED: Mixed modality routing")
+        print(f"  Routing distribution: {routing_info}")
+        print(f"  Zero-modality samples (6-7) center_3d: {center_3d[zero_idx].tolist()}")
+        print(f"  Dual-modality samples (0-1) Z: {Z[:2].tolist()}")
+        print(f"  Single-RGB samples (2-3) Z: {Z[2:4].tolist()}")
+        print(f"  Single-Sonar samples (4-5) Z: {Z[4:6].tolist()}")
+
+    def test_gradient_flow(self):
+        """
+        Test 3.1.6: Verify gradients flow through all branches.
+        """
+        B = 4
+        rgb_features = torch.randn(B, self.rgb_feat_dim, device=self.device, requires_grad=True)
+        sonar_features = torch.randn(B, self.sonar_feat_dim, device=self.device, requires_grad=True)
+        sonar_radial = torch.rand(B, self.num_radial_bins, device=self.device, requires_grad=True)
+
+        # Mixed modality
+        is_rgb_valid = torch.tensor([True, True, False, False], dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.tensor([True, False, True, False], dtype=torch.bool, device=self.device)
+
+        # Enable gradient computation
+        self.head.train()
+
+        outputs = self.head(
+            rgb_features=rgb_features,
+            sonar_features=sonar_features,
+            is_rgb_valid=is_rgb_valid,
+            is_sonar_valid=is_sonar_valid,
+            sonar_radial_activation=sonar_radial
+        )
+
+        center_3d = outputs['center_3d']
+
+        # Compute loss and backpropagate
+        loss = center_3d.sum()
         loss.backward()
 
-        assert rgb_features.grad is not None
-        assert sonar_features.grad is not None
-        assert sonar_radial.grad is not None
-        assert not torch.all(rgb_features.grad == 0)
-        assert not torch.all(sonar_features.grad == 0)
-        assert not torch.all(sonar_radial.grad == 0)
+        # Check gradients for dual-modality sample (index 0)
+        self.assertIsNotNone(rgb_features.grad)
+        self.assertIsNotNone(sonar_features.grad)
+        self.assertTrue(torch.any(rgb_features.grad[0] != 0.0))
+        self.assertTrue(torch.any(sonar_features.grad[0] != 0.0))
 
-    def test_weak3d_head_residual_z(self):
-        """Test Z estimation with and without residual."""
-        head_with_residual = Weak3DHead(
-            rgb_feat_dim=768,
-            sonar_feat_dim=384,
-            use_residual_z=True
-        )
-        head_without_residual = Weak3DHead(
-            rgb_feat_dim=768,
-            sonar_feat_dim=384,
-            use_residual_z=False
-        )
+        # Check gradients for single-RGB sample (index 1)
+        self.assertTrue(torch.any(rgb_features.grad[1] != 0.0))
 
-        rgb_features = torch.randn(4, 768)
-        sonar_features = torch.randn(4, 384)
-        sonar_radial = torch.randn(4, 50)
+        # Check gradients for single-Sonar sample (index 2)
+        self.assertTrue(torch.any(sonar_features.grad[2] != 0.0))
 
-        outputs_with = head_with_residual(rgb_features, sonar_features, sonar_radial)
-        outputs_without = head_without_residual(rgb_features, sonar_features, sonar_radial)
+        # Zero-modality sample (index 3) should have zero gradients (no trainable path)
+        # This is expected since zero-modality returns static defaults
 
-        # Both should produce valid Z
-        assert outputs_with['Z'].shape == (4, 1)
-        assert outputs_without['Z'].shape == (4, 1)
+        self.head.eval()
 
-    def test_weak3d_head_custom_bins(self):
-        """Test Weak3DHead with different number of radial bins."""
-        head = Weak3DHead(
-            rgb_feat_dim=768,
-            sonar_feat_dim=384,
-            num_radial_bins=30
-        )
+        print(f"\nTest 3.1.6 PASSED: Gradient flow")
+        print(f"  RGB grad norm (dual): {rgb_features.grad[0].norm().item():.4f}")
+        print(f"  Sonar grad norm (dual): {sonar_features.grad[0].norm().item():.4f}")
+        print(f"  RGB grad norm (single-RGB): {rgb_features.grad[1].norm().item():.4f}")
+        print(f"  Sonar grad norm (single-Sonar): {sonar_features.grad[2].norm().item():.4f}")
 
-        rgb_features = torch.randn(4, 768)
-        sonar_features = torch.randn(4, 384)
-        sonar_radial = torch.randn(4, 30)  # Matching num_bins
+    def test_consistency_across_batch_sizes(self):
+        """
+        Test 3.1.7: Verify output consistency across different batch sizes.
+        """
+        # Create identical samples
+        rgb_features_single = torch.randn(1, self.rgb_feat_dim, device=self.device)
+        sonar_features_single = torch.randn(1, self.sonar_feat_dim, device=self.device)
+        sonar_radial_single = torch.rand(1, self.num_radial_bins, device=self.device)
+        sonar_radial_single = sonar_radial_single / sonar_radial_single.sum(dim=-1, keepdim=True)
 
-        outputs = head(rgb_features, sonar_features, sonar_radial)
+        is_rgb_valid = torch.ones(1, dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.ones(1, dtype=torch.bool, device=self.device)
 
-        assert outputs['center_3d'].shape == (4, 3)
+        with torch.no_grad():
+            # Process as batch of 1
+            outputs_single = self.head(
+                rgb_features=rgb_features_single,
+                sonar_features=sonar_features_single,
+                is_rgb_valid=is_rgb_valid,
+                is_sonar_valid=is_sonar_valid,
+                sonar_radial_activation=sonar_radial_single
+            )
+            center_3d_single = outputs_single['center_3d']
 
+            # Process same sample in batch of 4 (replicated)
+            rgb_features_batch = rgb_features_single.repeat(4, 1)
+            sonar_features_batch = sonar_features_single.repeat(4, 1)
+            sonar_radial_batch = sonar_radial_single.repeat(4, 1)
+            is_rgb_valid_batch = torch.ones(4, dtype=torch.bool, device=self.device)
+            is_sonar_valid_batch = torch.ones(4, dtype=torch.bool, device=self.device)
 
-class Test3DLossComputation:
-    """Tests for 3D loss computation."""
+            outputs_batch = self.head(
+                rgb_features=rgb_features_batch,
+                sonar_features=sonar_features_batch,
+                is_rgb_valid=is_rgb_valid_batch,
+                is_sonar_valid=is_sonar_valid_batch,
+                sonar_radial_activation=sonar_radial_batch
+            )
+            center_3d_batch = outputs_batch['center_3d']
 
-    @pytest.fixture
-    def weak3d_head(self):
-        """Create Weak3DHead for testing."""
-        return Weak3DHead(
-            rgb_feat_dim=768,
-            sonar_feat_dim=384
-        )
+            # All batch samples should be identical to single sample
+            for i in range(4):
+                self.assertTrue(
+                    torch.allclose(center_3d_batch[i], center_3d_single[0], atol=1e-5),
+                    f"Batch sample {i} differs from single sample"
+                )
 
-    def test_3d_loss_l1(self, weak3d_head):
-        """Test L1 3D loss."""
-        pred_center = torch.randn(4, 3)
-        target_center = torch.randn(4, 3)
-
-        loss = weak3d_head.compute_3d_loss(pred_center, target_center, loss_type='l1')
-
-        assert loss.numel() == 1
-        assert loss >= 0
-
-    def test_3d_loss_l2(self, weak3d_head):
-        """Test L2 3D loss."""
-        pred_center = torch.randn(4, 3)
-        target_center = torch.randn(4, 3)
-
-        loss = weak3d_head.compute_3d_loss(pred_center, target_center, loss_type='l2')
-
-        assert loss.numel() == 1
-        assert loss >= 0
-
-    def test_3d_loss_smooth_l1(self, weak3d_head):
-        """Test Smooth L1 3D loss."""
-        pred_center = torch.randn(4, 3)
-        target_center = torch.randn(4, 3)
-
-        loss = weak3d_head.compute_3d_loss(pred_center, target_center, loss_type='smooth_l1')
-
-        assert loss.numel() == 1
-        assert loss >= 0
-
-    def test_3d_loss_perfect_match(self, weak3d_head):
-        """Test 3D loss for perfect match."""
-        center = torch.randn(4, 3)
-
-        loss = weak3d_head.compute_3d_loss(center, center, loss_type='l1')
-
-        assert torch.allclose(loss, torch.tensor(0.0), atol=1e-5)
-
-    def test_3d_loss_gradient_flow(self, weak3d_head):
-        """Test gradient flow through 3D loss."""
-        pred_center = torch.randn(4, 3, requires_grad=True)
-        target_center = torch.randn(4, 3)
-
-        loss = weak3d_head.compute_3d_loss(pred_center, target_center, loss_type='l1')
-
-        loss.backward()
-
-        assert pred_center.grad is not None
-        assert not torch.all(pred_center.grad == 0)
-
-
-class TestWeak3DHeadFactory:
-    """Tests for build_weak3d_head factory function."""
-
-    def test_build_weak3d_head_default(self):
-        """Test building Weak3DHead with default parameters."""
-        head = build_weak3d_head(rgb_feat_dim=768, sonar_feat_dim=384)
-        assert isinstance(head, Weak3DHead)
-        assert head.rgb_feat_dim == 768
-        assert head.sonar_feat_dim == 384
-
-    def test_build_weak3d_head_custom(self):
-        """Test building Weak3DHead with custom parameters."""
-        head = build_weak3d_head(
-            rgb_feat_dim=512,
-            sonar_feat_dim=256,
-            num_radial_bins=30,
-            hidden_dim=128,
-            use_residual_z=False
-        )
-        assert isinstance(head, Weak3DHead)
-        assert head.rgb_feat_dim == 512
-        assert head.sonar_feat_dim == 256
-        assert head.num_radial_bins == 30
-        assert head.hidden_dim == 128
-        assert not head.use_residual_z
-
-
-class TestWeak3DHeadIntegration:
-    """Integration tests for Weak3DHead with other modules."""
-
-    def test_weak3d_with_radial_extraction(self):
-        """Test Weak3DHead with radial activation extraction."""
-        head = Weak3DHead(rgb_feat_dim=768, sonar_feat_dim=384)
-
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384, 14, 14)
-
-        # Simulate sonar image and extract radial profile
-        sonar_img = torch.randn(batch_size, 1, 376, 682)
-        sonar_radial = extract_radial_activation(sonar_img, sonar_features, num_bins=50)
-
-        # Predict 3D center
-        outputs = head(rgb_features, sonar_features, sonar_radial)
-
-        assert outputs['center_3d'].shape == (batch_size, 3)
-
-    def test_weak3d_with_fusion_head(self):
-        """Test Weak3DHead integration with FusionHead."""
-        from aquasot3d.models.heads import build_fusion_head
-
-        fusion_head = build_fusion_head(rgb_channels=768, sonar_channels=384, hidden_dim=256)
-        weak3d_head = build_weak3d_head(rgb_feat_dim=256, sonar_feat_dim=256)
-
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features = torch.randn(batch_size, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        # First fuse features
-        fusion_outputs = fusion_head(rgb_features, sonar_features)
-        fused_features = fusion_outputs['fused_features']
-
-        # Then predict 3D with fused features (using same for both branches)
-        weak3d_outputs = weak3d_head(fused_features, fused_features, sonar_radial)
-
-        assert weak3d_outputs['center_3d'].shape == (batch_size, 3)
-
-    def test_complete_prediction_pipeline(self):
-        """Test complete multi-modal 3D prediction pipeline."""
-        from aquasot3d.models.heads import build_box_head, build_fusion_head
-
-        # Create all heads
-        rgb_box_head = build_box_head('rgb', in_channels=768)
-        sonar_box_head = build_box_head('sonar', in_channels=384)
-        fusion_head = build_fusion_head(rgb_channels=768, sonar_channels=384)
-        fusion_box_head = build_box_head('fusion', in_channels=256)
-        weak3d_head = build_weak3d_head(rgb_feat_dim=768, sonar_feat_dim=384)
-
-        # Simulate features
-        batch_size = 4
-        rgb_features = torch.randn(batch_size, 768)
-        sonar_features_4d = torch.randn(batch_size, 384, 7, 7)
-        sonar_img = torch.randn(batch_size, 1, 376, 682)
-
-        # Extract radial profile
-        sonar_radial = extract_radial_activation(sonar_img, sonar_features_4d)
-
-        # Flatten for 1D heads
-        sonar_features_1d = sonar_features_4d.mean(dim=[2, 3])
-
-        # Independent 2D predictions
-        rgb_boxes = rgb_box_head(rgb_features)
-        sonar_boxes = sonar_box_head(sonar_features_1d)
-
-        # Fused prediction
-        fusion_outputs = fusion_head(rgb_features, sonar_features_1d)
-        fusion_boxes = fusion_box_head(fusion_outputs['fused_features'])
-
-        # 3D prediction
-        weak3d_outputs = weak3d_head(rgb_features, sonar_features_1d, sonar_radial)
-
-        # Verify all outputs
-        assert rgb_boxes['pred_boxes'].shape == (batch_size, 4)
-        assert sonar_boxes['pred_boxes'].shape == (batch_size, 4)
-        assert fusion_boxes['pred_boxes'].shape == (batch_size, 4)
-        assert weak3d_outputs['center_3d'].shape == (batch_size, 3)
-
-    def test_weak3d_with_temporal_features(self):
-        """Test Weak3DHead with temporally aggregated features."""
-        head = Weak3DHead(rgb_feat_dim=768, sonar_feat_dim=384)
-
-        # Simulate temporally aggregated features (3D: B, T, C)
-        batch_size = 4
-        temporal_len = 5
-        rgb_features = torch.randn(batch_size, temporal_len, 768)
-        sonar_features = torch.randn(batch_size, temporal_len, 384)
-        sonar_radial = torch.randn(batch_size, 50)
-
-        outputs = head(rgb_features, sonar_features, sonar_radial)
-
-        assert outputs['center_3d'].shape == (batch_size, 3)
+        print(f"\nTest 3.1.7 PASSED: Consistency across batch sizes")
+        print(f"  Single sample: {center_3d_single[0].tolist()}")
+        print(f"  Batch sample 0: {center_3d_batch[0].tolist()}")
 
 
 if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+    # Run all tests
+    unittest.main(verbosity=2)

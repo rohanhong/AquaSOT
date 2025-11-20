@@ -724,11 +724,29 @@ class BoxHead(BaseHead):
         pred_tensor = pred_bbox_cxcywh.tensor()
         target_tensor = target_bbox_cxcywh.tensor()
 
-        # L1 loss (using validated tensors)
-        l1_loss = self.l1_loss_fn(pred_tensor, target_tensor)
+        # CRITICAL FIX (Audit 2025112101): Apply validity masking to regression losses
+        # Invalid samples have bbox=[0,0,0,0] which has no supervisory meaning.
+        # We mask regression losses to prevent training on meaningless targets.
+        if validity_mask is not None:
+            # Compute per-sample losses
+            l1_loss_per_sample = F.l1_loss(pred_tensor, target_tensor, reduction='none').mean(dim=1)  # [B]
+            iou_loss_per_sample = self.iou_loss_fn(pred_tensor, target_tensor)  # Should return [B]
+            if iou_loss_per_sample.dim() == 0:
+                # If scalar, convert to per-sample for masking
+                iou_loss_per_sample = iou_loss_per_sample.unsqueeze(0).expand(pred_tensor.shape[0])
 
-        # IoU loss (using validated tensors)
-        iou_loss = self.iou_loss_fn(pred_tensor, target_tensor)
+            # Apply validity masking
+            l1_loss_masked = l1_loss_per_sample * validity_mask
+            iou_loss_masked = iou_loss_per_sample * validity_mask
+
+            # Average only over valid samples
+            num_valid = validity_mask.sum().clamp(min=1.0)
+            l1_loss = l1_loss_masked.sum() / num_valid
+            iou_loss = iou_loss_masked.sum() / num_valid
+        else:
+            # No masking: use original behavior
+            l1_loss = self.l1_loss_fn(pred_tensor, target_tensor)
+            iou_loss = self.iou_loss_fn(pred_tensor, target_tensor)
 
         # Classification loss
         if target_labels is None:

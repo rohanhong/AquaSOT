@@ -75,22 +75,22 @@ model:
   backbone:
     rgb:
       type: vit_rgb
-      model_name: vit_base_patch16_224
+      model_name: vit_small_patch16_224
       pretrained: true
-      output_dim: 768
+      output_dim: 384
 
     sonar:
       type: vit_sonar
-      model_name: vit_base_patch16_224
+      model_name: vit_small_patch16_224
       pretrained: true
       in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
       # NOTE: Sonar images are preprocessed to fixed 682x376, then resized to 224x224 for model input
       img_size: 224
-      output_dim: 768
+      output_dim: 384
 
   fusion:
     type: g2_dcma
-    embed_dim: 768
+    embed_dim: 384
     num_heads: 8
     num_layers: 2
 
@@ -113,23 +113,23 @@ model:
   heads:
     rgb_box:
       type: BoxHead
-      in_channels: 768
+      in_channels: 384
       hidden_dim: 256
 
     sonar_box:
       type: BoxHead
-      in_channels: 768
+      in_channels: 384
       hidden_dim: 256
 
     fusion_box:
       type: FusionHead
-      rgb_channels: 768
-      sonar_channels: 768
+      rgb_channels: 384
+      sonar_channels: 384
       hidden_dim: 256
 
     weak3d:
       type: Weak3DHead
-      in_channels: 768
+      in_channels: 384
       hidden_dim: 256
       output_dim: 3
       use_cyclic_loss: true
@@ -144,8 +144,8 @@ training:
 
   num_epochs: 100  # Extended for end-to-end convergence
 
-  batch_size: 2  # Increased from 1 for better gradient estimates
-  gradient_accumulation_steps: 2  # Effective batch = 2×2 = 4
+  batch_size: 1  # Optimized for 8GB GPU (RTX 3070 Ti)
+  gradient_accumulation_steps: 4  # Effective batch = 1×4 = 4
 
   optimizer:
     lr: 0.0001  # Standard learning rate for ViT fine-tuning

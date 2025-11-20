@@ -29,6 +29,12 @@ from .sonar_transforms import (
     IntensityNormalizationBboxAware,
 )
 
+# Modality Dropout (Audit 2025112101 Phase 2.3)
+from .modality_dropout import (
+    ModalityDropout,
+    AdaptiveModalityDropout,
+)
+
 __all__ = [
     # RGB transforms (legacy names)
     'ColorJitter',
@@ -50,4 +56,7 @@ __all__ = [
     # Sonar transforms (bbox-aware)
     'SpeckleNoiseBboxAware',
     'IntensityNormalizationBboxAware',
+    # Modality Dropout (Audit 2025112101 Phase 2.3)
+    'ModalityDropout',
+    'AdaptiveModalityDropout',
 ]

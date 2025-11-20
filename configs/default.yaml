@@ -19,8 +19,10 @@ system:
   dist_url: env://
 
   # Mixed precision training
-  use_amp: true
-  amp_dtype: float16  # float16 or bfloat16
+  # WARNING: AMP causes BCE assertion failures in current training setup
+  # Disable for numerical stability (~30% slower but guaranteed convergence)
+  use_amp: false
+  amp_dtype: bfloat16  # Use bfloat16 if AMP is re-enabled (better than float16)
 
   # Deterministic mode (slower but reproducible)
   deterministic: false
@@ -100,26 +102,26 @@ model:
   backbone:
     rgb:
       type: vit_rgb
-      model_name: vit_base_patch16_224
+      model_name: vit_small_patch16_224
       pretrained: true
       pretrained_path: null
       freeze_bn: false
       output_layers: [9, 11]
-      output_dim: 768
+      output_dim: 384
 
     sonar:
       type: vit_sonar
-      model_name: vit_base_patch16_224
+      model_name: vit_small_patch16_224
       pretrained: true
       in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
       # NOTE: Sonar images are preprocessed to rectangular coordinates (682x376)
       # before training. See scripts/preprocess_sonar.py and docs/Training_Guide.md
       img_size: 224
-      output_dim: 768
+      output_dim: 384
 
   fusion:
     type: g2_dcma
-    embed_dim: 768
+    embed_dim: 384
     num_heads: 8
     num_layers: 2
 
@@ -182,6 +184,19 @@ model:
       output_dim: 3
       use_cyclic_loss: true
       cycle_weight: 0.5
+
+      # CRITICAL (Audit 2025112103): Hardware-specific FOV parameters
+      # RGB Camera (HD Zoom SeaCam): 47deg horizontal x 27deg vertical FOV
+      max_angle_rgb_horizontal: 0.41015  # 23.5 degrees (half of 47deg FOV)
+      max_angle_rgb_vertical: 0.23562    # 13.5 degrees (half of 27deg FOV)
+
+      # Sonar (Oculus MD-Series): 130deg horizontal FOV
+      max_angle_sonar_horizontal: 1.13446  # 65 degrees (half of 130deg FOV)
+
+      # Coordinate system units: pixels (not meters)
+      radial_range: [50.0, 500.0]  # Depth range in pixels
+      default_depth: 200.0         # Default depth for zero-modality scenarios (pixels)
+      num_radial_bins: 50          # Number of bins for sonar radial discretization
 
 
 # ------------------------------------------------------------------------------

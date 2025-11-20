@@ -58,6 +58,12 @@ from aquasot3d.models.fusion.g2_dcma import (
     build_g2_dcma_lite
 )
 
+# Conditional G2-DCMA (Audit 2025112101 Phase 2.1)
+from aquasot3d.models.fusion.conditional_g2_dcma import (
+    ConditionalG2DCMA,
+    build_conditional_g2_dcma
+)
+
 __all__ = [
     # Geometric Gating
     'RadialProfileExtractor',
@@ -86,5 +92,9 @@ __all__ = [
     'G2DCMA',
     'G2DCMALite',
     'build_g2_dcma',
-    'build_g2_dcma_lite'
+    'build_g2_dcma_lite',
+
+    # Conditional G2-DCMA (Audit 2025112101 Phase 2.1)
+    'ConditionalG2DCMA',
+    'build_conditional_g2_dcma'
 ]
