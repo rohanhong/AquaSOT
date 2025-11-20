@@ -1,11 +1,10 @@
 """
-Unit Tests for Quality Estimation and Geometry Utilities
+Unit Tests for Quality Estimation
 
-Tests for RGB Quality Estimator, Sonar Quality Estimator, Adaptive Weighting,
-and Geometry Utilities (Phase 3.5).
+Tests for RGB Quality Estimator, Sonar Quality Estimator, and Adaptive Weighting.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-20
 """
 
 import pytest
@@ -25,19 +24,6 @@ from aquasot3d.models.quality.sonar_quality_estimator import (
 from aquasot3d.models.quality.adaptive_weighting import (
     AdaptiveWeighting,
     create_adaptive_weighting,
-)
-
-# Import geometry utilities
-from aquasot3d.utils.geometry import (
-    CoordinateTransform,
-    project_3d_to_2d_rgb,
-    project_3d_to_2d_sonar,
-    bbox_to_center,
-    center_to_bbox,
-    CyclicConsistencyLoss,
-    compute_reprojection_error,
-    create_coordinate_transform,
-    create_cyclic_consistency_loss,
 )
 
 
@@ -441,208 +427,9 @@ class TestAdaptiveWeighting:
         assert weighting.weighting_method == 'sigmoid'
 
 
-class TestCoordinateTransform:
-    """Tests for Coordinate Transform."""
-
-    @pytest.fixture
-    def transform_identity(self):
-        """Create identity transform."""
-        return CoordinateTransform(init_identity=True, learnable=False)
-
-    @pytest.fixture
-    def transform_learnable(self):
-        """Create learnable transform."""
-        return CoordinateTransform(init_identity=True, learnable=True)
-
-    def test_transform_initialization(self, transform_identity):
-        """Test coordinate transform initialization."""
-        assert isinstance(transform_identity, CoordinateTransform)
-        assert not transform_identity.learnable
-        assert transform_identity.transform_matrix.shape == (3, 4)
-
-    def test_transform_forward_2d(self, transform_identity):
-        """Test transform with 2D input."""
-        points_3d = torch.randn(4, 3)
-        transformed = transform_identity(points_3d)
-
-        assert transformed.shape == (4, 3)
-
-    def test_transform_forward_3d(self, transform_identity):
-        """Test transform with 3D input."""
-        points_3d = torch.randn(4, 10, 3)
-        transformed = transform_identity(points_3d)
-
-        assert transformed.shape == (4, 10, 3)
-
-    def test_transform_learnable(self, transform_learnable):
-        """Test learnable transform."""
-        assert transform_learnable.learnable
-        assert transform_learnable.transform_matrix.requires_grad
-
-    def test_transform_factory_function(self):
-        """Test factory function."""
-        transform = create_coordinate_transform(init_identity=False, learnable=True)
-        assert isinstance(transform, CoordinateTransform)
-        assert transform.learnable
-
-
-class TestProjectionFunctions:
-    """Tests for 3D-2D projection functions."""
-
-    def test_project_3d_to_2d_rgb(self):
-        """Test RGB weak perspective projection."""
-        center_3d = torch.tensor([[100.0, 200.0, 50.0], [150.0, 250.0, 60.0]])
-        center_2d = project_3d_to_2d_rgb(center_3d)
-
-        assert center_2d.shape == (2, 2)
-        # Weak perspective: cx = X, cy = Y
-        assert torch.allclose(center_2d[:, 0], center_3d[:, 0])
-        assert torch.allclose(center_2d[:, 1], center_3d[:, 1])
-
-    def test_project_3d_to_2d_rgb_with_principal_point(self):
-        """Test RGB projection with principal point."""
-        center_3d = torch.tensor([[100.0, 200.0, 50.0]])
-        center_2d = project_3d_to_2d_rgb(center_3d, principal_point=(320.0, 240.0))
-
-        assert center_2d.shape == (1, 2)
-        assert center_2d[0, 0] == 100.0 + 320.0
-        assert center_2d[0, 1] == 200.0 + 240.0
-
-    def test_project_3d_to_2d_sonar(self):
-        """Test Sonar learned projection."""
-        center_3d = torch.tensor([[100.0, 200.0, 50.0], [150.0, 250.0, 60.0]])
-        transform_matrix = torch.eye(3, 4)  # Identity transform
-
-        center_2d = project_3d_to_2d_sonar(center_3d, transform_matrix)
-
-        assert center_2d.shape == (2, 2)
-
-    def test_bbox_to_center(self):
-        """Test bbox to center conversion."""
-        bbox = torch.tensor([[64.0, 64.0, 128.0, 128.0], [100.0, 200.0, 150.0, 120.0]])
-        center = bbox_to_center(bbox)
-
-        assert center.shape == (2, 2)
-        assert center[0, 0] == 64.0 + 128.0 / 2.0
-        assert center[0, 1] == 64.0 + 128.0 / 2.0
-        assert center[1, 0] == 100.0 + 150.0 / 2.0
-        assert center[1, 1] == 200.0 + 120.0 / 2.0
-
-    def test_center_to_bbox(self):
-        """Test center to bbox conversion."""
-        center = torch.tensor([[128.0, 128.0], [175.0, 260.0]])
-        size = torch.tensor([[128.0, 128.0], [150.0, 120.0]])
-
-        bbox = center_to_bbox(center, size)
-
-        assert bbox.shape == (2, 4)
-        assert bbox[0, 0] == 128.0 - 128.0 / 2.0
-        assert bbox[0, 1] == 128.0 - 128.0 / 2.0
-        assert bbox[0, 2] == 128.0
-        assert bbox[0, 3] == 128.0
-
-
-class TestCyclicConsistencyLoss:
-    """Tests for Cyclic Consistency Loss."""
-
-    @pytest.fixture
-    def cyclic_loss(self):
-        """Create cyclic consistency loss."""
-        return CyclicConsistencyLoss(
-            loss_type='l2',
-            weight_rgb=1.0,
-            weight_sonar=1.0,
-            normalize=False,
-        )
-
-    def test_cyclic_loss_initialization(self, cyclic_loss):
-        """Test cyclic loss initialization."""
-        assert isinstance(cyclic_loss, CyclicConsistencyLoss)
-        assert cyclic_loss.loss_type == 'l2'
-        assert cyclic_loss.weight_rgb == 1.0
-        assert cyclic_loss.weight_sonar == 1.0
-
-    def test_cyclic_loss_forward(self, cyclic_loss):
-        """Test cyclic loss forward pass."""
-        pred_3d = torch.randn(4, 3)
-        gt_rgb_bbox = torch.tensor([[64, 64, 128, 128]] * 4, dtype=torch.float32)
-        gt_sonar_bbox = torch.tensor([[100, 200, 150, 120]] * 4, dtype=torch.float32)
-        transform = torch.eye(3, 4)
-
-        loss, loss_dict = cyclic_loss(pred_3d, gt_rgb_bbox, gt_sonar_bbox, transform)
-
-        assert loss.item() >= 0
-        assert 'cyclic_total' in loss_dict
-        assert 'cyclic_rgb' in loss_dict
-        assert 'cyclic_sonar' in loss_dict
-        assert 'proj_rgb_2d' in loss_dict
-        assert 'proj_sonar_2d' in loss_dict
-
-    def test_cyclic_loss_with_normalization(self):
-        """Test cyclic loss with normalization."""
-        cyclic_loss = CyclicConsistencyLoss(
-            loss_type='l2',
-            normalize=True,
-        )
-
-        pred_3d = torch.randn(4, 3)
-        gt_rgb_bbox = torch.tensor([[64, 64, 128, 128]] * 4, dtype=torch.float32)
-        gt_sonar_bbox = torch.tensor([[100, 200, 150, 120]] * 4, dtype=torch.float32)
-        transform = torch.eye(3, 4)
-
-        loss, loss_dict = cyclic_loss(
-            pred_3d, gt_rgb_bbox, gt_sonar_bbox, transform,
-            rgb_img_size=(256, 256),
-            sonar_img_size=(682, 376)
-        )
-
-        assert loss.item() >= 0
-
-    def test_cyclic_loss_l1(self):
-        """Test cyclic loss with L1 loss type."""
-        cyclic_loss = CyclicConsistencyLoss(loss_type='l1')
-
-        pred_3d = torch.randn(4, 3)
-        gt_rgb_bbox = torch.tensor([[64, 64, 128, 128]] * 4, dtype=torch.float32)
-        gt_sonar_bbox = torch.tensor([[100, 200, 150, 120]] * 4, dtype=torch.float32)
-        transform = torch.eye(3, 4)
-
-        loss, loss_dict = cyclic_loss(pred_3d, gt_rgb_bbox, gt_sonar_bbox, transform)
-
-        assert loss.item() >= 0
-
-    def test_cyclic_loss_factory_function(self):
-        """Test factory function."""
-        cyclic_loss = create_cyclic_consistency_loss('smooth_l1', weight_rgb=0.5, weight_sonar=1.5)
-        assert isinstance(cyclic_loss, CyclicConsistencyLoss)
-        assert cyclic_loss.loss_type == 'smooth_l1'
-
-
-class TestReprojectionError:
-    """Tests for reprojection error computation."""
-
-    def test_compute_reprojection_error(self):
-        """Test reprojection error computation."""
-        pred_3d = torch.tensor([[100.0, 200.0, 50.0], [150.0, 250.0, 60.0]])
-        gt_rgb_bbox = torch.tensor([[64, 64, 128, 128], [100, 200, 150, 120]], dtype=torch.float32)
-        gt_sonar_bbox = torch.tensor([[100, 200, 150, 120], [150, 250, 180, 140]], dtype=torch.float32)
-        transform = torch.eye(3, 4)
-
-        errors = compute_reprojection_error(pred_3d, gt_rgb_bbox, gt_sonar_bbox, transform)
-
-        assert 'error_rgb' in errors
-        assert 'error_sonar' in errors
-        assert 'error_mean' in errors
-        assert errors['error_rgb'].shape == (2,)
-        assert errors['error_sonar'].shape == (2,)
-        assert errors['error_mean'].shape == (2,)
-        assert torch.all(errors['error_rgb'] >= 0)
-        assert torch.all(errors['error_sonar'] >= 0)
-
-
 # Integration tests
-class TestQualityGeometryIntegration:
-    """Integration tests for quality estimation and geometry utilities."""
+class TestQualityIntegration:
+    """Integration tests for quality estimation."""
 
     def test_quality_to_weighting_pipeline(self):
         """Test quality estimation to adaptive weighting pipeline."""
@@ -667,71 +454,6 @@ class TestQualityGeometryIntegration:
         assert fused.shape == (4, 256, 14, 14)
         assert weights['w_rgb'].shape == (4, 1)
         assert torch.allclose(weights['w_rgb'] + weights['w_sonar'], torch.ones(4, 1), atol=1e-5)
-
-    def test_geometry_cyclic_consistency_pipeline(self):
-        """Test geometry utilities with cyclic consistency loss."""
-        # Create coordinate transform and loss
-        transform = create_coordinate_transform(init_identity=True, learnable=True)
-        cyclic_loss = create_cyclic_consistency_loss('l2', weight_rgb=1.0, weight_sonar=1.0)
-
-        # Generate inputs
-        pred_3d = torch.randn(4, 3, requires_grad=True)
-        gt_rgb_bbox = torch.tensor([[64, 64, 128, 128]] * 4, dtype=torch.float32)
-        gt_sonar_bbox = torch.tensor([[100, 200, 150, 120]] * 4, dtype=torch.float32)
-
-        # Transform and compute loss
-        transformed_3d = transform(pred_3d)
-        loss, loss_dict = cyclic_loss(
-            transformed_3d,
-            gt_rgb_bbox,
-            gt_sonar_bbox,
-            transform.transform_matrix
-        )
-
-        assert loss.requires_grad
-        assert loss.item() >= 0
-
-        # Test backpropagation
-        loss.backward()
-        assert pred_3d.grad is not None
-
-    def test_end_to_end_quality_geometry_fusion(self):
-        """Test end-to-end pipeline with quality, geometry, and fusion."""
-        # Create all modules
-        rgb_estimator = create_rgb_quality_estimator(method='combined', learnable=False)
-        sonar_estimator = create_sonar_quality_estimator(method='combined', learnable=False)
-        weighting = create_adaptive_weighting('softmax', temporal_smoothing=False)
-        transform = create_coordinate_transform(init_identity=True, learnable=True)
-        cyclic_loss = create_cyclic_consistency_loss('l2')
-
-        # Generate inputs
-        rgb_frame = torch.randn(4, 3, 256, 256)
-        sonar_frame = torch.randn(4, 1, 682, 376).abs()
-        rgb_bbox = torch.tensor([[64, 64, 128, 128]] * 4, dtype=torch.float32)
-        sonar_bbox = torch.tensor([[100, 200, 150, 120]] * 4, dtype=torch.float32)
-        rgb_feat = torch.randn(4, 256)
-        sonar_feat = torch.randn(4, 256)
-        pred_3d = torch.randn(4, 3, requires_grad=True)
-
-        # Full pipeline
-        q_rgb = rgb_estimator(rgb_frame, rgb_bbox)
-        q_sonar = sonar_estimator(sonar_frame, sonar_bbox)
-        fused_feat, weights = weighting(rgb_feat, sonar_feat, q_rgb, q_sonar)
-        transformed_3d = transform(pred_3d)
-        loss, loss_dict = cyclic_loss(
-            transformed_3d,
-            rgb_bbox,
-            sonar_bbox,
-            transform.transform_matrix
-        )
-
-        # Verify outputs
-        assert fused_feat.shape == (4, 256)
-        assert q_rgb.shape == (4, 1)
-        assert q_sonar.shape == (4, 1)
-        assert loss.item() >= 0
-        assert 'proj_rgb_2d' in loss_dict
-        assert 'proj_sonar_2d' in loss_dict
 
 
 if __name__ == '__main__':
