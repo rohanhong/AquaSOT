@@ -531,15 +531,21 @@ class BoxHead(BaseHead):
         self,
         features: torch.Tensor,
         target_boxes: Optional[torch.Tensor] = None,
-        target_labels: Optional[torch.Tensor] = None
+        target_labels: Optional[torch.Tensor] = None,
+        validity_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for box prediction.
+
+        CRITICAL FIX (Audit 2025112002): Added validity_mask parameter to enable
+        proper training of quality/objectness scores for invalid samples.
 
         Args:
             features: Input features, shape (B, C) or (B, C, H, W)
             target_boxes: Target boxes in cxcywh format, shape (B, 4), optional
             target_labels: Target labels (0 or 1), shape (B,), optional
+            validity_mask: Validity mask for samples (0=invalid, 1=valid), shape (B,), optional
+                          Invalid samples will have target_quality forced to 0.0
 
         Returns:
             Dictionary with predictions and losses
@@ -629,6 +635,13 @@ class BoxHead(BaseHead):
                             pred_xyxy_wrapper.tensor(),
                             target_xyxy_wrapper.tensor()
                         )
+
+                        # CRITICAL FIX (Audit 2025112002): Force quality=0 for invalid samples
+                        # This trains the model to output low confidence for occluded/missing targets
+                        # Following YOLO objectness and modern Siamese tracker approaches
+                        if validity_mask is not None:
+                            target_quality = target_quality * validity_mask
+
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
                 else:
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())
@@ -643,6 +656,11 @@ class BoxHead(BaseHead):
                             pred_xyxy_wrapper.tensor(),
                             target_xyxy_wrapper.tensor()
                         )
+
+                        # CRITICAL FIX (Audit 2025112002): Force quality=0 for invalid samples
+                        if validity_mask is not None:
+                            target_quality = target_quality * validity_mask
+
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
                 else:
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels)
@@ -664,7 +682,8 @@ class BoxHead(BaseHead):
         self,
         predictions: Dict[str, torch.Tensor],
         target_boxes: torch.Tensor,
-        target_labels: Optional[torch.Tensor] = None
+        target_labels: Optional[torch.Tensor] = None,
+        validity_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Compute box prediction loss with enforced type-safe format checking.
@@ -672,10 +691,15 @@ class BoxHead(BaseHead):
         CRITICAL (Audit 2025111411 Finding 3): Enforces cxcywh format using
         type-safe wrappers to prevent silent format confusion.
 
+        CRITICAL FIX (Audit 2025112002): Added validity_mask parameter to enable
+        proper training of quality/objectness scores for invalid samples.
+
         Args:
             predictions: Dictionary from forward() containing pred_boxes and pred_scores
             target_boxes: Target boxes in cxcywh format, shape (B, 4)
             target_labels: Optional target labels (default: all positive)
+            validity_mask: Validity mask for samples (0=invalid, 1=valid), shape (B,), optional
+                          Invalid samples will have target_quality forced to 0.0
 
         Returns:
             Total loss (scalar)
@@ -719,6 +743,12 @@ class BoxHead(BaseHead):
                     pred_xyxy_wrapper.tensor(),
                     target_xyxy_wrapper.tensor()
                 )
+
+                # CRITICAL FIX (Audit 2025112002): Force quality=0 for invalid samples
+                # This trains the model to output low confidence for occluded/missing targets
+                if validity_mask is not None:
+                    target_quality = target_quality * validity_mask
+
             cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
         else:
             cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())

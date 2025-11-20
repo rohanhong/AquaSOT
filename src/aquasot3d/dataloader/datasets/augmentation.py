@@ -490,6 +490,17 @@ class TemplateSearchAugmentation(BaseAugmentation):
         data['search_bbox_rgb'] = search_aug['rgb_bbox']
         data['search_bbox_sonar'] = search_aug['sonar_bbox']
 
+        # CRITICAL FIX (Audit 2025112001): Propagate validity flags from augmentation
+        # TrackingAugmentationBboxAware returns is_valid_rgb, is_valid_sonar, is_valid
+        # These must be propagated to support loss masking for invalid samples
+        data['template_is_valid_rgb'] = template_aug.get('is_valid_rgb', True)
+        data['template_is_valid_sonar'] = template_aug.get('is_valid_sonar', True)
+        data['template_is_valid'] = template_aug.get('is_valid', True)
+
+        data['search_is_valid_rgb'] = search_aug.get('is_valid_rgb', True)
+        data['search_is_valid_sonar'] = search_aug.get('is_valid_sonar', True)
+        data['search_is_valid'] = search_aug.get('is_valid', True)
+
         return data
 
 

@@ -286,7 +286,11 @@ class TrackingDataset(Dataset):
             # Metadata
             'template_idx': template_idx,
             'search_idx': search_idx,
-            'is_valid': template_data['is_valid'] and search_data['is_valid'],
+            # CRITICAL FIX (Audit 2025112001): Pass fine-grained validity flags for loss masking
+            # Use search validity for loss computation (template only used for feature extraction)
+            'is_valid': search_data['is_valid'],
+            'is_valid_rgb': search_data.get('is_valid_rgb', search_data['is_valid']),
+            'is_valid_sonar': search_data.get('is_valid_sonar', search_data['is_valid']),
 
             # CRITICAL FIX (Audit 2025111411 Finding 1): Transformation metadata for training
             # These dicts enable quality estimators and weak-3D projectors to operate in physical coordinates
@@ -493,7 +497,11 @@ class TrackingDataset(Dataset):
             'frame_id': search_indices[-1],  # Use last frame ID for compatibility
             'template_idx': template_idx,
             'search_idx': search_indices,
+            # CRITICAL FIX (Audit 2025112001): Pass fine-grained validity flags for sequence mode
+            # Use aggregated validity from all search frames for loss computation
             'is_valid': all([self.base_dataset[idx]['is_valid'] for idx in search_indices]),
+            'is_valid_rgb': all([self.base_dataset[idx].get('is_valid_rgb', self.base_dataset[idx]['is_valid']) for idx in search_indices]),
+            'is_valid_sonar': all([self.base_dataset[idx].get('is_valid_sonar', self.base_dataset[idx]['is_valid']) for idx in search_indices]),
 
             # Transformation metadata
             'template_rgb_metadata': {
