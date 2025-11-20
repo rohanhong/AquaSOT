@@ -30,9 +30,10 @@ data:
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
   prefetch_factor: 2  # Keep 2 (eval is sequential, less I/O-bound)
 
-  # Template and search sizes
-  template_size: 128
-  search_size: 256
+  # Frame-level Temporal Tracking parameters
+  frame_size: 256
+  sequence_length: 5
+  frame_stride: 1
 
 
 # ------------------------------------------------------------------------------

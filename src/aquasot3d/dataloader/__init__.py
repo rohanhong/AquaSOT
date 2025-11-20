@@ -10,11 +10,11 @@ from . import transforms
 from .datasets import (
     RGBSonarDataset,
     MultiSequenceRGBSonarDataset,
-    TrackingDataset,
+    FrameSequenceDataset,
     EvaluationSequenceDataset,
 )
 from .loader import (
-    collate_fn_tracking,
+    collate_fn_sequence,
     collate_fn_template_search,
     create_dataloader,
     InfiniteDataLoader,
@@ -27,9 +27,9 @@ __all__ = [
     'transforms',
     'RGBSonarDataset',
     'MultiSequenceRGBSonarDataset',
-    'TrackingDataset',
+    'FrameSequenceDataset',
     'EvaluationSequenceDataset',
-    'collate_fn_tracking',
+    'collate_fn_sequence',
     'collate_fn_template_search',
     'create_dataloader',
     'InfiniteDataLoader',

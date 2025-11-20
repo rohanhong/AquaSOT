@@ -32,8 +32,8 @@ from torch.utils.data import DataLoader
 import logging
 
 from aquasot3d.utils.config import load_config, save_config, setup_config_logging
-from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, TrackingDataset, create_dataloader
-from aquasot3d.dataloader.loader import collate_fn_template_search
+from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, FrameSequenceDataset, create_dataloader
+from aquasot3d.dataloader.loader import collate_fn_sequence
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.training import Trainer, LossManager, CheckpointManager, build_optimizer, build_scheduler
 
@@ -184,6 +184,19 @@ def build_dataloaders(cfg):
     """Build training and validation dataloaders with multi-sequence support"""
     logger.info("Building dataloaders")
 
+    # CRITICAL FIX (Audit 2025112003): Infer enabled modalities from model configuration
+    # This ensures single-modality training only loads necessary data
+    enabled_modalities = []
+    if cfg.model.backbone.rgb.get('type') not in [None, 'null']:
+        enabled_modalities.append('rgb')
+    if cfg.model.backbone.sonar.get('type') not in [None, 'null']:
+        enabled_modalities.append('sonar')
+
+    if not enabled_modalities:
+        raise ValueError("At least one modality (RGB or Sonar) must be enabled in model.backbone config")
+
+    logger.info(f"Training with modalities: {enabled_modalities}")
+
     # Check if using new multi-sequence format or legacy single-sequence format
     use_multi_sequence = (
         hasattr(cfg.data, 'train_sequences') and
@@ -201,10 +214,12 @@ def build_dataloaders(cfg):
         logger.info(f"Train sequences: {train_sequences}")
         logger.info(f"Val sequences: {val_sequences}")
 
+        # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to dataset
         # Create multi-sequence base datasets
         train_base_dataset = MultiSequenceRGBSonarDataset(
             data_root=data_root,
             sequence_names=train_sequences,
+            modalities=enabled_modalities,
             return_occluded=True,
             sampling_policy='frame_balanced'
         )
@@ -219,9 +234,11 @@ def build_dataloaders(cfg):
             )
 
         if val_sequences:
+            # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to validation dataset
             val_base_dataset = MultiSequenceRGBSonarDataset(
                 data_root=data_root,
                 sequence_names=val_sequences,
+                modalities=enabled_modalities,
                 return_occluded=True,
                 sampling_policy='frame_balanced'
             )
@@ -250,16 +267,19 @@ def build_dataloaders(cfg):
         logger.info(f"Train data: {train_data_root}/{train_sequence_name}")
         logger.info(f"Val data: {val_data_root}/{val_sequence_name}")
 
+        # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to legacy mode datasets
         # Create single-sequence base datasets
         train_base_dataset = RGBSonarDataset(
             data_root=train_data_root,
             sequence_name=train_sequence_name,
+            modalities=enabled_modalities,
             return_occluded=True
         )
 
         val_base_dataset = RGBSonarDataset(
             data_root=val_data_root,
             sequence_name=val_sequence_name,
+            modalities=enabled_modalities,
             return_occluded=True
         )
 
@@ -282,24 +302,21 @@ def build_dataloaders(cfg):
     else:
         logger.info("Augmentation disabled")
 
-    # Wrap with TrackingDataset for template-search pair sampling
-    template_search_gap = cfg.data.get('template_search_gap', 30)
-    template_size = cfg.data.get('template_size', 127)
-    search_size = cfg.data.get('search_size', 255)
+    # ARCHITECTURE CHANGE (Audit 2025112006): Frame-level temporal tracking
+    # Replaced template-search paradigm with continuous frame sequence processing
+    frame_size = cfg.data.get('frame_size', 384)
+    sequence_length = cfg.data.get('sequence_length', 5)
+    frame_stride = cfg.data.get('frame_stride', 1)
 
-    # CRITICAL FIX (Audit 2025111703 Finding 1): Enable sequence-based training
-    search_sequence_length = cfg.data.get('search_sequence_length', 1)
-
-    train_dataset = TrackingDataset(
+    train_dataset = FrameSequenceDataset(
         base_dataset=train_base_dataset,
-        template_search_gap=template_search_gap,
-        template_size=template_size,
-        search_size=search_size,
-        augmentation=train_augmentation,
-        search_sequence_length=search_sequence_length
+        sequence_length=sequence_length,
+        frame_size=frame_size,
+        frame_stride=frame_stride,
+        augmentation=train_augmentation
     )
 
-    logger.info(f"Search sequence length: {search_sequence_length} ({'temporal training' if search_sequence_length > 1 else 'pair sampling'})")
+    logger.info(f"Frame sequence training: T={sequence_length}, frame_size={frame_size}, stride={frame_stride}")
 
     # CRITICAL FIX (Audit 2025111703 Finding 3):
     # Enable sequence grouping for temporal training to prevent constant resets
@@ -308,14 +325,14 @@ def build_dataloaders(cfg):
 
     logger.info(f"Train dataset: {len(train_dataset)} samples")
 
-    # Create dataloaders with template-search collate function
+    # Create dataloaders with frame sequence collate function
     train_loader = create_dataloader(
         dataset=train_dataset,
         batch_size=cfg.training.batch_size,
         shuffle=True,
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
-        collate_fn=collate_fn_template_search,
+        collate_fn=collate_fn_sequence,
         distributed=cfg.system.distributed,
         prefetch_factor=cfg.data.get('prefetch_factor', None),
         persistent_workers=cfg.data.get('persistent_workers', None),
@@ -324,13 +341,12 @@ def build_dataloaders(cfg):
 
     # Only create validation dataset/loader if base dataset exists
     if val_base_dataset is not None:
-        val_dataset = TrackingDataset(
+        val_dataset = FrameSequenceDataset(
             base_dataset=val_base_dataset,
-            template_search_gap=template_search_gap,
-            template_size=template_size,
-            search_size=search_size,
-            augmentation=None,  # No augmentation for validation
-            search_sequence_length=search_sequence_length  # Use same sequence length for validation
+            sequence_length=sequence_length,
+            frame_size=frame_size,
+            frame_stride=frame_stride,
+            augmentation=None  # No augmentation for validation
         )
 
         logger.info(f"Val dataset: {len(val_dataset)} samples")
@@ -341,7 +357,7 @@ def build_dataloaders(cfg):
             shuffle=False,
             num_workers=cfg.data.num_workers,
             pin_memory=cfg.data.pin_memory,
-            collate_fn=collate_fn_template_search,
+            collate_fn=collate_fn_sequence,
             distributed=False,  # No distributed for validation
             prefetch_factor=cfg.data.get('prefetch_factor', None),
             persistent_workers=cfg.data.get('persistent_workers', None)

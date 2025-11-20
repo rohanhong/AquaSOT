@@ -50,12 +50,19 @@ data:
   persistent_workers: true
   use_sequence_grouping: true
 
-  template_size: 128
-  search_size: 256
+  # Frame-level Temporal Tracking (Audit 2025112006)
+  # Continuous frame sequence processing for Vision-Mamba temporal modeling
+  # Letterbox Migration (2025-11-20): Preserves aspect ratio with automatic padding
+  # RGB (1920x1080->512x512): scale to 512x288, pad top/bottom
+  # Sonar (682x376->512x512): scale to 512x282, pad top/bottom
+  frame_size: 512  # Unified frame size for all frames (H=W) - optimized for memory/quality balance
+  sequence_length: 5  # Number of consecutive frames per training sample (T)
+  frame_stride: 1  # Stride for frame sampling (1=consecutive, 2=skip 1, etc.)
 
-  template_search_gap: 30
-
-  search_sequence_length: 1  # Override to 3-5 for temporal training
+  # Evaluation parameters (template-search protocol for EvaluationSequenceDataset)
+  # Used by eval.py for sequential evaluation with template-search paradigm
+  template_size: 128  # Template frame size for evaluation
+  search_size: 256    # Search frame size for evaluation
 
   # Data augmentation (legacy params, override in specific configs)
   augmentation:

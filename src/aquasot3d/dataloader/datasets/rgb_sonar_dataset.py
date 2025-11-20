@@ -176,8 +176,10 @@ class RGBSonarDataset(Dataset):
         self,
         data_root: Union[str, Path],
         sequence_name: str,
+        modalities: List[str] = None,
         rgb_transform: Optional[callable] = None,
         sonar_transform: Optional[callable] = None,
+        augmentation: Optional[callable] = None,
         return_occluded: bool = True,
         start_frame: int = 1,
         end_frame: Optional[int] = None,
@@ -186,32 +188,76 @@ class RGBSonarDataset(Dataset):
 
         self.data_root = Path(data_root)
         self.sequence_name = sequence_name
+
+        # CRITICAL FIX (Audit 2025112003): Support single-modality training mode
+        # Default to both modalities for backward compatibility
+        if modalities is None:
+            modalities = ['rgb', 'sonar']
+        self.modalities = modalities
+
+        # Validate modalities parameter
+        valid_modalities = {'rgb', 'sonar'}
+        for modality in self.modalities:
+            if modality not in valid_modalities:
+                raise ValueError(f"Invalid modality '{modality}'. Must be one of {valid_modalities}")
+
+        if not self.modalities:
+            raise ValueError("At least one modality must be specified")
+
         self.rgb_transform = rgb_transform
         self.sonar_transform = sonar_transform
+
+        # Augmentation Order Optimization (2025-11-20):
+        # Apply augmentation BEFORE letterbox (on original resolution)
+        # for better augmentation quality and avoid augmenting padding
+        self.augmentation = augmentation
+
         self.return_occluded = return_occluded
 
         # Construct directory paths
         self.sequence_dir = self.data_root / sequence_name
-        self.rgb_dir = self.sequence_dir / "light"
-        self.sonar_dir = self.sequence_dir / "sonar"
-        self.rgb_img_dir = self.rgb_dir / "img"
-        self.sonar_img_dir = self.sonar_dir / "img_rect"  # Use preprocessed rectangular sonar images
 
-        # Validate directory structure
+        # CRITICAL FIX (Audit 2025112003): Conditionally set up paths based on enabled modalities
+        if 'rgb' in self.modalities:
+            self.rgb_dir = self.sequence_dir / "light"
+            self.rgb_img_dir = self.rgb_dir / "img"
+        else:
+            self.rgb_dir = None
+            self.rgb_img_dir = None
+
+        if 'sonar' in self.modalities:
+            self.sonar_dir = self.sequence_dir / "sonar"
+            self.sonar_img_dir = self.sonar_dir / "img_rect"
+        else:
+            self.sonar_dir = None
+            self.sonar_img_dir = None
+
+        # Validate directory structure (only for enabled modalities)
         self._validate_structure()
 
-        # Load annotations
-        self.rgb_bboxes = parse_groundtruth(self.rgb_dir / "groundtruth.txt")
-        self.sonar_bboxes = parse_groundtruth(self.sonar_dir / "groundtruth_rect.txt")  # Use preprocessed rectangular annotations
+        # CRITICAL FIX (Audit 2025112003): Load annotations only for enabled modalities
+        if 'rgb' in self.modalities:
+            self.rgb_bboxes = parse_groundtruth(self.rgb_dir / "groundtruth.txt")
+        else:
+            self.rgb_bboxes = None
 
-        # Validate frame consistency
-        if len(self.rgb_bboxes) != len(self.sonar_bboxes):
-            raise ValueError(
-                f"Frame count mismatch: RGB has {len(self.rgb_bboxes)} frames, "
-                f"Sonar has {len(self.sonar_bboxes)} frames"
-            )
+        if 'sonar' in self.modalities:
+            self.sonar_bboxes = parse_groundtruth(self.sonar_dir / "groundtruth_rect.txt")
+        else:
+            self.sonar_bboxes = None
 
-        self.num_frames = len(self.rgb_bboxes)
+        # Validate frame consistency (only if both modalities enabled)
+        if 'rgb' in self.modalities and 'sonar' in self.modalities:
+            if len(self.rgb_bboxes) != len(self.sonar_bboxes):
+                raise ValueError(
+                    f"Frame count mismatch: RGB has {len(self.rgb_bboxes)} frames, "
+                    f"Sonar has {len(self.sonar_bboxes)} frames"
+                )
+            self.num_frames = len(self.rgb_bboxes)
+        elif 'rgb' in self.modalities:
+            self.num_frames = len(self.rgb_bboxes)
+        else:  # sonar only
+            self.num_frames = len(self.sonar_bboxes)
 
         # Apply frame range filter
         self.start_frame = max(1, start_frame)
@@ -221,24 +267,24 @@ class RGBSonarDataset(Dataset):
         self.valid_indices = self._build_valid_indices()
 
     def _validate_structure(self):
-        """Validate dataset directory structure."""
-        required_dirs = [
-            self.rgb_dir,
-            self.sonar_dir,
-            self.rgb_img_dir,
-            self.sonar_img_dir,
-        ]
+        """Validate dataset directory structure (only for enabled modalities)."""
+        # CRITICAL FIX (Audit 2025112003): Only validate enabled modalities
+        required_dirs = []
+        required_files = []
+
+        if 'rgb' in self.modalities:
+            required_dirs.extend([self.rgb_dir, self.rgb_img_dir])
+            required_files.append(self.rgb_dir / "groundtruth.txt")
+
+        if 'sonar' in self.modalities:
+            required_dirs.extend([self.sonar_dir, self.sonar_img_dir])
+            required_files.append(self.sonar_dir / "groundtruth_rect.txt")
 
         for dir_path in required_dirs:
             if not dir_path.exists():
                 raise FileNotFoundError(
                     f"Required directory not found: {dir_path}"
                 )
-
-        required_files = [
-            self.rgb_dir / "groundtruth.txt",
-            self.sonar_dir / "groundtruth_rect.txt",  # Preprocessed rectangular annotations
-        ]
 
         for file_path in required_files:
             if not file_path.exists():
@@ -250,25 +296,41 @@ class RGBSonarDataset(Dataset):
         """
         Build list of valid frame indices.
 
+        CRITICAL FIX (Audit 2025112003): Validity logic adapted for single-modality mode.
+        In single-modality training, only check the enabled modality.
+
         Returns:
             List of frame indices (0-based) that are valid for training
         """
         valid_indices = []
 
         for idx in range(self.start_frame - 1, self.end_frame):
-            rgb_bbox = self.rgb_bboxes[idx]
-            sonar_bbox = self.sonar_bboxes[idx]
+            # CRITICAL FIX (Audit 2025112003): Check validity based on enabled modalities
+            if 'rgb' in self.modalities:
+                rgb_bbox = self.rgb_bboxes[idx]
+                rgb_valid = not is_occluded(rgb_bbox)
+            else:
+                rgb_valid = True  # Not used, assume valid
 
-            # Check if both modalities are valid
-            rgb_valid = not is_occluded(rgb_bbox)
-            sonar_valid = not is_occluded(sonar_bbox)
+            if 'sonar' in self.modalities:
+                sonar_bbox = self.sonar_bboxes[idx]
+                sonar_valid = not is_occluded(sonar_bbox)
+            else:
+                sonar_valid = True  # Not used, assume valid
 
             if self.return_occluded:
                 # Return all frames
                 valid_indices.append(idx)
             else:
-                # Only return frames where both modalities are visible
-                if rgb_valid and sonar_valid:
+                # Only return frames where all enabled modalities are visible
+                if self.modalities == ['rgb']:
+                    is_valid = rgb_valid
+                elif self.modalities == ['sonar']:
+                    is_valid = sonar_valid
+                else:  # Both modalities
+                    is_valid = rgb_valid and sonar_valid
+
+                if is_valid:
                     valid_indices.append(idx)
 
         return valid_indices
@@ -357,40 +419,58 @@ class RGBSonarDataset(Dataset):
         # Frame ID (1-based)
         frame_id = idx + 1
 
-        # Load images
-        rgb_img_path = self.rgb_img_dir / f"{frame_id}.jpg"
-        sonar_img_path = self.sonar_img_dir / f"{frame_id}.jpg"
+        # CRITICAL FIX (Audit 2025112003): Only load and process enabled modalities
+        # This reduces I/O and memory usage in single-modality training
 
-        rgb_img = self._load_image(rgb_img_path, is_sonar=False)
-        sonar_img = self._load_image(sonar_img_path, is_sonar=True)
+        # Load RGB modality if enabled
+        if 'rgb' in self.modalities:
+            rgb_img_path = self.rgb_img_dir / f"{frame_id}.jpg"
+            rgb_img = self._load_image(rgb_img_path, is_sonar=False)
+            rgb_bbox = self.rgb_bboxes[idx].copy()
+            is_rgb_valid = not is_occluded(rgb_bbox) and rgb_img is not None
 
-        # Get bounding boxes
-        rgb_bbox = self.rgb_bboxes[idx].copy()
-        sonar_bbox = self.sonar_bboxes[idx].copy()
+            # CRITICAL FIX (Audit 2025111903 Phase 1): Replace [0,0,0,0] with centered bbox
+            if not is_rgb_valid and rgb_img is not None:
+                h, w = rgb_img.shape[:2]
+                rgb_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
 
-        # Check validity
-        is_rgb_valid = not is_occluded(rgb_bbox) and rgb_img is not None
-        is_sonar_valid = not is_occluded(sonar_bbox) and sonar_img is not None
-        is_valid = is_rgb_valid and is_sonar_valid
+            # Apply transforms
+            if self.rgb_transform is not None and rgb_img is not None:
+                rgb_img = self.rgb_transform(rgb_img, rgb_bbox if is_rgb_valid else None)
+        else:
+            rgb_img = None
+            rgb_bbox = None
+            is_rgb_valid = None  # Not applicable
 
-        # CRITICAL FIX (Audit 2025111903 Phase 1): Replace [0,0,0,0] with centered bbox
-        # This maintains shape consistency for collate_fn while marking sample as invalid
-        if not is_rgb_valid and rgb_img is not None:
-            h, w = rgb_img.shape[:2]
-            rgb_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
+        # Load Sonar modality if enabled
+        if 'sonar' in self.modalities:
+            sonar_img_path = self.sonar_img_dir / f"{frame_id}.jpg"
+            sonar_img = self._load_image(sonar_img_path, is_sonar=True)
+            sonar_bbox = self.sonar_bboxes[idx].copy()
+            is_sonar_valid = not is_occluded(sonar_bbox) and sonar_img is not None
 
-        if not is_sonar_valid and sonar_img is not None:
-            h, w = sonar_img.shape[:2]
-            sonar_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
+            # CRITICAL FIX (Audit 2025111903 Phase 1): Replace [0,0,0,0] with centered bbox
+            if not is_sonar_valid and sonar_img is not None:
+                h, w = sonar_img.shape[:2]
+                sonar_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
 
-        # Apply transforms
-        if self.rgb_transform is not None and rgb_img is not None:
-            rgb_img = self.rgb_transform(rgb_img, rgb_bbox if is_rgb_valid else None)
+            # Apply transforms
+            if self.sonar_transform is not None and sonar_img is not None:
+                sonar_img = self.sonar_transform(
+                    sonar_img, sonar_bbox if is_sonar_valid else None
+                )
+        else:
+            sonar_img = None
+            sonar_bbox = None
+            is_sonar_valid = None  # Not applicable
 
-        if self.sonar_transform is not None and sonar_img is not None:
-            sonar_img = self.sonar_transform(
-                sonar_img, sonar_bbox if is_sonar_valid else None
-            )
+        # CRITICAL FIX (Audit 2025112003): Compute combined validity based on enabled modalities
+        if self.modalities == ['rgb']:
+            is_valid = is_rgb_valid
+        elif self.modalities == ['sonar']:
+            is_valid = is_sonar_valid
+        else:  # Both modalities
+            is_valid = is_rgb_valid and is_sonar_valid
 
         return {
             "rgb_img": rgb_img,
@@ -406,6 +486,10 @@ class RGBSonarDataset(Dataset):
     def __getitem__(self, index: int) -> Dict:
         """
         Get sample by index.
+
+        Augmentation Order Optimization (2025-11-20):
+        Applies augmentation BEFORE letterbox preprocessing (which happens in
+        FrameSequenceDataset) for better quality and to avoid augmenting padding.
 
         Args:
             index: Index in valid_indices list (0-based)
@@ -423,7 +507,13 @@ class RGBSonarDataset(Dataset):
 
         # Map to actual frame index
         frame_idx = self.valid_indices[index]
-        return self._get_frame_data(frame_idx)
+        data = self._get_frame_data(frame_idx)
+
+        # Apply augmentation on original resolution images (before letterbox)
+        if self.augmentation is not None:
+            data = self.augmentation(data)
+
+        return data
 
     def get_sequence_info(self) -> Dict:
         """
@@ -523,6 +613,7 @@ class MultiSequenceRGBSonarDataset(Dataset):
         self,
         data_root: Union[str, Path],
         sequence_names: List[str],
+        modalities: List[str] = None,
         rgb_transform: Optional[callable] = None,
         sonar_transform: Optional[callable] = None,
         return_occluded: bool = True,
@@ -533,6 +624,12 @@ class MultiSequenceRGBSonarDataset(Dataset):
 
         self.data_root = Path(data_root)
         self.sequence_names = sequence_names
+
+        # CRITICAL FIX (Audit 2025112003): Support single-modality training mode
+        if modalities is None:
+            modalities = ['rgb', 'sonar']
+        self.modalities = modalities
+
         self.rgb_transform = rgb_transform
         self.sonar_transform = sonar_transform
         self.return_occluded = return_occluded
@@ -575,10 +672,12 @@ class MultiSequenceRGBSonarDataset(Dataset):
         SONAR_RESOLUTION = (682, 376)    # Fixed preprocessed sonar resolution
 
         for seq_name in self.sequence_names:
+            # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to child datasets
             # Create single-sequence dataset
             seq_dataset = RGBSonarDataset(
                 data_root=self.data_root,
                 sequence_name=seq_name,
+                modalities=self.modalities,
                 rgb_transform=self.rgb_transform,
                 sonar_transform=self.sonar_transform,
                 return_occluded=self.return_occluded,

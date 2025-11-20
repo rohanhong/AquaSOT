@@ -5,6 +5,11 @@ This module implements a Vision-Mamba based temporal modeling head for robust
 single object tracking across video sequences. It uses Mamba SSM (State Space Model)
 blocks for linear-complexity temporal aggregation with long-range dependency capture.
 
+ARCHITECTURE CHANGE (Audit 2025112006):
+Implemented true dual-mode operation for frame-level temporal tracking:
+- Training mode: Processes sequences [B, T, C, H, W] and returns all temporal features
+- Inference mode: Maintains temporal state and returns single-frame features
+
 Components:
 - VisionMambaBlock: Single Mamba SSM block with spatial encoding
 - OcclusionAwareGating: Dynamic gating based on visibility/quality scores
@@ -15,11 +20,13 @@ Key Features:
 - Selective state space mechanism for adaptive temporal modeling
 - Occlusion-aware gating to handle missing/low-quality frames
 - Bidirectional temporal processing for context from both past and future
+- Dual-mode operation: batch training vs streaming inference
 - Compatible with both Mamba and Mamba-2 architectures
 
 Reference:
     AquaSOT-3D Technical Specification Section 5: Temporal Modeling
     Mamba: Linear-Time Sequence Modeling with Selective State Spaces (2024)
+    Audit 2025112006: Template-to-Temporal Architecture Migration
 """
 
 import torch
@@ -394,7 +401,11 @@ class VisionMambaHead(BaseTemporalHead):
         temporal_state: Optional[Any] = None
     ) -> Tuple[torch.Tensor, Any]:
         """
-        Process temporal features through Vision-Mamba head.
+        Process temporal features through Vision-Mamba head with dual-mode operation.
+
+        ARCHITECTURE CHANGE (Audit 2025112006): Dual-mode output
+        - Training mode (self.training=True): Returns all temporal features [B, T, C, H, W]
+        - Inference mode (self.training=False): Returns single frame [B, C, H, W]
 
         Args:
             features: Input features
@@ -404,14 +415,18 @@ class VisionMambaHead(BaseTemporalHead):
                 - For single frame: [B]
                 - For temporal sequence: [B, T]
             temporal_state: Previous temporal state (frame buffer from last call)
+                Only used in inference mode for streaming tracking
 
         Returns:
             Tuple of:
-                - aggregated_features: Temporally aggregated features [B, C, H, W]
+                - aggregated_features: Temporally processed features
+                    * Training: [B, T, C, H, W] (all frames for multi-frame supervision)
+                    * Inference: [B, C, H, W] (last frame only for prediction)
                 - new_temporal_state: Updated temporal state (frame buffer for next call)
 
-        CRITICAL FIX (Audit 2025111703 Finding 2):
-        Now maintains temporal state (frame buffer) for streaming inference.
+        CRITICAL FIXES:
+        - Audit 2025111703 Finding 2: Maintains temporal state for streaming inference
+        - Audit 2025112006: Dual-mode output for proper training/inference separation
         """
         # Determine input format
         if features.ndim == 4:
@@ -527,9 +542,16 @@ class VisionMambaHead(BaseTemporalHead):
         # Reshape back to spatial: [B, T*H*W, C] -> [B, T, H, W, C] -> [B, T, C, H, W]
         features_out = features_out.reshape(B, T, H, W, C).permute(0, 1, 4, 2, 3)
 
-        # Aggregate temporal dimension (use last frame for single-frame output)
-        # For more sophisticated aggregation, can use attention or pooling
-        aggregated_features = features_out[:, -1]  # [B, C, H, W]
+        # ARCHITECTURE CHANGE (Audit 2025112006): Dual-mode output
+        # Training mode: return all frames [B, T, C, H, W] for multi-frame supervision
+        # Inference mode: return last frame [B, C, H, W] for single-frame prediction
+        if self.training:
+            # Training: return all temporal frames for loss computation on each frame
+            aggregated_features = features_out  # [B, T, C, H, W]
+        else:
+            # Inference: aggregate to single frame (use last frame by default)
+            # For more sophisticated aggregation, can use attention or pooling
+            aggregated_features = features_out[:, -1]  # [B, C, H, W]
 
         # CRITICAL FIX (Audit 2025111703 Finding 2): Return frame_buffer as temporal_state
         # This enables streaming inference with temporal context across frames

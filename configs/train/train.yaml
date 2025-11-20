@@ -26,7 +26,9 @@ data:
   train_root: null
   val_root: null
 
-  search_sequence_length: 5  # Multi-frame temporal for Vision-Mamba
+  # Frame-level temporal tracking parameters (inherited from default.yaml)
+  # sequence_length: 5  # Number of consecutive frames per training sample
+  # frame_stride: 1     # Stride for frame sampling
   use_sequence_grouping: true
 
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
@@ -34,7 +36,7 @@ data:
 
   augmentation:
     enabled: true
-    type: TrackingAugmentationBboxAware
+    type: TrackingAugmentation
 
     rgb:
       enable_color_jitter: true

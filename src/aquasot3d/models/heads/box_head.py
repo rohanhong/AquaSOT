@@ -610,8 +610,8 @@ class BoxHead(BaseHead):
                     f"Got pred shape={pred_boxes_cxcywh.shape}, target shape={target_boxes.shape}"
                 )
 
-            # CRITICAL FIX: collate_fn_template_search already converts boxes from
-            # pixel xywh to normalized cxcywh (loader.py:184-196).
+            # CRITICAL FIX: collate_fn_sequence already converts boxes from
+            # pixel xywh to normalized cxcywh format in the data loader.
             # No further conversion needed - targets are already in cxcywh format.
 
             # Extract validated tensors for loss computation

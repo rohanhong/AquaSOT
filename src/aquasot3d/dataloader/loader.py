@@ -51,7 +51,7 @@ class SequenceGroupedBatchSampler(Sampler):
 
         # Check if dataset has sequence information
         if hasattr(dataset, 'get_sequence_name'):
-            # TrackingDataset with get_sequence_name method
+            # Dataset with get_sequence_name method (e.g., FrameSequenceDataset)
             for idx in range(len(dataset)):
                 try:
                     seq_name = dataset.get_sequence_name(idx)
@@ -99,29 +99,41 @@ class SequenceGroupedBatchSampler(Sampler):
         return total_batches
 
 
-def collate_fn_tracking(batch: List[Dict]) -> Dict:
+def collate_fn_sequence(batch: List[Dict]) -> Dict:
     """
-    Collate function for tracking samples.
+    Collate function for frame sequence datasets.
 
-    Handles batching of multi-modal tracking data with potential None values
-    for occluded frames.
+    ARCHITECTURE CHANGE (Audit 2025112006):
+    Designed for FrameSequenceDataset which returns continuous frame sequences
+    instead of template-search pairs.
 
     Args:
-        batch: List of sample dictionaries from dataset
+        batch: List of samples from FrameSequenceDataset
+            Each sample: {
+                'rgb_frames': [T, 3, H, W] or None,
+                'sonar_frames': [T, 1, H, W] or None,
+                'rgb_bboxes': [T, 4],
+                'sonar_bboxes': [T, 4],
+                'is_valid_rgb': [T],
+                'is_valid_sonar': [T],
+                'target_idx': int,
+                'sequence_name': str,
+                ...
+            }
 
     Returns:
-        Batched dictionary with stacked tensors
-
-    Sample structure:
-        batch[i] = {
-            'rgb_img': Tensor or None,
-            'sonar_img': Tensor or None,
-            'rgb_bbox': ndarray,
-            'sonar_bbox': ndarray,
-            'frame_id': int,
-            'is_valid': bool,
+        Batched dictionary: {
+            'rgb_frames': [B, T, 3, H, W] or None,
+            'sonar_frames': [B, T, 1, H, W] or None,
+            'rgb_bboxes': [B, T, 4],
+            'sonar_bboxes': [B, T, 4],
+            'is_valid_rgb': [B, T],
+            'is_valid_sonar': [B, T],
+            'target_idx': [B],
             ...
         }
+
+    CRITICAL: Preserves validity flag batching for 0000 handling (Audit 2025112001)
     """
     # Filter out None samples
     batch = [sample for sample in batch if sample is not None]
@@ -129,49 +141,89 @@ def collate_fn_tracking(batch: List[Dict]) -> Dict:
     if len(batch) == 0:
         return None
 
-    # Initialize batched data
     batched = {}
 
-    # Handle image tensors (may have None values)
-    for key in ['rgb_img', 'sonar_img']:
-        if key in batch[0]:
-            imgs = [sample[key] for sample in batch if sample[key] is not None]
+    # Stack frame sequences
+    # CRITICAL FIX (Audit 2025112003): Handle single-modality mode (None frames)
+    if 'rgb_frames' in batch[0]:
+        rgb_frames_list = [sample['rgb_frames'] for sample in batch if sample['rgb_frames'] is not None]
+        if len(rgb_frames_list) > 0:
+            batched['rgb_frames'] = torch.stack(rgb_frames_list, dim=0)  # [B, T, 3, H, W]
+        else:
+            batched['rgb_frames'] = None
 
-            if len(imgs) > 0:
-                # Check if already tensors
-                if isinstance(imgs[0], torch.Tensor):
-                    batched[key] = torch.stack(imgs, dim=0)
-                else:
-                    # Convert numpy arrays to tensors
-                    imgs_tensor = [torch.from_numpy(img) for img in imgs]
-                    batched[key] = torch.stack(imgs_tensor, dim=0)
-            else:
-                batched[key] = None
+    if 'sonar_frames' in batch[0]:
+        sonar_frames_list = [sample['sonar_frames'] for sample in batch if sample['sonar_frames'] is not None]
+        if len(sonar_frames_list) > 0:
+            batched['sonar_frames'] = torch.stack(sonar_frames_list, dim=0)  # [B, T, 1, H, W]
+        else:
+            batched['sonar_frames'] = None
 
-    # Handle bounding boxes
-    for key in ['rgb_bbox', 'sonar_bbox']:
+    # Stack bounding boxes [B, T, 4]
+    # CRITICAL FIX (Bbox Format Audit 2025-11-20): Convert and normalize bboxes
+    # Old collate_fn_template_search did this, but collate_fn_sequence was missing it.
+    # Without this, loss receives XYWH pixel instead of CXCYWH normalized → training broken
+    bbox_keys = ['rgb_bboxes', 'sonar_bboxes']
+    for key in bbox_keys:
         if key in batch[0]:
             bboxes = [sample[key] for sample in batch]
+            bbox_tensor = torch.stack(bboxes, dim=0)  # [B, T, 4] in XYWH pixel format
 
-            # Convert to tensor
-            if isinstance(bboxes[0], np.ndarray):
-                bboxes_tensor = torch.from_numpy(np.stack(bboxes, axis=0))
+            # Get frame size for normalization
+            # Letterbox Migration (2025-11-20): All frames letterboxed to frame_size x frame_size (default 512x512)
+            # Normalization uses full frame size (including padding) - matches YOLO/DETR practice
+            if 'rgb' in key and 'rgb_frames' in batched and batched['rgb_frames'] is not None:
+                frame_size = float(batched['rgb_frames'].shape[-1])  # H or W (square)
+            elif 'sonar' in key and 'sonar_frames' in batched and batched['sonar_frames'] is not None:
+                frame_size = float(batched['sonar_frames'].shape[-1])
             else:
-                bboxes_tensor = torch.stack([torch.tensor(bbox) for bbox in bboxes], dim=0)
+                # Fallback to default frame_size from config (default 512)
+                frame_size = 512.0
 
-            batched[key] = bboxes_tensor
+            # Convert XYWH pixel to CXCYWH normalized
+            # Input:  [x, y, w, h] in [0, frame_size] (pixel coordinates, scaled)
+            # Output: [cx, cy, w, h] in [0, 1] (normalized, center format)
+            x = bbox_tensor[..., 0]  # [B, T]
+            y = bbox_tensor[..., 1]
+            w = bbox_tensor[..., 2]
+            h = bbox_tensor[..., 3]
 
-    # Handle scalar values
-    for key in ['frame_id', 'is_valid', 'is_rgb_valid', 'is_sonar_valid']:
+            # Convert to center coordinates and normalize
+            cx = (x + w / 2.0) / frame_size       # Center x, normalized to [0, 1]
+            cy = (y + h / 2.0) / frame_size       # Center y, normalized to [0, 1]
+            w_norm = w / frame_size               # Width, normalized to [0, 1]
+            h_norm = h / frame_size               # Height, normalized to [0, 1]
+
+            # Stack normalized CXCYWH [B, T, 4]
+            batched[key] = torch.stack([cx, cy, w_norm, h_norm], dim=-1)
+
+            # CRITICAL (Audit 2025111408 Finding 3): Store pixel XYWH for quality estimators
+            # Quality estimators need pixel coordinates to crop ROIs from feature maps
+            batched[key + '_pixels'] = bbox_tensor.clone()  # [B, T, 4] in XYWH pixel
+
+    # CRITICAL: Stack validity flags [B, T] (0000 handling)
+    validity_keys = ['is_valid_rgb', 'is_valid_sonar']
+    for key in validity_keys:
         if key in batch[0]:
-            values = [sample[key] for sample in batch]
-            batched[key] = torch.tensor(values)
+            validity = [sample[key] for sample in batch]
+            batched[key] = torch.stack(validity, dim=0)  # [B, T]
 
-    # Handle string values (sequence names, etc.)
-    string_keys = ['sequence_name', 'template_sequence', 'search_sequence']
-    for key in string_keys:
+    # Stack target indices [B]
+    if 'target_idx' in batch[0]:
+        batched['target_idx'] = torch.tensor([
+            sample['target_idx'] for sample in batch
+        ], dtype=torch.long)
+
+    # Stack sequence lengths [B]
+    if 'sequence_length' in batch[0]:
+        batched['sequence_length'] = torch.tensor([
+            sample['sequence_length'] for sample in batch
+        ], dtype=torch.long)
+
+    # Collect metadata lists
+    metadata_keys = ['rgb_metadata', 'sonar_metadata', 'sequence_name', 'frame_ids', 'frame_indices']
+    for key in metadata_keys:
         if key in batch[0]:
-            # Keep as list of strings (cannot convert to tensor)
             batched[key] = [sample[key] for sample in batch]
 
     return batched
@@ -179,32 +231,40 @@ def collate_fn_tracking(batch: List[Dict]) -> Dict:
 
 def collate_fn_template_search(batch: List[Dict]) -> Dict:
     """
-    Collate function for template-search pairs and sequences.
+    Collate function for template-search evaluation datasets.
 
-    CRITICAL FIX (Audit 2025111703 Finding 1):
-    Now supports sequence mode where rgb_search/sonar_search are [T, C, H, W].
+    Used exclusively by EvaluationSequenceDataset for sequential tracking evaluation.
+    This maintains the template-search paradigm required by evaluation protocols.
 
     Args:
-        batch: List of template-search sample dictionaries
+        batch: List of samples from EvaluationSequenceDataset
+            Each sample: {
+                'rgb_template': [3, H, W],
+                'rgb_search': [3, H, W],
+                'sonar_template': [1, H, W],
+                'sonar_search': [1, H, W],
+                'template_bbox_rgb': [4],
+                'template_bbox_sonar': [4],
+                'search_bbox_rgb': [4],
+                'search_bbox_sonar': [4],
+                'sequence_name': str,
+                'frame_id': int,
+                ...
+            }
 
     Returns:
-        Batched dictionary with stacked tensors
-
-    Sample structure (TrackingDataset format):
-        Pair mode (T=1):
-            batch[i] = {
-                'rgb_search': Tensor (C, H_s, W_s),
-                ...
-            }
-
-        Sequence mode (T>1):
-            batch[i] = {
-                'rgb_search': Tensor (T, C, H_s, W_s),
-                'is_sequence': True,
-                ...
-            }
+        Batched dictionary: {
+            'rgb_template': [B, 3, H, W],
+            'rgb_search': [B, 3, H, W],
+            'sonar_template': [B, 1, H, W],
+            'sonar_search': [B, 1, H, W],
+            'template_bbox_rgb': [B, 4],
+            'template_bbox_sonar': [B, 4],
+            'search_bbox_rgb': [B, 4],
+            'search_bbox_sonar': [B, 4],
+            ...
+        }
     """
-    # Filter out None samples
     batch = [sample for sample in batch if sample is not None]
 
     if len(batch) == 0:
@@ -212,173 +272,37 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
 
     batched = {}
 
-    # Detect if this is a sequence batch
-    is_sequence_batch = batch[0].get('is_sequence', False)
-
-    # Handle image tensors (trainer expects: rgb_template, rgb_search, sonar_template, sonar_search)
+    # Stack image tensors
     image_keys = ['rgb_template', 'rgb_search', 'sonar_template', 'sonar_search']
     for key in image_keys:
-        if key in batch[0]:
-            imgs = [sample[key] for sample in batch]
+        if key in batch[0] and batch[0][key] is not None:
+            images = [sample[key] for sample in batch if sample.get(key) is not None]
+            if len(images) > 0:
+                batched[key] = torch.stack(images, dim=0)
+            else:
+                batched[key] = None
+        else:
+            batched[key] = None
 
-            # Stack tensors (already in CHW format from TrackingDataset)
-            if isinstance(imgs[0], torch.Tensor):
-                # CRITICAL FIX (Audit 2025111703 Finding 1): Handle sequence stacking
-                if is_sequence_batch and 'search' in key:
-                    # Sequence mode: imgs[i] has shape [T, C, H, W]
-                    # Stack to [B, T, C, H, W]
-                    batched[key] = torch.stack(imgs, dim=0)  # [B, T, C, H, W]
-                else:
-                    # Pair mode or template: imgs[i] has shape [C, H, W]
-                    # Stack to [B, C, H, W]
-                    batched[key] = torch.stack(imgs, dim=0)  # [B, C, H, W]
-            elif isinstance(imgs[0], np.ndarray):
-                # Convert numpy arrays to tensors (HWC → CHW)
-                imgs_tensor = [torch.from_numpy(img).permute(2, 0, 1) for img in imgs]
-                if is_sequence_batch and 'search' in key:
-                    batched[key] = torch.stack(imgs_tensor, dim=0)  # [B, T, C, H, W]
-                else:
-                    batched[key] = torch.stack(imgs_tensor, dim=0)  # [B, C, H, W]
-
-    # Handle bounding boxes with normalization
-    # Critical fix: Normalize pixel coordinates to [0, 1] range for numerical stability
-    # This prevents gradient explosion in L1/GIoU losses
-    bbox_keys = [
-        'template_bbox_rgb', 'template_bbox_sonar',
-        'search_bbox_rgb', 'search_bbox_sonar',
-        'search_region_rgb',  # Only RGB search region (sonar uses full frame per Audit 2025111408)
-        'rgb_boxes', 'sonar_boxes'  # Trainer-expected keys for loss computation
-    ]
-
-    # Get image dimensions for normalization
-    # Search images are typically 255x255 or 256x256
-    # Template images are typically 127x127 or 128x128
-    rgb_search_h, rgb_search_w = batch[0]['rgb_search'].shape[-2:] if 'rgb_search' in batch[0] else (256, 256)
-    sonar_search_h, sonar_search_w = batch[0]['sonar_search'].shape[-2:] if 'sonar_search' in batch[0] else (256, 256)
-    rgb_template_h, rgb_template_w = batch[0]['rgb_template'].shape[-2:] if 'rgb_template' in batch[0] else (128, 128)
-    sonar_template_h, sonar_template_w = batch[0]['sonar_template'].shape[-2:] if 'sonar_template' in batch[0] else (128, 128)
-
+    # Stack bounding boxes
+    bbox_keys = ['template_bbox_rgb', 'template_bbox_sonar', 'search_bbox_rgb', 'search_bbox_sonar']
     for key in bbox_keys:
-        if key in batch[0]:
-            bboxes = [sample[key] for sample in batch]
-
-            if isinstance(bboxes[0], np.ndarray):
-                batched[key] = torch.from_numpy(np.stack(bboxes, axis=0).astype(np.float32))
+        if key in batch[0] and batch[0][key] is not None:
+            bboxes = [sample[key] for sample in batch if sample.get(key) is not None]
+            if len(bboxes) > 0:
+                batched[key] = torch.stack(bboxes, dim=0)  # [B, 4]
             else:
-                batched[key] = torch.stack([torch.tensor(bbox, dtype=torch.float32) for bbox in bboxes], dim=0)
+                batched[key] = None
 
-            # Normalize bounding boxes to [0, 1] based on image dimensions
-            # Format: [x, y, w, h] in pixels → [cx, cy, w, h] in [0, 1]
-            # Priority 2.2: Use correct image dimensions for template vs search bboxes
-            if 'template' in key and 'rgb' in key and not key.endswith('_normalized'):
-                # RGB template bounding boxes - use template dimensions
-                img_w, img_h = rgb_template_w, rgb_template_h
-            elif 'template' in key and 'sonar' in key and not key.endswith('_normalized'):
-                # Sonar template bounding boxes - use template dimensions
-                img_w, img_h = sonar_template_w, sonar_template_h
-            elif 'rgb' in key and not key.endswith('_normalized'):
-                # RGB search/other bounding boxes - use search dimensions
-                img_w, img_h = rgb_search_w, rgb_search_h
-            elif 'sonar' in key and not key.endswith('_normalized'):
-                # Sonar search/other bounding boxes - use search dimensions
-                img_w, img_h = sonar_search_w, sonar_search_h
-            else:
-                # Generic fallback (256x256)
-                img_w, img_h = 256.0, 256.0
-
-            # CRITICAL FIX (Audit 2025111408 Finding 3):
-            # Store BOTH pixel coordinates (for quality estimators) and normalized (for losses)
-            # Quality estimators need pixel xywh to crop ROIs correctly
-
-            bbox_tensor = batched[key].clone()
-
-            # CRITICAL FIX: Handle sequence mode where bbox shape is [B, T, 4] instead of [B, 4]
-            # Check dimensionality directly instead of relying on key name
-            if bbox_tensor.ndim == 3 and bbox_tensor.shape[1] > 1:
-                # Sequence mode: bbox_tensor shape is [B, T, 4]
-                # For quality estimation, flatten to [B*T, 4] to match reshaped images [B*T, C, H, W]
-                pixel_key = key + '_pixels'
-                B, T = bbox_tensor.shape[0], bbox_tensor.shape[1]
-                batched[pixel_key] = bbox_tensor.reshape(B * T, 4).clone()  # [B*T, 4]
-
-                # Extract coordinates for normalization
-                x, y, w, h = bbox_tensor[..., 0], bbox_tensor[..., 1], bbox_tensor[..., 2], bbox_tensor[..., 3]
-            else:
-                # Pair mode or template: bbox_tensor shape is [B, 4] (or [B, 1, 4] squeezed)
-                if bbox_tensor.ndim == 3:
-                    bbox_tensor = bbox_tensor.squeeze(1)  # [B, 1, 4] -> [B, 4]
-                    batched[key] = bbox_tensor  # Update batched with squeezed version
-
-                x, y, w, h = bbox_tensor[:, 0], bbox_tensor[:, 1], bbox_tensor[:, 2], bbox_tensor[:, 3]
-
-                # Store original pixel coordinates in xywh format for quality estimation
-                pixel_key = key + '_pixels'
-                batched[pixel_key] = bbox_tensor.clone()  # Keep pixel xywh
-
-            # Convert [x, y, w, h] to [cx, cy, w, h] and normalize for losses
-            # cx = (x + w/2) / img_w, cy = (y + h/2) / img_h
-            # w_norm = w / img_w, h_norm = h / img_h
-            cx = (x + w / 2.0) / img_w
-            cy = (y + h / 2.0) / img_h
-            w_norm = w / img_w
-            h_norm = h / img_h
-
-            # Stack normalized coordinates [cx, cy, w, h] in [0, 1]
-            # CRITICAL FIX: For sequence mode, only use last frame for loss computation
-            # This matches temporal aggregation output shape [B, 4]
-            if bbox_tensor.ndim == 3 and bbox_tensor.shape[1] > 1:
-                # Sequence mode: extract only last frame for gt_boxes
-                batched[key] = torch.stack([cx[:, -1], cy[:, -1], w_norm[:, -1], h_norm[:, -1]], dim=-1)
-            else:
-                # Pair/template mode: use full tensor
-                batched[key] = torch.stack([cx, cy, w_norm, h_norm], dim=-1)
-
-            # Clamp to [0, 1] for safety (handles edge cases)
-            batched[key] = torch.clamp(batched[key], min=0.0, max=1.0)
-
-    # CRITICAL FIX (Audit 2025111903 Phase 3 & Audit 2025112001):
-    # Handle validity flags for both single frame and template-search modes
-    # Validity tracking system to mask invalid samples (occlusions, augmentation filtering)
-    # These flags propagate from dataset → augmentation → collate → loss computation
-    validity_keys = [
-        'is_valid', 'is_valid_rgb', 'is_valid_sonar',  # Single frame validity
-        'template_is_valid', 'template_is_valid_rgb', 'template_is_valid_sonar',  # Template validity
-        'search_is_valid', 'search_is_valid_rgb', 'search_is_valid_sonar'  # Search validity
-    ]
-    for key in validity_keys:
-        if key in batch[0]:
-            values = [sample[key] for sample in batch]
-            # Convert boolean/int values to float tensor for masking operations
-            batched[key] = torch.tensor(values, dtype=torch.float32)
-
-    # Handle other scalar values
-    scalar_keys = ['template_idx', 'search_idx',
-                   'template_frame_id', 'search_frame_id', 'frame_id']
-    for key in scalar_keys:
-        if key in batch[0]:
-            values = [sample[key] for sample in batch]
-            batched[key] = torch.tensor(values)
-
-    # Handle string values (sequence names, etc.)
-    string_keys = ['sequence_name', 'template_sequence', 'search_sequence']
-    for key in string_keys:
-        if key in batch[0]:
-            # Keep as list of strings (cannot convert to tensor)
-            batched[key] = [sample[key] for sample in batch]
-
-    # CRITICAL FIX (Audit 2025111409 Finding 1 & Audit 2025111411 Finding 2):
-    # Handle transformation metadata for physical coordinate reconstruction
-    # Metadata dicts contain: original_height, original_width, scale_x, scale_y, pad_x, pad_y
-    #
-    # IMPORTANT (Audit 2025111411 Finding 2): Store per-sample metadata to support batch_size > 1
-    # Previously assumed batch_size=1 and only used batch[0], which breaks for multi-sample batches
+    # Collect metadata (keep as lists)
     metadata_keys = [
-        'rgb_search_metadata', 'sonar_search_metadata',
-        'template_rgb_metadata', 'template_sonar_metadata'
+        'sequence_name', 'frame_id', 'template_frame_id',
+        'rgb_boxes', 'sonar_boxes', 'is_valid',
+        'template_rgb_metadata', 'template_sonar_metadata',
+        'search_rgb_metadata', 'search_sonar_metadata'
     ]
     for key in metadata_keys:
         if key in batch[0]:
-            # Store as list of dicts (one per sample in batch)
             batched[key] = [sample[key] for sample in batch]
 
     return batched
@@ -407,7 +331,7 @@ def create_dataloader(
         num_workers: Number of worker processes
         pin_memory: Pin memory for faster GPU transfer
         drop_last: Drop last incomplete batch
-        collate_fn: Custom collate function (default: collate_fn_tracking)
+        collate_fn: Custom collate function (default: collate_fn_sequence)
         distributed: Use distributed sampler for multi-GPU training
         prefetch_factor: Number of batches to prefetch (default: 2 if num_workers > 0, else None)
         persistent_workers: Keep workers alive between epochs (default: True if num_workers > 0, else False)
@@ -423,7 +347,7 @@ def create_dataloader(
     the EMA aggregator to learn from consecutive frames.
     """
     if collate_fn is None:
-        collate_fn = collate_fn_tracking
+        collate_fn = collate_fn_sequence
 
     # Set defaults for prefetch_factor and persistent_workers
     if prefetch_factor is None:
@@ -643,7 +567,7 @@ def create_training_loaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=collate_fn_template_search,
+        collate_fn=collate_fn_sequence,
         distributed=distributed,
     )
 
@@ -654,7 +578,7 @@ def create_training_loaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
-        collate_fn=collate_fn_template_search,
+        collate_fn=collate_fn_sequence,
         distributed=False,  # No distributed for validation
     )
 

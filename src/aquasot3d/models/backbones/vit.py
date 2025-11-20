@@ -1,11 +1,15 @@
 """
 Vision Transformer (ViT) Backbone for RGB Images
 
-This module implements a ViT-based backbone compatible with OSTrack template-search paradigm.
+This module implements a ViT-based backbone for frame-level temporal tracking.
 Loads pretrained ViT from timm and adapts it for tracking tasks.
 
+ARCHITECTURE CHANGE (Audit 2025112006):
+Refactored from template-search paradigm to single-frame processing for
+Vision-Mamba temporal modeling.
+
 Author: AquaSOT-3D Team
-Date: 2025-11-06
+Date: 2025-11-20
 """
 
 import torch
@@ -24,7 +28,11 @@ class ViTBackbone(BaseModule):
     Unified Vision Transformer backbone for RGB and Sonar image encoding.
 
     Supports both RGB (3-channel) and Sonar (1-channel) inputs through optional
-    channel adaptation. Uses OSTrack-style template-search paradigm.
+    channel adaptation. Processes frames independently for temporal modeling.
+
+    ARCHITECTURE CHANGE (Audit 2025112006):
+    Refactored from template-search paradigm to single-frame processing.
+    Now supports both single-frame [B, C, H, W] and frame-sequence [B, T, C, H, W] inputs.
 
     Args:
         model_name: timm model name (e.g., 'vit_base_patch16_224')
@@ -42,18 +50,19 @@ class ViTBackbone(BaseModule):
 
     Returns:
         Dictionary containing:
-            - 'features': Final layer features (B, N, C)
+            - 'features': Final layer features (B, N, C) or (B*T, N, C) for sequences
             - 'interm_features': Intermediate layer features (optional)
             - 'attention_weights': Self-attention weights (optional)
 
     Example:
         >>> # RGB backbone
-        >>> rgb_backbone = ViTRGBBackbone(model_name='vit_base_patch16_224', in_channels=3)
-        >>> # Sonar backbone (same architecture, different input)
-        >>> sonar_backbone = ViTRGBBackbone(model_name='vit_base_patch16_224', in_channels=1)
-        >>> template = torch.randn(4, 3, 128, 128)  # RGB
-        >>> search = torch.randn(4, 3, 256, 256)
-        >>> outputs = rgb_backbone(template, search)
+        >>> rgb_backbone = ViTBackbone(model_name='vit_base_patch16_224', in_channels=3)
+        >>> # Single frame
+        >>> frame = torch.randn(4, 3, 384, 384)
+        >>> outputs = rgb_backbone(frame)
+        >>> # Frame sequence
+        >>> frames = torch.randn(4, 5, 3, 384, 384)  # [B, T, C, H, W]
+        >>> outputs = rgb_backbone(frames)  # Processes as [B*T, C, H, W]
     """
 
     def __init__(
@@ -168,36 +177,111 @@ class ViTBackbone(BaseModule):
             else:
                 state_dict = checkpoint
 
-            # Filter RGB backbone keys
-            # Expected format: 'backbone.rgb_backbone.vit.*'
-            rgb_backbone_keys = {}
+            # Filter backbone keys (supports both RGB and Sonar)
+            # Expected formats:
+            #   - RGB: 'backbone.rgb_backbone.vit.*'
+            #   - Sonar: 'backbone.sonar_encoder.vit.*'
+            #   - Direct: 'vit.*'
+            backbone_keys = {}
+            rgb_key_count = 0
+            sonar_key_count = 0
+            direct_key_count = 0
+
             for key, value in state_dict.items():
                 if 'rgb_backbone.vit.' in key:
                     # Remove prefix to match local vit module
                     new_key = key.split('rgb_backbone.vit.')[-1]
-                    rgb_backbone_keys[new_key] = value
+                    backbone_keys[new_key] = value
+                    rgb_key_count += 1
+                elif 'sonar_encoder.vit.' in key:
+                    # Support Sonar single-modality checkpoint (Critical Fix: Audit 2025112003)
+                    new_key = key.split('sonar_encoder.vit.')[-1]
+                    backbone_keys[new_key] = value
+                    sonar_key_count += 1
                 elif key.startswith('vit.'):
                     # Direct vit key (if saved without model wrapper)
                     new_key = key[4:]  # Remove 'vit.' prefix
-                    rgb_backbone_keys[new_key] = value
+                    backbone_keys[new_key] = value
+                    direct_key_count += 1
 
-            if not rgb_backbone_keys:
+            # CRITICAL CHECK (Audit 2025112003): Detect mixed RGB+Sonar keys
+            if rgb_key_count > 0 and sonar_key_count > 0:
                 self.logger.warning(
-                    f"No RGB backbone keys found in checkpoint {checkpoint_path}. "
+                    f"Checkpoint contains BOTH RGB ({rgb_key_count}) and Sonar ({sonar_key_count}) keys. "
+                    f"Sonar keys will override RGB keys with same names. This may indicate an unexpected checkpoint."
+                )
+
+            if not backbone_keys:
+                self.logger.warning(
+                    f"No compatible backbone keys found in checkpoint {checkpoint_path}. "
                     f"Available keys: {list(state_dict.keys())[:5]}..."
                 )
                 return
 
+            # CRITICAL CHECK (Audit 2025112003): Validate critical parameter shapes
+            # before loading to catch incompatible checkpoints early
+            current_state = self.vit.state_dict()
+            # Use actual timm ViT key names
+            # Note: For Sonar (in_channels=1), patch_embed.proj.weight shape mismatch is EXPECTED
+            # because Sonar checkpoints have [768, 1, 16, 16] but current ViT is [768, 3, 16, 16]
+            # (Sonar uses channel adapter to convert 1→3 channels before ViT)
+            critical_keys = ['pos_embed']  # Only check pos_embed (always should match)
+            if self.in_channels != 1:  # RGB: also check patch_embed
+                critical_keys.append('patch_embed.proj.weight')
+
+            shape_mismatches = []
+
+            for key in critical_keys:
+                if key in backbone_keys and key in current_state:
+                    checkpoint_shape = backbone_keys[key].shape
+                    current_shape = current_state[key].shape
+                    if checkpoint_shape != current_shape:
+                        shape_mismatches.append(
+                            f"{key}: checkpoint {checkpoint_shape} vs current {current_shape}"
+                        )
+
+            if shape_mismatches:
+                self.logger.error(
+                    f"Critical parameter shape mismatch detected in checkpoint {checkpoint_path}:\n" +
+                    "\n".join(f"  - {mismatch}" for mismatch in shape_mismatches) +
+                    f"\n  This usually indicates incompatible model configurations (e.g., different img_size or patch_size)."
+                )
+                raise ValueError(
+                    f"Checkpoint {checkpoint_path} has incompatible shapes for critical parameters. "
+                    f"Cannot load checkpoint safely."
+                )
+
+            # CRITICAL FIX (Audit 2025112003): For Sonar (in_channels=1), remove patch_embed.proj.weight
+            # because its shape [768, 1, 16, 16] doesn't match current ViT [768, 3, 16, 16]
+            # (Sonar uses channel adapter, doesn't need this parameter from checkpoint)
+            if self.in_channels == 1 and 'patch_embed.proj.weight' in backbone_keys:
+                self.logger.info(
+                    "Sonar mode: Skipping patch_embed.proj.weight from checkpoint "
+                    "(shape mismatch expected, using channel adapter instead)"
+                )
+                del backbone_keys['patch_embed.proj.weight']
+
             # Load state dict with strict=False to allow missing keys
             missing_keys, unexpected_keys = self.vit.load_state_dict(
-                rgb_backbone_keys, strict=False
+                backbone_keys, strict=False
             )
 
             self.logger.info(
-                f"Loaded pretrained RGB backbone from {checkpoint_path}"
+                f"Loaded pretrained ViT backbone from {checkpoint_path} "
+                f"({len(backbone_keys)} parameters)"
             )
+
+            # CRITICAL CHECK (Audit 2025112003): Warn if too many missing keys
             if missing_keys:
-                self.logger.debug(f"Missing keys: {missing_keys[:5]}...")
+                if len(missing_keys) > len(backbone_keys) * 0.1:  # >10% missing
+                    self.logger.warning(
+                        f"Large number of missing keys ({len(missing_keys)}/{len(current_state)}): "
+                        f"{missing_keys[:5]}... "
+                        f"Checkpoint may be incompatible or incomplete."
+                    )
+                else:
+                    self.logger.debug(f"Missing keys: {missing_keys[:5]}...")
+
             if unexpected_keys:
                 self.logger.debug(f"Unexpected keys: {unexpected_keys[:5]}...")
 
@@ -260,55 +344,51 @@ class ViTBackbone(BaseModule):
 
         return outputs
 
-    def forward(
-        self,
-        template: torch.Tensor,
-        search: torch.Tensor,
-        return_separate: bool = False
-    ) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Forward pass for template-search paradigm.
+        Forward pass for single-frame or frame-sequence processing.
+
+        ARCHITECTURE CHANGE (Audit 2025112006):
+        Replaced template-search paradigm with single-frame processing.
 
         Args:
-            template: Template frame (B, C, H_t, W_t)
-            search: Search region frame (B, C, H_s, W_s)
-            return_separate: If True, return template and search features separately
+            x: Input frames
+                - Single frame: (B, C, H, W)
+                - Frame sequence: (B, T, C, H, W) -> reshaped to (B*T, C, H, W)
 
         Returns:
-            Dictionary containing encoded features
+            Dictionary containing:
+                - 'features': Encoded features (B, N, C) or (B*T, N, C)
+                - 'interm_features': Intermediate features (optional)
+                - 'is_sequence': Boolean indicating if input was a sequence
+                - 'batch_size': Original batch size B (for sequence reshaping)
+                - 'sequence_length': T (for sequence reshaping, None for single frame)
         """
-        B = template.shape[0]
+        # Detect input shape
+        is_sequence = x.ndim == 5  # [B, T, C, H, W]
+
+        if is_sequence:
+            B, T, C, H, W = x.shape
+            # Reshape to process all frames independently
+            x = x.reshape(B * T, C, H, W)  # [B*T, C, H, W]
+        else:
+            B = x.shape[0]
+            T = None
 
         # Apply channel adapter for single-channel inputs (e.g., Sonar)
         if self.channel_adapter is not None:
-            template = self.channel_adapter(template)
-            search = self.channel_adapter(search)
+            x = self.channel_adapter(x)
 
-        if return_separate:
-            # Process template and search separately
-            template_feat = self.forward_features(template)
-            search_feat = self.forward_features(search)
+        # Extract features
+        outputs = self.forward_features(x)
 
-            return {
-                'template_features': template_feat['features'],
-                'search_features': search_feat['features'],
-            }
-        else:
-            # Concatenate and process together (OSTrack style)
-            # This allows cross-attention between template and search
-            combined = torch.cat([template, search], dim=0)  # (2*B, C, H, W)
-            combined_feat = self.forward_features(combined)
+        # Add metadata for sequence handling
+        outputs['is_sequence'] = is_sequence
+        outputs['batch_size'] = B
+        outputs['sequence_length'] = T
 
-            # Split back into template and search
-            feat_dim = combined_feat['features'].shape[1]
-            template_feat = combined_feat['features'][:B]
-            search_feat = combined_feat['features'][B:]
+        return outputs
 
-            return {
-                'features': combined_feat['features'],
-                'template_features': template_feat,
-                'search_features': search_feat,
-            }
 
     def get_num_patches(self, img_size: int) -> int:
         """Calculate number of patches for given image size."""

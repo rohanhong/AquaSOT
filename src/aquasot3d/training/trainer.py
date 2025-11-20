@@ -162,7 +162,16 @@ class Trainer:
         # Metric fallback tracking
         self._metric_fallback_applied = False
 
+        # CRITICAL FIX (Audit 2025112003): Infer enabled modalities from model architecture
+        # Used for conditional validity statistics reporting
+        self.enabled_modalities = []
+        if hasattr(model, 'rgb_backbone') and model.rgb_backbone is not None:
+            self.enabled_modalities.append('rgb')
+        if hasattr(model, 'sonar_backbone') and model.sonar_backbone is not None:
+            self.enabled_modalities.append('sonar')
+
         logger.info(f"Trainer initialized: epochs={max_epochs}, amp={use_amp}, distributed={distributed}")
+        logger.info(f"Enabled modalities: {self.enabled_modalities}")
 
     def train(self, start_epoch: int = 0):
         """
@@ -320,32 +329,94 @@ class Trainer:
             # Move batch to device
             batch = self._to_device(batch)
 
+            # CRITICAL FIX (Audit 2025112006): Frame-level temporal tracking format
+            # Extract template and search frames from sequence
+            # FrameSequenceDataset returns: rgb_frames [B, T, C, H, W], target_idx [B]
+            # Tracker expects: rgb_template [B, C, H, W], rgb_search [B, T, C, H, W]
+
+            # Determine batch size from frames
+            batch_size = batch['rgb_frames'].shape[0] if 'rgb_frames' in batch and batch['rgb_frames'] is not None else 0
+            if batch_size == 0 and 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                batch_size = batch['sonar_frames'].shape[0]
+
+            # Extract template frames using target_idx
+            target_idx = batch.get('target_idx', None)  # [B]
+
+            # RGB template extraction
+            if 'rgb_frames' in batch and batch['rgb_frames'] is not None:
+                rgb_frames = batch['rgb_frames']  # [B, T, 3, H, W]
+                if target_idx is not None:
+                    # Extract target frame as template [B, 3, H, W]
+                    rgb_template = rgb_frames[torch.arange(batch_size), target_idx]
+                else:
+                    # Fallback: use center frame
+                    rgb_template = rgb_frames[:, rgb_frames.shape[1] // 2]
+                rgb_search = rgb_frames  # Full sequence [B, T, 3, H, W]
+            else:
+                rgb_template = None
+                rgb_search = None
+
+            # Sonar template extraction
+            if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
+                if target_idx is not None:
+                    # Extract target frame as template [B, 1, H, W]
+                    sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                else:
+                    # Fallback: use center frame
+                    sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
+                sonar_search = sonar_frames  # Full sequence [B, T, 1, H, W]
+            else:
+                sonar_template = None
+                sonar_search = None
+
             # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
-            batch_size = batch['rgb_template'].shape[0] if 'rgb_template' in batch else 0
             validity_stats['total_samples'] += batch_size
 
+            # Validity flags are per-frame [B, T], extract target frame [B]
             if 'is_valid' in batch:
+                # Legacy format: single validity flag [B]
                 valid_count = batch['is_valid'].sum().item()
                 validity_stats['valid_samples'] += valid_count
                 validity_stats['invalid_samples'] += (batch_size - valid_count)
 
             if 'is_valid_rgb' in batch:
-                validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
+                # Frame sequence format: [B, T], extract target frame
+                if target_idx is not None:
+                    valid_rgb = batch['is_valid_rgb'][torch.arange(batch_size), target_idx]
+                    validity_stats['valid_rgb'] += valid_rgb.sum().item()
+                else:
+                    validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
 
             if 'is_valid_sonar' in batch:
-                validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
+                # Frame sequence format: [B, T], extract target frame
+                if target_idx is not None:
+                    valid_sonar = batch['is_valid_sonar'][torch.arange(batch_size), target_idx]
+                    validity_stats['valid_sonar'] += valid_sonar.sum().item()
+                else:
+                    validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
             # Prepare ground truth boxes
-            # CRITICAL FIX (Audit 2025111920): Remove double format conversion bug
-            # Collate_fn already converts xywh→cxcywh and normalizes (loader.py:318-334)
-            # batch['rgb_boxes'] and batch['sonar_boxes'] are already in normalized cxcywh format
-            # Previous code (Audit 2025111901) incorrectly converted again, causing 50% bbox shift
-            # Bug introduced in commit aec2792, now fixed by reverting to pre-refactor behavior
+            # CRITICAL FIX (Audit 2025112006 + Bbox Format Audit 2025-11-20):
+            # Frame sequence format uses rgb_bboxes/sonar_bboxes [B, T, 4]
+            # Collate_fn converts XYWH pixel → CXCYWH normalized [0,1] (loader.py:163-201)
+            # Extract target frame bboxes [B, 4] for loss computation
             gt_boxes = {}
-            if 'rgb_boxes' in batch:
-                gt_boxes['rgb'] = batch['rgb_boxes']  # Already normalized cxcywh from collate_fn
-            if 'sonar_boxes' in batch:
-                gt_boxes['sonar'] = batch['sonar_boxes']  # Already normalized cxcywh from collate_fn
+            if 'rgb_bboxes' in batch and target_idx is not None:
+                # Extract target frame bbox [B, 4] in CXCYWH normalized format
+                # Format verified by Bbox Format Audit 2025-11-20
+                gt_boxes['rgb'] = batch['rgb_bboxes'][torch.arange(batch_size), target_idx]
+            elif 'rgb_boxes' in batch:
+                # Legacy format fallback
+                gt_boxes['rgb'] = batch['rgb_boxes']
+
+            if 'sonar_bboxes' in batch and target_idx is not None:
+                # Extract target frame bbox [B, 4] in CXCYWH normalized format
+                # Format verified by Bbox Format Audit 2025-11-20
+                gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
+            elif 'sonar_boxes' in batch:
+                # Legacy format fallback
+                gt_boxes['sonar'] = batch['sonar_boxes']
 
             # CRITICAL FIX (Audit 2025111408 Finding 3):
             # Add pixel coordinates for quality estimators
@@ -358,18 +429,18 @@ class Trainer:
             if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                 gt_boxes['fusion'] = gt_boxes['rgb']
 
-            # CRITICAL FIX (Audit 2025111411 Finding 4):
+            # CRITICAL FIX (Audit 2025111411 Finding 4 + 2025112006):
             # Extract metadata for quality estimators (per-sample list of dicts)
+            # Frame sequence format: metadata is List[List[Dict]] (B lists, each with T dicts)
             metadata = {
-                'rgb_search_metadata': batch.get('rgb_search_metadata'),
-                'sonar_search_metadata': batch.get('sonar_search_metadata'),
-                'template_rgb_metadata': batch.get('template_rgb_metadata'),
-                'template_sonar_metadata': batch.get('template_sonar_metadata'),
+                'rgb_search_metadata': batch.get('rgb_metadata'),  # Frame sequence uses rgb_metadata
+                'sonar_search_metadata': batch.get('sonar_metadata'),  # Frame sequence uses sonar_metadata
+                'template_rgb_metadata': batch.get('template_rgb_metadata'),  # Legacy
+                'template_sonar_metadata': batch.get('template_sonar_metadata'),  # Legacy
             }
 
             # CRITICAL VALIDATION (Audit 2025111412 Finding 4):
             # Validate metadata list lengths before model forward
-            batch_size = batch['rgb_template'].shape[0]
             for key, meta_list in metadata.items():
                 if meta_list is not None and isinstance(meta_list, list):
                     if len(meta_list) != batch_size:
@@ -405,10 +476,10 @@ class Trainer:
             if self.use_amp:
                 with autocast():
                     outputs = self.model(
-                        batch['rgb_template'],
-                        batch['rgb_search'],
-                        batch['sonar_template'],
-                        batch['sonar_search'],
+                        rgb_template,
+                        rgb_search,
+                        sonar_template,
+                        sonar_search,
                         gt_boxes=gt_boxes,
                         return_losses=True,
                         metadata=metadata
@@ -421,10 +492,10 @@ class Trainer:
                     )
             else:
                 outputs = self.model(
-                    batch['rgb_template'],
-                    batch['rgb_search'],
-                    batch['sonar_template'],
-                    batch['sonar_search'],
+                    rgb_template,
+                    rgb_search,
+                    sonar_template,
+                    sonar_search,
                     gt_boxes=gt_boxes,
                     return_losses=True,
                     metadata=metadata
@@ -498,11 +569,20 @@ class Trainer:
             for key, value in epoch_metrics.items()
         }
 
-        # CRITICAL (Audit 2025111903 Phase 5): Add validity statistics to metrics
+        # CRITICAL (Audit 2025111903 Phase 5 & Audit 2025112003): Add validity statistics to metrics
+        # Only report validity rates for enabled modalities
         if validity_stats['total_samples'] > 0:
             averaged_metrics['validity_rate'] = validity_stats['valid_samples'] / validity_stats['total_samples']
-            averaged_metrics['validity_rate_rgb'] = validity_stats['valid_rgb'] / validity_stats['total_samples']
-            averaged_metrics['validity_rate_sonar'] = validity_stats['valid_sonar'] / validity_stats['total_samples']
+
+            # CRITICAL FIX (Audit 2025112003): Conditional validity reporting
+            # Only report RGB validity if RGB modality is enabled
+            if 'rgb' in self.enabled_modalities and 'valid_rgb' in validity_stats:
+                averaged_metrics['validity_rate_rgb'] = validity_stats['valid_rgb'] / validity_stats['total_samples']
+
+            # Only report Sonar validity if Sonar modality is enabled
+            if 'sonar' in self.enabled_modalities and 'valid_sonar' in validity_stats:
+                averaged_metrics['validity_rate_sonar'] = validity_stats['valid_sonar'] / validity_stats['total_samples']
+
             averaged_metrics['invalid_samples'] = validity_stats['invalid_samples']
 
         return averaged_metrics
@@ -545,30 +625,79 @@ class Trainer:
                 # Move batch to device
                 batch = self._to_device(batch)
 
+                # CRITICAL FIX (Audit 2025112006): Frame-level temporal tracking format
+                # Extract template and search frames from sequence (same as training)
+
+                # Determine batch size from frames
+                batch_size = batch['rgb_frames'].shape[0] if 'rgb_frames' in batch and batch['rgb_frames'] is not None else 0
+                if batch_size == 0 and 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                    batch_size = batch['sonar_frames'].shape[0]
+
+                # Extract template frames using target_idx
+                target_idx = batch.get('target_idx', None)  # [B]
+
+                # RGB template extraction
+                if 'rgb_frames' in batch and batch['rgb_frames'] is not None:
+                    rgb_frames = batch['rgb_frames']  # [B, T, 3, H, W]
+                    if target_idx is not None:
+                        rgb_template = rgb_frames[torch.arange(batch_size), target_idx]
+                    else:
+                        rgb_template = rgb_frames[:, rgb_frames.shape[1] // 2]
+                    rgb_search = rgb_frames
+                else:
+                    rgb_template = None
+                    rgb_search = None
+
+                # Sonar template extraction
+                if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                    sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
+                    if target_idx is not None:
+                        sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                    else:
+                        sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
+                    sonar_search = sonar_frames
+                else:
+                    sonar_template = None
+                    sonar_search = None
+
                 # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
-                batch_size = batch['rgb_template'].shape[0] if 'rgb_template' in batch else 0
                 validity_stats['total_samples'] += batch_size
 
+                # Validity flags are per-frame [B, T], extract target frame [B]
                 if 'is_valid' in batch:
                     valid_count = batch['is_valid'].sum().item()
                     validity_stats['valid_samples'] += valid_count
                     validity_stats['invalid_samples'] += (batch_size - valid_count)
 
                 if 'is_valid_rgb' in batch:
-                    validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
+                    if target_idx is not None:
+                        valid_rgb = batch['is_valid_rgb'][torch.arange(batch_size), target_idx]
+                        validity_stats['valid_rgb'] += valid_rgb.sum().item()
+                    else:
+                        validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
 
                 if 'is_valid_sonar' in batch:
-                    validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
+                    if target_idx is not None:
+                        valid_sonar = batch['is_valid_sonar'][torch.arange(batch_size), target_idx]
+                        validity_stats['valid_sonar'] += valid_sonar.sum().item()
+                    else:
+                        validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
                 # Prepare ground truth boxes (for validation loss computation)
-                # CRITICAL FIX (Audit 2025111920): Remove double format conversion bug
-                # Collate_fn already converts xywh→cxcywh and normalizes (loader.py:318-334)
-                # batch['rgb_boxes'] and batch['sonar_boxes'] are already in normalized cxcywh format
+                # CRITICAL FIX (Audit 2025112006 + Bbox Format Audit 2025-11-20):
+                # Frame sequence format uses rgb_bboxes/sonar_bboxes [B, T, 4] in CXCYWH normalized
                 gt_boxes = {}
-                if 'rgb_boxes' in batch:
-                    gt_boxes['rgb'] = batch['rgb_boxes']  # Already normalized cxcywh from collate_fn
-                if 'sonar_boxes' in batch:
-                    gt_boxes['sonar'] = batch['sonar_boxes']  # Already normalized cxcywh from collate_fn
+                if 'rgb_bboxes' in batch and target_idx is not None:
+                    # Extract target frame [B, 4] in CXCYWH normalized format
+                    gt_boxes['rgb'] = batch['rgb_bboxes'][torch.arange(batch_size), target_idx]
+                elif 'rgb_boxes' in batch:
+                    gt_boxes['rgb'] = batch['rgb_boxes']
+
+                if 'sonar_bboxes' in batch and target_idx is not None:
+                    # Extract target frame [B, 4] in CXCYWH normalized format
+                    gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
+                elif 'sonar_boxes' in batch:
+                    gt_boxes['sonar'] = batch['sonar_boxes']
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
                 # Add pixel coordinates for quality estimators
@@ -581,11 +710,11 @@ class Trainer:
                 if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                     gt_boxes['fusion'] = gt_boxes['rgb']
 
-                # CRITICAL FIX (Audit 2025111411 Finding 4):
+                # CRITICAL FIX (Audit 2025111411 Finding 4 + 2025112006):
                 # Extract metadata for quality estimators
                 metadata = {
-                    'rgb_search_metadata': batch.get('rgb_search_metadata'),
-                    'sonar_search_metadata': batch.get('sonar_search_metadata'),
+                    'rgb_search_metadata': batch.get('rgb_metadata'),
+                    'sonar_search_metadata': batch.get('sonar_metadata'),
                     'template_rgb_metadata': batch.get('template_rgb_metadata'),
                     'template_sonar_metadata': batch.get('template_sonar_metadata'),
                 }
@@ -594,10 +723,10 @@ class Trainer:
                 if self.use_amp:
                     with autocast():
                         outputs = self.model(
-                            batch['rgb_template'],
-                            batch['rgb_search'],
-                            batch['sonar_template'],
-                            batch['sonar_search'],
+                            rgb_template,
+                            rgb_search,
+                            sonar_template,
+                            sonar_search,
                             gt_boxes=gt_boxes if gt_boxes else None,
                             return_losses=True if gt_boxes else False,
                             metadata=metadata
@@ -610,10 +739,10 @@ class Trainer:
                         )
                 else:
                     outputs = self.model(
-                        batch['rgb_template'],
-                        batch['rgb_search'],
-                        batch['sonar_template'],
-                        batch['sonar_search'],
+                        rgb_template,
+                        rgb_search,
+                        sonar_template,
+                        sonar_search,
                         gt_boxes=gt_boxes if gt_boxes else None,
                         return_losses=True if gt_boxes else False,
                         metadata=metadata
@@ -639,11 +768,20 @@ class Trainer:
             for key, value in val_metrics.items()
         }
 
-        # CRITICAL (Audit 2025111903 Phase 5): Add validity statistics to validation metrics
+        # CRITICAL (Audit 2025111903 Phase 5 & Audit 2025112003): Add validity statistics to validation metrics
+        # Only report validity rates for enabled modalities
         if validity_stats['total_samples'] > 0:
             averaged_metrics['val_validity_rate'] = validity_stats['valid_samples'] / validity_stats['total_samples']
-            averaged_metrics['val_validity_rate_rgb'] = validity_stats['valid_rgb'] / validity_stats['total_samples']
-            averaged_metrics['val_validity_rate_sonar'] = validity_stats['valid_sonar'] / validity_stats['total_samples']
+
+            # CRITICAL FIX (Audit 2025112003): Conditional validity reporting
+            # Only report RGB validity if RGB modality is enabled
+            if 'rgb' in self.enabled_modalities and 'valid_rgb' in validity_stats:
+                averaged_metrics['val_validity_rate_rgb'] = validity_stats['valid_rgb'] / validity_stats['total_samples']
+
+            # Only report Sonar validity if Sonar modality is enabled
+            if 'sonar' in self.enabled_modalities and 'valid_sonar' in validity_stats:
+                averaged_metrics['val_validity_rate_sonar'] = validity_stats['valid_sonar'] / validity_stats['total_samples']
+
             averaged_metrics['val_invalid_samples'] = validity_stats['invalid_samples']
 
         # Log to TensorBoard

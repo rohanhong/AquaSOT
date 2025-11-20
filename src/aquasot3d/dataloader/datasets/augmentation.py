@@ -225,11 +225,13 @@ class TrackingAugmentation(BaseAugmentation):
 
         rgb_img = data['rgb_img'].copy() if data['rgb_img'] is not None else None
         sonar_img = data['sonar_img'].copy() if data['sonar_img'] is not None else None
-        rgb_bbox = data['rgb_bbox'].copy()
-        sonar_bbox = data['sonar_bbox'].copy()
+        # CRITICAL FIX (Audit 2025112003): Handle None bbox for single-modality mode
+        rgb_bbox = data['rgb_bbox'].copy() if data['rgb_bbox'] is not None else None
+        sonar_bbox = data['sonar_bbox'].copy() if data['sonar_bbox'] is not None else None
 
         # Apply RGB bbox-aware transforms
-        if rgb_img is not None:
+        # CRITICAL FIX (Audit 2025112003): Only process if both image and bbox are present
+        if rgb_img is not None and rgb_bbox is not None:
             current_rgb = rgb_img
             # Ensure bbox is 2D (1, 4) format
             current_rgb_bbox = rgb_bbox.reshape(1, 4) if rgb_bbox.ndim == 1 else rgb_bbox
@@ -259,7 +261,8 @@ class TrackingAugmentation(BaseAugmentation):
             rgb_bbox = current_rgb_bbox.flatten() if current_rgb_bbox.shape[0] == 1 else current_rgb_bbox
 
         # Apply Sonar bbox-aware transforms
-        if sonar_img is not None:
+        # CRITICAL FIX (Audit 2025112003): Only process if both image and bbox are present
+        if sonar_img is not None and sonar_bbox is not None:
             current_sonar = sonar_img
             # Ensure bbox is 2D (1, 4) format
             current_sonar_bbox = sonar_bbox.reshape(1, 4) if sonar_bbox.ndim == 1 else sonar_bbox
@@ -301,6 +304,7 @@ class TrackingAugmentation(BaseAugmentation):
         # Update data dictionary
         data['rgb_img'] = rgb_img
         data['sonar_img'] = sonar_img
+        # CRITICAL FIX (Audit 2025112003): Preserve None bbox for disabled modalities
         data['rgb_bbox'] = torch.from_numpy(rgb_bbox) if isinstance(rgb_bbox, np.ndarray) else rgb_bbox
         data['sonar_bbox'] = torch.from_numpy(sonar_bbox) if isinstance(sonar_bbox, np.ndarray) else sonar_bbox
 
@@ -537,25 +541,29 @@ class NoAugmentation(BaseAugmentation):
         sonar_bbox = data.get('sonar_bbox')
 
         # Process RGB with bbox awareness
-        if rgb_img is not None:
+        # CRITICAL FIX (Audit 2025112003): Only process if both image and bbox present
+        if rgb_img is not None and rgb_bbox is not None:
             # Ensure bbox is 2D format if present
-            current_rgb_bbox = rgb_bbox.reshape(1, 4) if rgb_bbox is not None and rgb_bbox.ndim == 1 else rgb_bbox
+            current_rgb_bbox = rgb_bbox.reshape(1, 4) if rgb_bbox.ndim == 1 else rgb_bbox
 
             # Normalize (bbox-aware)
             result = self.rgb_normalize(image=rgb_img, bboxes=current_rgb_bbox)
             rgb_img = result['image']
-            if rgb_bbox is not None:
-                rgb_bbox = result['bboxes'].flatten() if result['bboxes'].shape[0] == 1 else result['bboxes']
+            rgb_bbox = result['bboxes'].flatten() if result['bboxes'].shape[0] == 1 else result['bboxes']
 
             # Convert to tensor
             rgb_img = self.to_tensor(rgb_img)
 
         # Process Sonar with bbox awareness
-        if sonar_img is not None:
+        # CRITICAL FIX (Audit 2025112003): Only process if both image and bbox present
+        if sonar_img is not None and sonar_bbox is not None:
+            # Ensure bbox is 2D format if present
+            current_sonar_bbox = sonar_bbox.reshape(1, 4) if sonar_bbox.ndim == 1 else sonar_bbox
+
             # Normalize (fan mask removed for rectangular coordinates)
-            result = self.sonar_normalize(image=sonar_img, bboxes=sonar_bbox)
+            result = self.sonar_normalize(image=sonar_img, bboxes=current_sonar_bbox)
             sonar_img = result['image']
-            sonar_bbox = result['bboxes']
+            sonar_bbox = result['bboxes'].flatten() if result['bboxes'].shape[0] == 1 else result['bboxes']
 
             # Convert to tensor
             if not isinstance(sonar_img, torch.Tensor):

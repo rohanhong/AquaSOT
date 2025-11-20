@@ -29,9 +29,9 @@ class EvaluationSequenceDataset(Dataset):
     - Process all subsequent frames in sequential order
     - Maintain sequence identity and frame numbers for reproducible metrics
 
-    Unlike TrackingDataset (which randomly samples template-search pairs
-    for training), this dataset enforces temporal order and deterministic
-    frame selection for evaluation.
+    Unlike the frame sequence dataset used for training (which samples
+    continuous temporal windows), this dataset enforces temporal order and
+    deterministic frame selection for evaluation.
 
     Args:
         base_dataset: RGBSonarDataset instance

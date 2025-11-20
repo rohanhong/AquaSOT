@@ -28,7 +28,7 @@ data:
 
   augmentation:
     enabled: true
-    type: TrackingAugmentationBboxAware
+    type: TrackingAugmentation
 
     rgb:
       enable_color_jitter: true

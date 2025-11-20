@@ -898,7 +898,7 @@ class AquaSOT3DTracker(BaseModule):
                         raise ValueError(
                             f"Metadata length mismatch at tracker forward: "
                             f"{key} has {len(meta_list)} entries but effective_batch_size={effective_batch_size} (B={batch_size}, T={T}). "
-                            f"This indicates a loader bug. Check collate_fn_template_search()."
+                            f"This indicates a loader bug. Check collate function."
                         )
 
         # =====================================================

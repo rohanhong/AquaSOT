@@ -11,7 +11,7 @@ from .rgb_sonar_dataset import (
     is_occluded,
     parse_groundtruth,
 )
-from .tracking_dataset import TrackingDataset
+from .sequence_dataset import FrameSequenceDataset
 from .evaluation_dataset import EvaluationSequenceDataset
 from .sequence_sampler import (
     BaseSampler,
@@ -21,7 +21,6 @@ from .sequence_sampler import (
     AdaptiveSampler,
     create_sampler,
 )
-from .template_search_sampler import TemplateSearchSampler
 from .augmentation import (
     BaseAugmentation,
     TrackingAugmentation,
@@ -40,7 +39,7 @@ __all__ = [
     'RGBSonarDataset',
     'MultiSequenceRGBSonarDataset',
     'SequenceMetadata',
-    'TrackingDataset',
+    'FrameSequenceDataset',
     'EvaluationSequenceDataset',
     'is_occluded',
     'parse_groundtruth',
@@ -50,7 +49,7 @@ __all__ = [
     'OcclusionAwareSampler',
     'AdaptiveSampler',
     'create_sampler',
-    'TemplateSearchSampler',
+    # 'TemplateSearchSampler',  # Deprecated: full-image approach used instead
     'BaseAugmentation',
     'TrackingAugmentation',
     'TemplateSearchAugmentation',
