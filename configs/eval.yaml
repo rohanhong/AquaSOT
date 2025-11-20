@@ -24,16 +24,12 @@ data:
 
   test_root: null
 
-  search_sequence_length: 5  # Match training temporal sequence length
-  use_sequence_grouping: true
+  # ARCHITECTURE CHANGE (Audit 2025112104): Template-search evaluation
+  # Removed: search_sequence_length, use_sequence_grouping, frame_size, sequence_length, frame_stride
+  # Template and search sizes inherited from default.yaml
 
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
   prefetch_factor: 2  # Keep 2 (eval is sequential, less I/O-bound)
-
-  # Frame-level Temporal Tracking parameters
-  frame_size: 256
-  sequence_length: 5
-  frame_stride: 1
 
 
 # ------------------------------------------------------------------------------
@@ -81,12 +77,8 @@ evaluation:
 # ------------------------------------------------------------------------------
 # Model Configuration
 # ------------------------------------------------------------------------------
-model:
-  temporal:
-    aggregation: true
-    aggregator:
-      momentum: 0.9
-      gate_threshold: 0.5
+# ARCHITECTURE CHANGE (Audit 2025112104): Temporal config completely removed
+# Template-search paradigm does not use temporal aggregation
 
 
 # ------------------------------------------------------------------------------

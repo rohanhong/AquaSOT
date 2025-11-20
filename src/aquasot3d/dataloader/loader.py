@@ -22,16 +22,14 @@ from collections import defaultdict
 
 class SequenceGroupedBatchSampler(Sampler):
     """
-    Sampler that groups samples by sequence to enable temporal state persistence.
+    Sampler that groups samples by sequence for consistent batch processing.
 
     CRITICAL FIX (Audit 2025111703 Finding 3):
-    Groups samples from the same sequence into consecutive batches, so the trainer's
-    smart reset strategy can maintain temporal state across multiple batches from
-    the same sequence.
+    Groups samples from the same sequence into consecutive batches to maintain
+    sequence coherence during training.
 
-    Without this sampler, random shuffling mixes sequences in every batch, causing
-    the trainer to reset temporal state before each optimizer step, preventing
-    the EMA aggregator from learning.
+    Without this sampler, random shuffling mixes sequences in every batch, which
+    can break sequence-based processing and data consistency.
 
     Args:
         dataset: Dataset with sequence_name metadata
@@ -335,7 +333,7 @@ def create_dataloader(
         distributed: Use distributed sampler for multi-GPU training
         prefetch_factor: Number of batches to prefetch (default: 2 if num_workers > 0, else None)
         persistent_workers: Keep workers alive between epochs (default: True if num_workers > 0, else False)
-        use_sequence_grouping: Use SequenceGroupedBatchSampler for temporal training (default: False)
+        use_sequence_grouping: Use SequenceGroupedBatchSampler for sequence-based training (default: False)
 
     Returns:
         DataLoader instance
@@ -356,7 +354,7 @@ def create_dataloader(
         persistent_workers = num_workers > 0
 
     # CRITICAL FIX (Audit 2025111703 Finding 3):
-    # Use sequence-grouped batch sampler for temporal training
+    # Use sequence-grouped batch sampler for sequence-based training
     if use_sequence_grouping and not distributed:
         batch_sampler = SequenceGroupedBatchSampler(
             dataset=dataset,

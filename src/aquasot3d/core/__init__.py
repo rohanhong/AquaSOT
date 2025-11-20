@@ -1,16 +1,19 @@
 """
 Core module for AquaSOT-3D.
 
-This module provides base classes, registry system, and configuration management
-for all components in the tracking system.
+This module provides base classes, registry system, configuration management,
+and online tracking interface for all components in the tracking system.
+
+ARCHITECTURE CHANGE (Audit 2025112104):
+Added OnlineTracker for template-search inference with template update strategies.
 """
 
 from .base_module import BaseModule, BaseBackbone, BaseFusion, BaseHead
+from .online_tracker import OnlineTracker, TemplateBuffer
 from .registry import (
     Registry,
     BACKBONES,
     FUSION_MODULES,
-    TEMPORAL_HEADS,
     PREDICTION_HEADS,
     QUALITY_ESTIMATORS,
     TRACKERS,
@@ -29,7 +32,6 @@ from .config import Config, ConfigDict
 # Aliases for backward compatibility (using _REGISTRY naming convention)
 BACKBONE_REGISTRY = BACKBONES
 FUSION_REGISTRY = FUSION_MODULES
-TEMPORAL_HEAD_REGISTRY = TEMPORAL_HEADS
 PREDICTION_HEAD_REGISTRY = PREDICTION_HEADS
 QUALITY_ESTIMATOR_REGISTRY = QUALITY_ESTIMATORS
 TRACKER_REGISTRY = TRACKERS
@@ -48,11 +50,12 @@ __all__ = [
     'BaseBackbone',
     'BaseFusion',
     'BaseHead',
+    'OnlineTracker',
+    'TemplateBuffer',
     'Registry',
     # Plural forms
     'BACKBONES',
     'FUSION_MODULES',
-    'TEMPORAL_HEADS',
     'PREDICTION_HEADS',
     'QUALITY_ESTIMATORS',
     'TRACKERS',
@@ -68,7 +71,6 @@ __all__ = [
     # _REGISTRY aliases
     'BACKBONE_REGISTRY',
     'FUSION_REGISTRY',
-    'TEMPORAL_HEAD_REGISTRY',
     'PREDICTION_HEAD_REGISTRY',
     'QUALITY_ESTIMATOR_REGISTRY',
     'TRACKER_REGISTRY',

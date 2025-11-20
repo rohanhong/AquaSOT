@@ -4,7 +4,6 @@ Neural Network Models for AquaSOT-3D
 This package contains all neural network components:
 - backbones: Unified ViT for RGB and Sonar feature extraction
 - fusion: Cross-modal fusion modules (G2-DCMA)
-- temporal: Temporal modeling heads (Vision-Mamba, ARTrack)
 - heads: Prediction heads for tracking and 3D estimation
 - projector: 3D-2D cyclic projection modules
 - quality: Quality estimation modules

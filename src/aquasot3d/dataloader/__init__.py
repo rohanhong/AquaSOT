@@ -1,8 +1,12 @@
 """
 Data loading and preprocessing for AquaSOT-3D.
 
+ARCHITECTURE CHANGE (Audit 2025112104):
+Migrated from frame-sequence to template-search paradigm.
+Removed FrameSequenceDataset, using TemplateSearchDataset instead.
+
 This module provides dataset loaders, data transforms, and utilities for
-loading paired RGB-Sonar tracking sequences.
+template-search tracking.
 """
 
 from . import datasets
@@ -10,11 +14,11 @@ from . import transforms
 from .datasets import (
     RGBSonarDataset,
     MultiSequenceRGBSonarDataset,
-    FrameSequenceDataset,
+    TemplateSearchDataset,
+    template_search_collate_fn,
     EvaluationSequenceDataset,
 )
 from .loader import (
-    collate_fn_sequence,
     collate_fn_template_search,
     create_dataloader,
     InfiniteDataLoader,
@@ -25,11 +29,15 @@ from .loader import (
 __all__ = [
     'datasets',
     'transforms',
+    # Base datasets
     'RGBSonarDataset',
     'MultiSequenceRGBSonarDataset',
-    'FrameSequenceDataset',
+    # Template-search dataset (training)
+    'TemplateSearchDataset',
+    'template_search_collate_fn',
+    # Evaluation dataset
     'EvaluationSequenceDataset',
-    'collate_fn_sequence',
+    # Dataloader utilities
     'collate_fn_template_search',
     'create_dataloader',
     'InfiniteDataLoader',

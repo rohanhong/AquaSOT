@@ -28,10 +28,14 @@ data:
   train_root: null
   val_root: null
 
-  # Frame-level temporal tracking parameters (inherited from default.yaml)
-  # sequence_length: 5  # Number of consecutive frames per training sample
-  # frame_stride: 1     # Stride for frame sampling
-  use_sequence_grouping: true
+  # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
+  # Removed: sequence_length, frame_stride, use_sequence_grouping
+  template_size: 256  # Template image size (256x256)
+  search_size: 512    # Search image size (512x512, full-frame search)
+  template_search_gap_range: [1, 30]  # Random gap between template and search frames
+  template_update_policy: 'mixformer'  # MixFormer-style quality-driven independent RGB/Sonar updates
+  quality_threshold_rgb: 0.7  # RGB quality threshold for template update (default: 0.7)
+  quality_threshold_sonar: 0.7  # Sonar quality threshold for template update (default: 0.7)
 
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
   prefetch_factor: 2  # Higher performance: 3
@@ -75,61 +79,48 @@ model:
   backbone:
     rgb:
       type: vit_rgb
-      model_name: vit_small_patch16_224
+      model_name: vit_base_patch16_224
       pretrained: true
-      output_dim: 384
+      output_dim: 768
 
     sonar:
       type: vit_sonar
-      model_name: vit_small_patch16_224
+      model_name: vit_base_patch16_224
       pretrained: true
       in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
-      # NOTE: Sonar images are preprocessed to fixed 682x376, then resized to 224x224 for model input
-      img_size: 224
-      output_dim: 384
+      # NOTE: Sonar images are preprocessed to fixed 682x376, then resized to 512x512 for model input
+      img_size: 512
+      output_dim: 768
 
   fusion:
     type: g2_dcma
-    embed_dim: 384
+    embed_dim: 768
     num_heads: 8
     num_layers: 2
 
-  temporal:
-    type: mamba
-    enabled: true
-    num_layers: 2
-    d_state: 16
-    d_conv: 4
-    expand: 2
-    bidirectional: false
-    use_occlusion_gating: true
-    dropout: 0.1
-    max_spatial_size: 32
-    aggregation: true
-    aggregator:
-      momentum: 0.9
-      gate_threshold: 0.5
+  # ARCHITECTURE CHANGE (Audit 2025112104): Temporal modules completely removed
+  # Template-search paradigm uses implicit temporal modeling via per-frame template updates
 
   heads:
     rgb_box:
       type: BoxHead
-      in_channels: 384
+      in_channels: 768
       hidden_dim: 256
 
     sonar_box:
       type: BoxHead
-      in_channels: 384
+      in_channels: 768
       hidden_dim: 256
 
     fusion_box:
       type: FusionHead
-      rgb_channels: 384
-      sonar_channels: 384
+      rgb_channels: 768
+      sonar_channels: 768
       hidden_dim: 256
 
     weak3d:
       type: Weak3DHead
-      in_channels: 384
+      in_channels: 768
       hidden_dim: 256
       output_dim: 3
       use_cyclic_loss: true
@@ -178,7 +169,7 @@ training:
     component_consistency: 0.1
     representation_consistency: 0.1
     quality_fusion_loss: 0.2
-    temporal_smooth: 0.05
+    # temporal_smooth removed (Audit 2025112104) - no temporal modeling
 
   loss_schedule:
     enabled: false

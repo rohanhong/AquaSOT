@@ -32,8 +32,7 @@ from torch.utils.data import DataLoader
 import logging
 
 from aquasot3d.utils.config import load_config, save_config, setup_config_logging
-from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, FrameSequenceDataset, create_dataloader
-from aquasot3d.dataloader.loader import collate_fn_sequence
+from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, TemplateSearchDataset, template_search_collate_fn, create_dataloader
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.training import Trainer, LossManager, CheckpointManager, build_optimizer, build_scheduler
 
@@ -114,11 +113,6 @@ def build_model(cfg):
     # Prepare fusion config
     fusion_cfg = _config_to_dict(cfg.model.fusion) if cfg.model.fusion.get('type') not in [None, 'null'] else None
 
-    # Prepare temporal config (remove control parameters)
-    temporal_cfg = None
-    if cfg.model.temporal.get('enabled', True) and cfg.model.temporal.get('type') not in [None, 'null']:
-        temporal_cfg = _config_to_dict(cfg.model.temporal)
-
     # Prepare head configs (remove 'type' and 'in_channels' which will be provided by tracker)
     def clean_head_config(head_cfg):
         """Remove parameters that tracker will provide explicitly"""
@@ -155,23 +149,17 @@ def build_model(cfg):
     # Determine use_weak3d
     use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
 
-    # CRITICAL FIX (Audit 2025111702 Finding 1): Extract temporal_aggregation from config
-    temporal_aggregation = cfg.model.temporal.get('aggregation', False)
-
     # Build model
     model = AquaSOT3DTracker(
         rgb_backbone_config=rgb_backbone_cfg,
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
-        temporal_config=temporal_cfg,
         box_head_config=box_head_cfg,
         fusion_head_config=fusion_head_cfg,
         weak3d_config=weak3d_cfg,
         quality_config=quality_cfg,
         projector_config=projector_cfg,
-        use_temporal=cfg.model.temporal.get('enabled', True),
-        use_weak3d=use_weak3d,
-        temporal_aggregation=temporal_aggregation  # CRITICAL FIX (Audit 2025111702 Finding 1)
+        use_weak3d=use_weak3d
     )
 
     logger.info(f"Model built successfully")
@@ -302,50 +290,47 @@ def build_dataloaders(cfg):
     else:
         logger.info("Augmentation disabled")
 
-    # ARCHITECTURE CHANGE (Audit 2025112006): Frame-level temporal tracking
-    # Replaced template-search paradigm with continuous frame sequence processing
-    frame_size = cfg.data.get('frame_size', 384)
-    sequence_length = cfg.data.get('sequence_length', 5)
-    frame_stride = cfg.data.get('frame_stride', 1)
+    # Template-search dataset configuration
+    template_size = cfg.data.get('template_size', 256)
+    search_size = cfg.data.get('search_size', 512)
+    template_search_gap_range = cfg.data.get('template_search_gap_range', [1, 30])
+    template_update_policy = cfg.data.get('template_update_policy', 'first_frame')
 
-    train_dataset = FrameSequenceDataset(
+    train_dataset = TemplateSearchDataset(
         base_dataset=train_base_dataset,
-        sequence_length=sequence_length,
-        frame_size=frame_size,
-        frame_stride=frame_stride,
+        template_size=template_size,
+        search_size=search_size,
+        template_search_gap_range=template_search_gap_range,
+        template_update_policy=template_update_policy,
         augmentation=train_augmentation
     )
 
-    logger.info(f"Frame sequence training: T={sequence_length}, frame_size={frame_size}, stride={frame_stride}")
-
-    # CRITICAL FIX (Audit 2025111703 Finding 3):
-    # Enable sequence grouping for temporal training to prevent constant resets
-    use_sequence_grouping = cfg.data.get('use_sequence_grouping', True)
-    logger.info(f"Sequence-grouped batching: {use_sequence_grouping} ({'enabled' if use_sequence_grouping else 'disabled'})")
-
+    logger.info(f"Template-search training: template={template_size}x{template_size}, "
+                f"search={search_size}x{search_size}, gap_range={template_search_gap_range}, "
+                f"update_policy={template_update_policy}")
     logger.info(f"Train dataset: {len(train_dataset)} samples")
 
-    # Create dataloaders with frame sequence collate function
+    # Create dataloaders with template-search collate function
     train_loader = create_dataloader(
         dataset=train_dataset,
         batch_size=cfg.training.batch_size,
         shuffle=True,
         num_workers=cfg.data.num_workers,
         pin_memory=cfg.data.pin_memory,
-        collate_fn=collate_fn_sequence,
+        collate_fn=template_search_collate_fn,
         distributed=cfg.system.distributed,
         prefetch_factor=cfg.data.get('prefetch_factor', None),
-        persistent_workers=cfg.data.get('persistent_workers', None),
-        use_sequence_grouping=use_sequence_grouping
+        persistent_workers=cfg.data.get('persistent_workers', None)
     )
 
     # Only create validation dataset/loader if base dataset exists
     if val_base_dataset is not None:
-        val_dataset = FrameSequenceDataset(
+        # ARCHITECTURE CHANGE (Audit 2025112104): Template-search validation
+        val_dataset = TemplateSearchDataset(
             base_dataset=val_base_dataset,
-            sequence_length=sequence_length,
-            frame_size=frame_size,
-            frame_stride=frame_stride,
+            template_size=template_size,
+            search_size=search_size,
+            template_search_gap_range=template_search_gap_range,
             augmentation=None  # No augmentation for validation
         )
 
@@ -357,7 +342,7 @@ def build_dataloaders(cfg):
             shuffle=False,
             num_workers=cfg.data.num_workers,
             pin_memory=cfg.data.pin_memory,
-            collate_fn=collate_fn_sequence,
+            collate_fn=template_search_collate_fn,  # Changed from collate_fn_sequence
             distributed=False,  # No distributed for validation
             prefetch_factor=cfg.data.get('prefetch_factor', None),
             persistent_workers=cfg.data.get('persistent_workers', None)

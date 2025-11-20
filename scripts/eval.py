@@ -69,11 +69,6 @@ def build_model(cfg):
     # Prepare fusion config
     fusion_cfg = _config_to_dict(cfg.model.fusion) if cfg.model.fusion.get('type') not in [None, 'null'] else None
 
-    # Prepare temporal config (remove control parameters)
-    temporal_cfg = None
-    if cfg.model.temporal.get('enabled', True) and cfg.model.temporal.get('type') not in [None, 'null']:
-        temporal_cfg = _config_to_dict(cfg.model.temporal)
-
     # Prepare head configs (remove 'type' and 'in_channels' which will be provided by tracker)
     def clean_head_config(head_cfg):
         """Remove parameters that tracker will provide explicitly"""
@@ -107,23 +102,17 @@ def build_model(cfg):
     # Determine use_weak3d
     use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
 
-    # CRITICAL FIX (Audit 2025111702 Finding 1): Extract temporal_aggregation from config
-    temporal_aggregation = cfg.model.temporal.get('aggregation', False)
-
     # Build model
     model = AquaSOT3DTracker(
         rgb_backbone_config=rgb_backbone_cfg,
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
-        temporal_config=temporal_cfg,
         box_head_config=box_head_cfg,
         fusion_head_config=fusion_head_cfg,
         weak3d_config=weak3d_cfg,
-        quality_config=quality_cfg,  # CRITICAL FIX (Audit 2025111702 Finding 4)
-        projector_config=projector_cfg,  # CRITICAL FIX (Audit 2025111702 Finding 4)
-        use_temporal=cfg.model.temporal.get('enabled', True),
-        use_weak3d=use_weak3d,
-        temporal_aggregation=temporal_aggregation  # CRITICAL FIX (Audit 2025111702 Finding 1)
+        quality_config=quality_cfg,
+        projector_config=projector_cfg,
+        use_weak3d=use_weak3d
     )
 
     logger.info(f"Model built successfully")

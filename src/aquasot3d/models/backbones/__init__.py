@@ -11,7 +11,6 @@ Date: 2025-11-19
 
 from aquasot3d.models.backbones.vit import (
     ViTBackbone,
-    PositionEmbeddingAdapter,
     create_vit_backbone,
 )
 
@@ -26,7 +25,6 @@ from aquasot3d.models.backbones.factory import (
 __all__ = [
     # ViT (unified for RGB and Sonar)
     'ViTBackbone',
-    'PositionEmbeddingAdapter',
     'create_vit_backbone',
 
     # Factory

@@ -180,49 +180,6 @@ class BaseFusion(BaseModule):
         raise NotImplementedError
 
 
-class BaseTemporalHead(BaseModule):
-    """
-    Abstract base class for temporal modeling heads.
-
-    Temporal heads aggregate features across time for robust tracking.
-    All temporal head implementations should inherit from this class.
-
-    Args:
-        config: Configuration dictionary for the temporal head
-    """
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
-
-    @abstractmethod
-    def forward(
-        self,
-        features: torch.Tensor,
-        temporal_state: Optional[Any] = None
-    ) -> Tuple[torch.Tensor, Any]:
-        """
-        Perform temporal feature aggregation.
-
-        Args:
-            features: Current frame features of shape (B, C, H, W) or (B, T, C, H, W)
-            temporal_state: Previous temporal state (hidden state, memory, etc.)
-
-        Returns:
-            Tuple containing:
-                - aggregated_features: Temporally aggregated features
-                - new_temporal_state: Updated temporal state
-        """
-        raise NotImplementedError
-
-    def reset_state(self) -> None:
-        """
-        Reset temporal state (e.g., for new sequence).
-
-        Override this method if the temporal head maintains internal state.
-        """
-        pass
-
-
 class BaseHead(BaseModule):
     """
     Abstract base class for prediction heads.

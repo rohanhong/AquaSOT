@@ -1,23 +1,21 @@
 """
-AquaSOT-3D Tracker - Complete End-to-End Multi-Modal Tracking System
+AquaSOT-3D Tracker - Template-Search Multi-Modal Tracking System
 
 This module implements the complete tracking pipeline integrating:
-- Multi-modal backbones (RGB + Sonar)
+- Multi-modal backbones (RGB + Sonar) with OSTrack one-stream architecture
 - G2-DCMA cross-modal fusion
-- Temporal modeling (Mamba/Transformer/ARTrack)
 - Multi-task prediction heads (2D boxes + 3D center)
 - Geometric cyclic projection
 
 Architecture:
     Input: RGB template/search + Sonar template/search
-    -> Backbones: Unified ViT for RGB (3-channel) and Sonar (1-channel)
+    -> Backbones: OSTrack one-stream ViT for RGB (3-channel) and Sonar (1-channel)
     -> Fusion: G2-DCMA (geometry-gated deformable cross-modal attention)
-    -> Temporal: Vision-Mamba / Transformer / ARTrack
     -> Heads: BoxHead (RGB/Sonar/Fusion) + Weak3DHead + GeometricProjector
     Output: 2D boxes (RGB/Sonar/Fusion) + 3D center (X,Y,Z) + losses
 
 Author: AquaSOT-3D Team
-Date: 2025-11-19
+Date: 2025-11-21
 """
 
 import torch
@@ -29,12 +27,6 @@ import logging
 from aquasot3d.core import BaseModule, TRACKER_REGISTRY
 from aquasot3d.models.backbones import BackboneFactory, MultiModalBackbone
 from aquasot3d.models.fusion import build_g2_dcma, build_g2_dcma_lite, build_conditional_g2_dcma
-from aquasot3d.models.temporal import (
-    build_vision_mamba_head,
-    build_transformer_head,
-    build_artrack_head,
-    build_temporal_aggregator
-)
 from aquasot3d.models.heads import (
     build_box_head,
     build_fusion_head,
@@ -55,31 +47,32 @@ logger = logging.getLogger(__name__)
 @TRACKER_REGISTRY.register("AquaSOT3DTracker")
 class AquaSOT3DTracker(BaseModule):
     """
-    Complete AquaSOT-3D tracking system with multi-modal fusion and 3D estimation.
+    AquaSOT-3D Template-Search Tracker with Multi-Modal Fusion and 3D Estimation.
 
-    This is the main tracking model that integrates all components for end-to-end
-    training and inference. It follows the OSTrack template-search paradigm and
-    adds multi-modal fusion, temporal modeling, and weak 3D estimation.
+    This is the main tracking model that integrates:
+    - OSTrack one-stream ViT backbones for RGB and Sonar
+    - G2-DCMA cross-modal fusion
+    - Multi-task prediction heads (2D boxes + 3D center)
+    - Quality-aware gating for robust fusion
 
     Args:
-        rgb_backbone_config: Configuration for RGB backbone
-        sonar_backbone_config: Configuration for Sonar backbone
+        rgb_backbone_config: Configuration for RGB backbone (must include template_size=256, search_size=512)
+        sonar_backbone_config: Configuration for Sonar backbone (must include template_size=256, search_size=512)
         fusion_config: Configuration for G2-DCMA fusion module
-        temporal_config: Configuration for temporal head
         box_head_config: Configuration for 2D box prediction heads
         fusion_head_config: Configuration for multi-modal fusion head
         weak3d_config: Configuration for weak 3D estimation head
         projector_config: Configuration for geometric projector
-        use_temporal: Whether to use temporal modeling (default: True)
+        quality_config: Configuration for quality estimators
         use_weak3d: Whether to use weak 3D estimation (default: True)
-        temporal_aggregation: Whether to use temporal aggregation (default: False)
+        use_quality_gating: Whether to use quality-aware fusion (default: True)
+        confidence_threshold: Threshold for quality gating (default: 0.3)
 
     Example:
         >>> config = {
-        ...     'rgb_backbone': {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224'},
-        ...     'sonar_backbone': {'type': 'sonar', 'encoder_type': 'vit'},
-        ...     'fusion': {'type': 'g2_dcma', 'rgb_dim': 768, 'sonar_dim': 384},
-        ...     'temporal': {'type': 'mamba', 'feature_dim': 768},
+        ...     'rgb_backbone': {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512},
+        ...     'sonar_backbone': {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512},
+        ...     'fusion': {'type': 'g2_dcma', 'rgb_dim': 768, 'sonar_dim': 768},
         ... }
         >>> tracker = build_tracker('AquaSOT3DTracker', **config)
         >>> outputs = tracker(rgb_template, rgb_search, sonar_template, sonar_search)
@@ -90,25 +83,20 @@ class AquaSOT3DTracker(BaseModule):
         rgb_backbone_config: Dict[str, Any],
         sonar_backbone_config: Dict[str, Any],
         fusion_config: Dict[str, Any],
-        temporal_config: Optional[Dict[str, Any]] = None,
         box_head_config: Optional[Dict[str, Any]] = None,
         fusion_head_config: Optional[Dict[str, Any]] = None,
         weak3d_config: Optional[Dict[str, Any]] = None,
         projector_config: Optional[Dict[str, Any]] = None,
         quality_config: Optional[Dict[str, Any]] = None,
-        use_temporal: bool = True,
         use_weak3d: bool = True,
         use_quality_gating: bool = True,
-        temporal_aggregation: bool = False,
         confidence_threshold: float = 0.3,
         **kwargs
     ):
         super().__init__()
 
-        self.use_temporal = use_temporal
         self.use_weak3d = use_weak3d
         self.use_quality_gating = use_quality_gating
-        self.temporal_aggregation = temporal_aggregation
         self.confidence_threshold = confidence_threshold
 
         # =====================================================
@@ -173,53 +161,6 @@ class AquaSOT3DTracker(BaseModule):
                 self.fused_feat_dim = self.rgb_feat_dim
             logger.info("Fusion module disabled (single-modal training)")
 
-        # =====================================================
-        # 3. Temporal Modeling (Optional)
-        # =====================================================
-        self.temporal_head = None
-        self.temporal_aggregator = None
-
-        if self.use_temporal and temporal_config is not None and temporal_config.get('enabled', True):
-            # Make a copy to avoid modifying the original config (high-generalization fix)
-            temporal_config_copy = temporal_config.copy()
-            temporal_type = temporal_config_copy.pop('type', 'mamba')
-            # Remove control parameters and feature_dim (we override it)
-            temporal_config_copy.pop('enabled', None)
-            temporal_config_copy.pop('feature_dim', None)  # Remove to avoid conflict
-            temporal_config_copy.pop('aggregator', None)  # Remove aggregator config (handled separately)
-            temporal_config_copy.pop('aggregation', None)  # Remove aggregation flag (handled separately)
-
-            if temporal_type == 'mamba':
-                self.temporal_head = build_vision_mamba_head(
-                    feature_dim=self.fused_feat_dim,
-                    **temporal_config_copy
-                )
-            elif temporal_type == 'transformer':
-                self.temporal_head = build_transformer_head(
-                    feature_dim=self.fused_feat_dim,
-                    **temporal_config_copy
-                )
-            elif temporal_type == 'artrack':
-                self.temporal_head = build_artrack_head(
-                    feature_dim=self.fused_feat_dim,
-                    **temporal_config_copy
-                )
-            else:
-                raise ValueError(f"Unknown temporal type: {temporal_type}")
-
-            logger.info(f"Initialized temporal head: {temporal_type}")
-        else:
-            logger.info("Temporal modeling disabled")
-
-        # Optional temporal aggregation (independent of temporal head)
-        if self.temporal_aggregation:
-            # Guard against None temporal_config
-            aggregator_config = (temporal_config or {}).get('aggregator', {})
-            self.temporal_aggregator = build_temporal_aggregator(
-                feature_dim=self.fused_feat_dim,
-                **aggregator_config
-            )
-            logger.info("Initialized temporal aggregator")
 
         # =====================================================
         # 4. Prediction Heads
@@ -339,11 +280,9 @@ class AquaSOT3DTracker(BaseModule):
             adaptive_cfg = quality_config.get('adaptive_weighting', {}).copy()
             # Extract parameters to avoid duplicate kwargs
             method = adaptive_cfg.pop('method', 'softmax')
-            temporal_smoothing = adaptive_cfg.pop('temporal_smoothing', True)
             quality_threshold = adaptive_cfg.pop('threshold', 0.3)
             self.adaptive_weighting = create_adaptive_weighting(
                 weighting_method=method,
-                temporal_smoothing=temporal_smoothing,
                 quality_threshold=quality_threshold,
                 **adaptive_cfg
             )
@@ -360,84 +299,18 @@ class AquaSOT3DTracker(BaseModule):
             logger.info("Quality-adaptive gating disabled")
 
         # =====================================================
-        # 6. Temporal State Management
+        # 6. Template Update State Management
         # =====================================================
-        self.temporal_state = None
-        self.reset_temporal_state()
+        # Template-search paradigm has no internal state.
+        # Template updates are managed externally via OnlineTracker.
 
         self.logger.info(
             f"Initialized AquaSOT3DTracker: "
             f"rgb_dim={self.rgb_feat_dim}, sonar_dim={self.sonar_feat_dim}, "
-            f"fused_dim={self.fused_feat_dim}, use_temporal={use_temporal}, "
+            f"fused_dim={self.fused_feat_dim}, "
             f"use_weak3d={use_weak3d}, use_quality_gating={use_quality_gating}"
         )
 
-    def reset_temporal_state(self) -> Dict[str, bool]:
-        """
-        Reset temporal state for new sequence with introspection.
-
-        CRITICAL FIX (Audit 2025111411 Finding 5):
-        Returns dict of reset statuses to verify all temporal modules acknowledged reset.
-        This prevents silent state leakage if a module lacks reset implementation.
-
-        Call this when starting tracking on a new video sequence.
-
-        Returns:
-            Dict mapping module names to reset success status:
-            {
-                'temporal_state': True,
-                'temporal_head': bool,
-                'temporal_aggregator': bool,
-                'adaptive_weighting': bool
-            }
-        """
-        reset_status = {}
-
-        # Always clear base temporal state
-        self.temporal_state = None
-        reset_status['temporal_state'] = True
-
-        # Reset temporal head (Vision-Mamba)
-        if self.temporal_head is not None:
-            if hasattr(self.temporal_head, 'reset_state'):
-                self.temporal_head.reset_state()
-                reset_status['temporal_head'] = True
-            else:
-                reset_status['temporal_head'] = False
-                self.logger.warning("temporal_head lacks reset_state() method - state may leak!")
-        else:
-            reset_status['temporal_head'] = None  # Not used
-
-        # Reset temporal aggregator
-        if self.temporal_aggregator is not None:
-            if hasattr(self.temporal_aggregator, 'reset'):
-                self.temporal_aggregator.reset()
-                reset_status['temporal_aggregator'] = True
-            else:
-                reset_status['temporal_aggregator'] = False
-                self.logger.warning("temporal_aggregator lacks reset() method - state may leak!")
-        else:
-            reset_status['temporal_aggregator'] = None  # Not used
-
-        # Reset adaptive weighting EMA
-        if self.adaptive_weighting is not None:
-            if hasattr(self.adaptive_weighting, 'reset_state'):
-                self.adaptive_weighting.reset_state()
-                reset_status['adaptive_weighting'] = True
-            else:
-                reset_status['adaptive_weighting'] = False
-                self.logger.warning("adaptive_weighting lacks reset_state() method - state may leak!")
-        else:
-            reset_status['adaptive_weighting'] = None  # Not used
-
-        # Log summary
-        failed_resets = [k for k, v in reset_status.items() if v is False]
-        if failed_resets:
-            self.logger.error(f"Failed to reset temporal state for: {failed_resets}")
-        else:
-            self.logger.debug(f"Temporal state reset successful: {reset_status}")
-
-        return reset_status
 
     def detect_modality_availability(
         self,
@@ -566,7 +439,10 @@ class AquaSOT3DTracker(BaseModule):
         sonar_search: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
-        Extract features from RGB and Sonar backbones.
+        Extract features from RGB and Sonar backbones using template-search paradigm.
+
+        ARCHITECTURE CHANGE (Audit 2025112104):
+        Migrated to template-search dual input (OSTrack-style).
 
         Args:
             rgb_template: RGB template frame, shape (B, 3, H_t, W_t)
@@ -575,23 +451,32 @@ class AquaSOT3DTracker(BaseModule):
             sonar_search: Sonar search frame, shape (B, 1, H_s, W_s)
 
         Returns:
-            Dictionary containing extracted features
+            Dictionary containing extracted features:
+            {
+                'rgb_template_features': [B, N_z, D],
+                'rgb_search_features': [B, N_x, D],
+                'sonar_template_features': [B, N_z, D],
+                'sonar_search_features': [B, N_x, D]
+            }
         """
-        # Extract multi-modal features using frame-level processing
+        # Extract multi-modal features using template-search paradigm
         backbone_outputs = self.backbone(
-            rgb_frames=rgb_search,
-            sonar_frames=sonar_search
+            rgb_template=rgb_template,
+            rgb_search=rgb_search,
+            sonar_template=sonar_template,
+            sonar_search=sonar_search
         )
 
         # Extract features from nested structure
-        # backbone_outputs = {'rgb': {...}, 'sonar': {...}}
-        # Each modality output: {'features': ..., 'is_sequence': ..., 'batch_size': ..., 'sequence_length': ...}
-        rgb_features = backbone_outputs['rgb']['features']
-        sonar_features = backbone_outputs['sonar']['features']
-
+        # backbone_outputs = {
+        #     'rgb': {'template_features': ..., 'search_features': ...},
+        #     'sonar': {'template_features': ..., 'search_features': ...}
+        # }
         return {
-            'rgb_features': rgb_features,
-            'sonar_features': sonar_features,
+            'rgb_template_features': backbone_outputs['rgb']['template_features'],
+            'rgb_search_features': backbone_outputs['rgb']['search_features'],
+            'sonar_template_features': backbone_outputs['sonar']['template_features'],
+            'sonar_search_features': backbone_outputs['sonar']['search_features'],
         }
 
     def fuse_features(
@@ -670,40 +555,6 @@ class AquaSOT3DTracker(BaseModule):
 
         return fusion_outputs
 
-    def apply_temporal_modeling(
-        self,
-        features: torch.Tensor,
-        quality_scores: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Any]:
-        """
-        Apply temporal modeling to features.
-
-        Args:
-            features: Input features, shape (B, C, H, W) or (B, T, C, H, W)
-            quality_scores: Optional quality scores, shape (B,) or (B, T)
-
-        Returns:
-            Tuple of (aggregated_features, new_temporal_state)
-        """
-        if self.temporal_head is None:
-            return features, None
-
-        # Apply temporal head
-        aggregated_features, new_state = self.temporal_head(
-            features=features,
-            quality_scores=quality_scores,
-            temporal_state=self.temporal_state
-        )
-
-        # Apply temporal aggregation if enabled
-        if self.temporal_aggregation and self.temporal_aggregator is not None:
-            aggregated_features, _ = self.temporal_aggregator(
-                features=aggregated_features,
-                quality_scores=quality_scores,
-                temporal_state=None  # TemporalAggregator manages its own state internally
-            )
-
-        return aggregated_features, new_state
 
     def predict_boxes(
         self,
@@ -711,25 +562,22 @@ class AquaSOT3DTracker(BaseModule):
         sonar_features: torch.Tensor,
         fused_features: torch.Tensor,
         gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
-        is_temporal_sequence: bool = False
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Predict 2D bounding boxes for all modalities.
+        Predict 2D bounding boxes for all modalities using template-search paradigm.
 
         Args:
-            rgb_features: RGB features, shape (B, C_rgb, H, W) or (B*T, C_rgb, H, W)
-            sonar_features: Sonar features, shape (B, C_sonar, H, W) or (B*T, C_sonar, H, W)
+            rgb_features: RGB features, shape (B, C_rgb, H, W)
+            sonar_features: Sonar features, shape (B, C_sonar, H, W)
             fused_features: Fused features, shape (B, C_fused, H, W)
             gt_boxes: Optional ground truth boxes for loss computation
-            is_temporal_sequence: If True, skip RGB/Sonar loss (shape mismatch in temporal mode)
+            is_rgb_valid: Optional RGB validity flags, shape (B,)
+            is_sonar_valid: Optional Sonar validity flags, shape (B,)
 
         Returns:
             Dictionary containing box predictions and losses
-
-        CRITICAL FIX (Audit 2025111703 Finding 1 - RGB/Sonar loss mismatch):
-        In temporal mode, RGB/Sonar features remain [B*T, ...] but fused features
-        are [B, ...] after aggregation. Since gt_boxes are [B, 4], we cannot compute
-        RGB/Sonar loss (shape mismatch). We only compute fusion loss in temporal mode.
         """
         # Ensure features are tensors (extract from list if needed)
         if rgb_features is not None and isinstance(rgb_features, list):
@@ -747,8 +595,7 @@ class AquaSOT3DTracker(BaseModule):
             outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
             outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
 
-            # CRITICAL FIX: Skip RGB loss in temporal mode (shape mismatch)
-            if gt_boxes is not None and 'rgb' in gt_boxes and not is_temporal_sequence:
+            if gt_boxes is not None and 'rgb' in gt_boxes:
                 rgb_loss = self.rgb_box_head.compute_loss(
                     rgb_box_outputs,
                     gt_boxes['rgb']
@@ -761,8 +608,7 @@ class AquaSOT3DTracker(BaseModule):
             outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
             outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
 
-            # CRITICAL FIX: Skip Sonar loss in temporal mode (shape mismatch)
-            if gt_boxes is not None and 'sonar' in gt_boxes and not is_temporal_sequence:
+            if gt_boxes is not None and 'sonar' in gt_boxes:
                 sonar_loss = self.sonar_box_head.compute_loss(
                     sonar_box_outputs,
                     gt_boxes['sonar']
@@ -814,14 +660,13 @@ class AquaSOT3DTracker(BaseModule):
         sonar_radial_activation: torch.Tensor,
         gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
         compute_cyclic_loss: bool = True,
-        metadata: Optional[Dict] = None,
-        is_temporal_sequence: bool = False
+        metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Predict weak 3D center and compute cyclic consistency loss.
 
         CRITICAL FIX (Audit 2025111412 Finding 2):
-        Now accepts metadata for calibrated geometry. Projectors receive scale/padding
+        Accepts metadata for calibrated geometry. Projectors receive scale/padding
         info to adjust log-polar assumptions for resized data, ensuring 3D projections
         match true crop scale across sensor modalities.
 
@@ -832,7 +677,6 @@ class AquaSOT3DTracker(BaseModule):
             gt_boxes: Optional ground truth boxes for cyclic loss
             compute_cyclic_loss: Whether to compute cyclic consistency loss
             metadata: Optional dict with template/search metadata for sensor calibration
-            is_temporal_sequence: Whether in temporal sequence mode (skip projection loss)
 
         Returns:
             Dictionary containing 3D predictions and losses
@@ -892,24 +736,21 @@ class AquaSOT3DTracker(BaseModule):
             outputs['sonar_cyclic_loss'] = sonar_proj_outputs['cyclic_loss']
 
             # Compute projection loss against ground truth
-            # CRITICAL FIX: Skip projection loss in temporal mode (shape mismatch)
-            # In temporal mode: pred [B*T, 4] vs gt [B, 4]
-            if not is_temporal_sequence:
-                if 'rgb' in gt_boxes:
-                    rgb_proj_loss = self.rgb_projector.compute_projection_loss(
-                        rgb_proj_outputs['bbox_2d'],
-                        gt_boxes['rgb'],
-                        loss_type='l1'
-                    )
-                    outputs['rgb_proj_loss'] = rgb_proj_loss
+            if 'rgb' in gt_boxes:
+                rgb_proj_loss = self.rgb_projector.compute_projection_loss(
+                    rgb_proj_outputs['bbox_2d'],
+                    gt_boxes['rgb'],
+                    loss_type='l1'
+                )
+                outputs['rgb_proj_loss'] = rgb_proj_loss
 
-                if 'sonar' in gt_boxes:
-                    sonar_proj_loss = self.sonar_projector.compute_projection_loss(
-                        sonar_proj_outputs['bbox_2d'],
-                        gt_boxes['sonar'],
-                        loss_type='l1'
-                    )
-                    outputs['sonar_proj_loss'] = sonar_proj_loss
+            if 'sonar' in gt_boxes:
+                sonar_proj_loss = self.sonar_projector.compute_projection_loss(
+                    sonar_proj_outputs['bbox_2d'],
+                    gt_boxes['sonar'],
+                    loss_type='l1'
+                )
+                outputs['sonar_proj_loss'] = sonar_proj_loss
 
         return outputs
 
@@ -927,17 +768,17 @@ class AquaSOT3DTracker(BaseModule):
         metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Complete forward pass of AquaSOT-3D tracker.
+        Complete forward pass of AquaSOT-3D tracker using template-search paradigm.
 
         CRITICAL FIX (Audit 2025112101 Phase 2.2):
-        Now accepts is_rgb_valid and is_sonar_valid for conditional fusion.
+        Accepts is_rgb_valid and is_sonar_valid for conditional fusion.
         These flags enable single-modality bypass in ConditionalG2DCMA.
 
         Args:
-            rgb_template: RGB template frame, shape (B, 3, H_t, W_t) OR (B, 1, 3, H_t, W_t) for sequence mode
-            rgb_search: RGB search frame, shape (B, 3, H_s, W_s) OR (B, T, 3, H_s, W_s) for sequence mode
-            sonar_template: Sonar template frame, shape (B, 1, H_t, W_t) OR (B, 1, 1, H_t, W_t) for sequence mode
-            sonar_search: Sonar search frame, shape (B, 1, H_s, W_s) OR (B, T, 1, H_s, W_s) for sequence mode
+            rgb_template: RGB template frame, shape (B, 3, 256, 256)
+            rgb_search: RGB search frame, shape (B, 3, 512, 512)
+            sonar_template: Sonar template frame, shape (B, 1, 256, 256)
+            sonar_search: Sonar search frame, shape (B, 1, 512, 512)
             gt_boxes: Optional ground truth boxes for loss computation
                 Expected format: {'rgb': (B, 4), 'sonar': (B, 4), 'fusion': (B, 4)}
             is_rgb_valid: Optional [B] boolean tensor, True if RGB has valid target
@@ -957,83 +798,11 @@ class AquaSOT3DTracker(BaseModule):
                 - 'center_3d': 3D center (X, Y, Z) (B, 3) [if use_weak3d=True]
                 - Various losses [if return_losses=True]
                 - Intermediate features [if return_intermediate=True]
-
-        CRITICAL FIX (Audit 2025111703 Finding 1):
-        Now supports temporal sequence input with shape [B, T, C, H, W] for search frames.
-        When T>1, we reshape to [B*T, C, H, W] for backbone processing, then reshape back
-        to [B, T, C, H, W] before temporal aggregation.
         """
-        # =====================================================
-        # Stage 0a: Temporal Dimension Handling (Audit 2025111703 Finding 1)
-        # =====================================================
-        # Detect if we have temporal sequences (5D tensors)
-        is_temporal_sequence = rgb_search.ndim == 5
+        # Get batch size from template (template-search paradigm)
+        batch_size = rgb_template.shape[0]
 
-        if is_temporal_sequence:
-            # Input: [B, T, C, H, W]
-            batch_size = rgb_search.shape[0]
-            T = rgb_search.shape[1]
-
-            # Reshape search frames from [B, T, C, H, W] to [B*T, C, H, W]
-            rgb_search = rgb_search.reshape(batch_size * T, *rgb_search.shape[2:])
-            sonar_search = sonar_search.reshape(batch_size * T, *sonar_search.shape[2:])
-
-            # Repeat template T times to match: [B, C, H, W] -> [B*T, C, H, W]
-            rgb_template = rgb_template.unsqueeze(1).expand(-1, T, -1, -1, -1).reshape(batch_size * T, *rgb_template.shape[1:])
-            sonar_template = sonar_template.unsqueeze(1).expand(-1, T, -1, -1, -1).reshape(batch_size * T, *sonar_template.shape[1:])
-
-            # CRITICAL FIX (Audit 2025111703 Finding 1 - gt_boxes shape mismatch):
-            # Store original gt_boxes [B, 4] for loss computation after temporal aggregation
-            # We DON'T expand gt_boxes because temporal aggregation outputs [B, 4], not [B*T, 4]
-            gt_boxes_original = gt_boxes  # Keep original [B, 4] for loss after aggregation
-
-            # CRITICAL FIX: Store original metadata [B] for weak3d projector
-            # weak3d uses aggregated features [B, ...], so needs metadata [B], not [B*T]
-            metadata_original = metadata.copy() if metadata is not None else None
-
-            # Expand metadata if provided
-            if metadata is not None:
-                metadata_expanded = {}
-                for key, meta_list in metadata.items():
-                    if meta_list is not None:
-                        # CRITICAL FIX (Audit 2025111703 Finding 1 - metadata expansion bug):
-                        # For temporal sequences, dataset returns List[List[Dict]] (length B, each List[Dict] has length T)
-                        # After collate: metadata[key] = [[dict_0, dict_1, dict_2], [dict_3, dict_4, dict_5]]
-                        # We need to flatten: [dict_0, dict_1, dict_2, dict_3, dict_4, dict_5]
-                        expanded_list = []
-                        for item in meta_list:
-                            if isinstance(item, list):
-                                # Temporal sequence: item is a List[Dict] of length T
-                                expanded_list.extend(item)
-                            else:
-                                # Pair mode: item is a Dict, repeat it T times (T=1 here)
-                                expanded_list.extend([item] * T)
-                        metadata_expanded[key] = expanded_list
-                    else:
-                        metadata_expanded[key] = None
-                metadata = metadata_expanded
-
-                # CRITICAL DEBUG: Verify metadata expansion worked correctly
-                if metadata is not None and 'rgb_search_metadata' in metadata:
-                    actual_length = len(metadata['rgb_search_metadata']) if metadata['rgb_search_metadata'] else 0
-                    expected_length = batch_size * T
-                    if actual_length != expected_length:
-                        raise RuntimeError(
-                            f"Metadata expansion failed: expected {expected_length} entries but got {actual_length}. "
-                            f"B={batch_size}, T={T}, is_temporal={is_temporal_sequence}"
-                        )
-        else:
-            # Traditional pair mode: [B, C, H, W]
-            batch_size = rgb_template.shape[0]
-            T = 1
-            gt_boxes_original = gt_boxes  # No expansion needed in pair mode
-
-        # =====================================================
-        # Stage 0b: Metadata Validation (Audit 2025111412 Finding 4)
-        # =====================================================
-        effective_batch_size = batch_size * T
-
-        # CRITICAL: Validate metadata list lengths match effective batch size
+        # Validate metadata list lengths match batch size (Audit 2025111412 Finding 4)
         if metadata is not None:
             for key in ['rgb_search_metadata', 'sonar_search_metadata',
                        'template_rgb_metadata', 'template_sonar_metadata']:
@@ -1043,22 +812,27 @@ class AquaSOT3DTracker(BaseModule):
                     if isinstance(meta_list, dict):
                         meta_list = [meta_list]
 
-                    if len(meta_list) != effective_batch_size:
+                    if len(meta_list) != batch_size:
                         raise ValueError(
                             f"Metadata length mismatch at tracker forward: "
-                            f"{key} has {len(meta_list)} entries but effective_batch_size={effective_batch_size} (B={batch_size}, T={T}). "
+                            f"{key} has {len(meta_list)} entries but batch_size={batch_size}. "
                             f"This indicates a loader bug. Check collate function."
                         )
 
         # =====================================================
-        # Stage 1: Feature Extraction
+        # Stage 1: Feature Extraction (Template-Search Paradigm)
         # =====================================================
+        # ARCHITECTURE CHANGE (Audit 2025112104):
+        # Extract template and search features. Template-search interaction
+        # happens via self-attention in ViT backbone (one-stream processing).
         backbone_outputs = self.extract_backbone_features(
             rgb_template, rgb_search, sonar_template, sonar_search
         )
 
-        rgb_features = backbone_outputs['rgb_features']  # (B*T, C_rgb, H, W)
-        sonar_features = backbone_outputs['sonar_features']  # (B*T, C_sonar, H, W)
+        # Use search features for prediction (template info already encoded via attention)
+        # Shape: [B, N_x, D] where N_x = num_search_patches
+        rgb_features = backbone_outputs['rgb_search_features']
+        sonar_features = backbone_outputs['sonar_search_features']
 
         # =====================================================
         # Stage 2: Cross-Modal Fusion
@@ -1070,20 +844,10 @@ class AquaSOT3DTracker(BaseModule):
         if is_sonar_valid is None:
             is_sonar_valid = torch.ones(batch_size, dtype=torch.bool, device=sonar_features.device)
 
-        # CRITICAL FIX: In temporal mode, features are [B*T, ...] but validity flags are [B]
-        # We need to expand validity flags to [B*T] for fusion
-        if is_temporal_sequence:
-            # Expand validity flags from [B] to [B*T]
-            is_rgb_valid_expanded = is_rgb_valid.unsqueeze(1).expand(-1, T).reshape(-1)  # [B*T]
-            is_sonar_valid_expanded = is_sonar_valid.unsqueeze(1).expand(-1, T).reshape(-1)  # [B*T]
-        else:
-            is_rgb_valid_expanded = is_rgb_valid
-            is_sonar_valid_expanded = is_sonar_valid
-
         fusion_outputs = self.fuse_features(
             rgb_features, sonar_features,
-            is_rgb_valid=is_rgb_valid_expanded,
-            is_sonar_valid=is_sonar_valid_expanded,
+            is_rgb_valid=is_rgb_valid,
+            is_sonar_valid=is_sonar_valid,
             return_consistency=return_losses
         )
 
@@ -1266,54 +1030,13 @@ class AquaSOT3DTracker(BaseModule):
                 pass  # Keep spatial for now, heads expect spatial
 
         # =====================================================
-        # Stage 3b: Reshape for Temporal Modeling (Audit 2025111703 Finding 1)
-        # =====================================================
-        if is_temporal_sequence and self.use_temporal:
-            # Reshape from [B*T, C, H, W] back to [B, T, C, H, W] for temporal head
-            C, H, W = fused_features.shape[1:]
-            fused_features = fused_features.reshape(batch_size, T, C, H, W)
-
-            # Reshape quality scores if present
-            if fusion_quality is not None:
-                fusion_quality = fusion_quality.reshape(batch_size, T)
-
-        # =====================================================
-        # Stage 4: Temporal Modeling (Optional)
-        # =====================================================
-        if self.use_temporal:
-            fused_features, new_temporal_state = self.apply_temporal_modeling(
-                fused_features,
-                quality_scores=fusion_quality
-            )
-            self.temporal_state = new_temporal_state
-
-            # CRITICAL FIX (Audit 2025112101 Finding 1): VisionMambaHead dual-mode output
-            # Training mode: returns [B, T, C, H, W] for multi-frame supervision
-            # Inference mode: returns [B, C, H, W] for single-frame prediction
-            # We need to aggregate temporal dimension for box prediction heads
-            if fused_features.ndim == 5:
-                # Training mode: aggregate temporal features to [B, C, H, W]
-                # Use temporal mean for robust aggregation across frames
-                B, T, C, H, W = fused_features.shape
-                fused_features = fused_features.mean(dim=1)  # [B, C, H, W]
-
-                # Also aggregate quality scores if present
-                if fusion_quality is not None and fusion_quality.ndim == 2:
-                    fusion_quality = fusion_quality.mean(dim=1)  # [B]
-
-            # CRITICAL FIX (Audit 2025111703 Finding 1 - gt_boxes shape mismatch):
-            # Restore original gt_boxes [B, 4] for loss computation
-            # Temporal aggregation outputs [B, C, H, W], so we need [B, 4] targets, not [B*T, 4]
-            if is_temporal_sequence and return_losses:
-                gt_boxes = gt_boxes_original
-
-        # =====================================================
-        # Stage 5: 2D Box Prediction
+        # Stage 4: 2D Box Prediction
         # =====================================================
         box_outputs = self.predict_boxes(
             rgb_features, sonar_features, fused_features,
             gt_boxes=gt_boxes if return_losses else None,
-            is_temporal_sequence=is_temporal_sequence  # Skip RGB/Sonar loss in temporal mode
+            is_rgb_valid=is_rgb_valid,
+            is_sonar_valid=is_sonar_valid
         )
 
         # =====================================================
@@ -1346,14 +1069,11 @@ class AquaSOT3DTracker(BaseModule):
 
             # CRITICAL FIX (Audit 2025111412 Finding 2):
             # Pass metadata to weak-3D for calibrated geometry
-            # CRITICAL FIX: weak3d uses UN-aggregated features [B*T, ...] in temporal mode
-            # Therefore it needs expanded metadata [B*T], not original [B]
             weak3d_outputs = self.predict_3d_center(
                 rgb_features, sonar_features, sonar_radial,
                 gt_boxes=gt_boxes if return_losses else None,
                 compute_cyclic_loss=return_losses,
-                metadata=metadata,  # Use expanded metadata [B*T] in temporal mode
-                is_temporal_sequence=is_temporal_sequence  # Skip projection loss in temporal mode
+                metadata=metadata
             )
         else:
             weak3d_outputs = {}
@@ -1458,7 +1178,6 @@ def build_tracker(
         ...     'rgb_backbone_config': {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224'},
         ...     'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'vit'},
         ...     'fusion_config': {'type': 'g2_dcma', 'output_dim': 768},
-        ...     'temporal_config': {'type': 'mamba', 'num_blocks': 4},
         ... }
         >>> tracker = build_tracker('AquaSOT3DTracker', **config)
     """

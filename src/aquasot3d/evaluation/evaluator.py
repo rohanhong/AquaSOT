@@ -83,10 +83,10 @@ class TrackingEvaluator:
         self.overall_metrics = {}
 
         # CRITICAL FIX (Audit 2025111701 Finding 5): Enforce batch_size=1 for evaluation
-        # Batched evaluation corrupts temporal state when sequences span multiple batches
+        # Batched evaluation breaks sequence boundary management when sequences span multiple batches
         if dataloader.batch_size is not None and dataloader.batch_size > 1:
             raise ValueError(
-                f"Evaluation requires batch_size=1 to prevent temporal state leakage across sequences. "
+                f"Evaluation requires batch_size=1 to maintain sequence boundaries. "
                 f"Got batch_size={dataloader.batch_size}. Set evaluation.batch_size=1 in config."
             )
 
@@ -119,13 +119,7 @@ class TrackingEvaluator:
             'sonar_gt': []
         })
 
-        # CRITICAL FIX (Audit 2025111409 Finding 4): Track current sequence for temporal state reset
         current_sequence = None
-
-        # CRITICAL FIX (Audit 2025111412 Finding 5): Record temporal reset status per sequence
-        reset_status_log = {}
-        # Store for report generation (Audit 2025111413 Finding 5)
-        self._reset_status_log = reset_status_log
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(
@@ -152,25 +146,8 @@ class TrackingEvaluator:
                 else:
                     sequence_name = sequence_name_raw
 
-                # CRITICAL FIX (Audit 2025111409 Finding 4): Reset temporal state on sequence boundary
-                # This prevents Vision-Mamba state, EMA gates, and quality weights from leaking
-                # between sequences, ensuring benchmark protocol compliance
                 if current_sequence is None or sequence_name != current_sequence:
                     logger.debug(f"Sequence boundary detected: {current_sequence} -> {sequence_name}")
-                    if hasattr(self.model, 'reset_temporal_state'):
-                        # CRITICAL FIX (Audit 2025111412 Finding 5):
-                        # Capture reset status for QA visibility
-                        reset_status = self.model.reset_temporal_state()
-                        reset_status_log[sequence_name] = reset_status
-                        logger.debug(f"Temporal state reset: {reset_status}")
-
-                        # Warn if any module failed to reset
-                        if reset_status and any(v is False for v in reset_status.values()):
-                            failed_modules = [k for k, v in reset_status.items() if v is False]
-                            logger.warning(
-                                f"Sequence {sequence_name}: Temporal reset incomplete. "
-                                f"Failed modules: {failed_modules}"
-                            )
                     current_sequence = sequence_name
 
                 # Track batch (returns per-frame predictions)
@@ -201,8 +178,7 @@ class TrackingEvaluator:
                     'has_sonar': len(predictions.get('sonar_pred', [])) > 0,
                     'has_fusion': len(predictions.get('fusion_pred', [])) > 0
                 },
-                'quality_trends': self._compute_quality_diagnostics(predictions),
-                'temporal_reset': reset_status_log.get(sequence_name, {})
+                'quality_trends': self._compute_quality_diagnostics(predictions)
             }
 
             # Store results with diagnostics
@@ -231,12 +207,9 @@ class TrackingEvaluator:
 
         logger.info("Evaluation completed")
 
-        # CRITICAL FIX (Audit 2025111412 Finding 5):
-        # Include temporal reset status for QA visibility
         return {
             'overall': self.overall_metrics,
-            'sequences': self.sequence_results,
-            'temporal_reset_status': reset_status_log  # Per-sequence reset outcomes
+            'sequences': self.sequence_results
         }
 
     def _compute_quality_diagnostics(self, predictions: Dict) -> Dict:
@@ -922,35 +895,6 @@ class TrackingEvaluator:
             lines.append(f"    Std:    {metrics.get('avg_center_error_std', 0.0):.2f} px")
             lines.append("")
 
-        # CRITICAL FIX (Audit 2025111413 Finding 5): Include temporal reset status
-        lines.append("Temporal State Reset Summary:")
-        lines.append("-" * 50)
-
-        # Access temporal_reset_status from evaluate() return value
-        # Note: This is called during evaluate(), so we need to track it
-        if hasattr(self, '_reset_status_log'):
-            reset_log = self._reset_status_log
-            total_resets = len(reset_log)
-            failed_resets = sum(
-                1 for status in reset_log.values()
-                if status and any(v is False for v in status.values())
-            )
-
-            lines.append(f"  Total Sequence Boundaries: {total_resets}")
-            lines.append(f"  Successful Resets: {total_resets - failed_resets}")
-            lines.append(f"  Failed Resets: {failed_resets}")
-
-            if failed_resets > 0:
-                lines.append("")
-                lines.append("  Failed Reset Details:")
-                for seq_name, status in reset_log.items():
-                    if status and any(v is False for v in status.values()):
-                        failed_modules = [k for k, v in status.items() if v is False]
-                        lines.append(f"    {seq_name}: {', '.join(failed_modules)}")
-        else:
-            lines.append("  (Temporal reset tracking not available)")
-
-        lines.append("")
         lines.append("=" * 70)
 
         return "\n".join(lines)

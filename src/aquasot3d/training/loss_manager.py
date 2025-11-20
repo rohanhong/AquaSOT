@@ -45,8 +45,7 @@ class LossManager(nn.Module):
         ...     'fusion_cls': 1.5, 'fusion_box': 1.5,
         ...     'component_consistency': 0.3,
         ...     'representation_consistency': 0.15,
-        ...     'weak3d_cycle': 0.8,
-        ...     'temporal_smooth': 0.1
+        ...     'weak3d_cycle': 0.8
         ... }
         >>> manager = LossManager(loss_weights)
         >>> total_loss, loss_dict = manager.compute_losses(predictions, targets)
@@ -72,8 +71,7 @@ class LossManager(nn.Module):
             'fusion_box': 1.0,
             'component_consistency': 0.2,
             'representation_consistency': 0.1,
-            'weak3d_cycle': 0.6,
-            'temporal_smooth': 0.1
+            'weak3d_cycle': 0.6
         }
 
         self.weight_schedule = weight_schedule
@@ -113,7 +111,6 @@ class LossManager(nn.Module):
                 - 'fusion_cls': Fusion classification scores (optional)
                 - 'weak3d': Weak 3D center predictions (optional)
                 - 'consistency': Consistency losses (optional)
-                - 'temporal': Temporal smoothness losses (optional)
             targets: Dictionary containing ground truth
                 - 'rgb_box': RGB target boxes
                 - 'sonar_box': Sonar target boxes
@@ -245,13 +242,7 @@ class LossManager(nn.Module):
             loss_dict['weak3d_cycle'] = predictions['weak3d']['cyclic_loss']
 
         # ============================================
-        # 6. Temporal Smoothness Loss
-        # ============================================
-        if 'temporal' in predictions and 'smoothness_loss' in predictions['temporal']:
-            loss_dict['temporal_smooth'] = predictions['temporal']['smoothness_loss']
-
-        # ============================================
-        # 7. Combine All Losses
+        # 6. Combine All Losses
         # ============================================
         # Collect weighted losses first to ensure proper gradient tracking
         weighted_losses = {}

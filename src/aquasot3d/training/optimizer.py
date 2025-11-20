@@ -150,7 +150,6 @@ def _get_default_parameter_groups(
     # Try to identify common components
     backbone_params = []
     fusion_params = []
-    temporal_params = []
     head_params = []
     other_params = []
 
@@ -163,8 +162,6 @@ def _get_default_parameter_groups(
             backbone_params.append(param)
         elif 'fusion' in name.lower() or 'g2_dcma' in name.lower() or 'g2dcma' in name.lower():
             fusion_params.append(param)
-        elif 'temporal' in name.lower() or 'mamba' in name.lower() or 'transformer' in name.lower():
-            temporal_params.append(param)
         elif 'head' in name.lower() or 'projector' in name.lower():
             head_params.append(param)
         else:
@@ -185,14 +182,6 @@ def _get_default_parameter_groups(
             'lr': base_lr,
             'weight_decay': weight_decay,
             'name': 'fusion'
-        })
-
-    if temporal_params:
-        groups.append({
-            'params': temporal_params,
-            'lr': base_lr,
-            'weight_decay': weight_decay,
-            'name': 'temporal'
         })
 
     if head_params:

@@ -239,7 +239,6 @@ class Registry:
 # Model component registries
 BACKBONES = Registry('backbone')
 FUSION_MODULES = Registry('fusion')
-TEMPORAL_HEADS = Registry('temporal_head')
 PREDICTION_HEADS = Registry('prediction_head')
 QUALITY_ESTIMATORS = Registry('quality_estimator')
 TRACKERS = Registry('tracker')
@@ -262,7 +261,6 @@ EVALUATORS = Registry('evaluator')
 # Aliases for backward compatibility (using _REGISTRY naming convention)
 BACKBONE_REGISTRY = BACKBONES
 FUSION_REGISTRY = FUSION_MODULES
-TEMPORAL_HEAD_REGISTRY = TEMPORAL_HEADS
 PREDICTION_HEAD_REGISTRY = PREDICTION_HEADS
 QUALITY_ESTIMATOR_REGISTRY = QUALITY_ESTIMATORS
 TRACKER_REGISTRY = TRACKERS

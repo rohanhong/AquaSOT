@@ -27,38 +27,48 @@ class DummyBackbone(nn.Module):
     Returns fixed-size random features for fast testing of downstream components
     without requiring actual pretrained weights or heavy computation.
 
+    ARCHITECTURE CHANGE (Audit 2025112104):
+    Updated to match template-search ViTBackbone interface.
+
     Matches the interface of real backbones (ViTBackbone):
-    - forward(template, search, return_separate=False)
-    - Returns {'template_features': ..., 'search_features': ...} or {'features': ...}
+    - forward(template, search) -> (feat_template, feat_search)
+    - Returns Tuple[Tensor, Tensor] with shapes [B, N, D]
 
     Args:
-        output_dim: Feature dimension to output
-        spatial_size: Spatial resolution of output features (H=W)
+        output_dim: Feature dimension to output (D)
+        num_patches_template: Number of template patches (N_z, default: 256)
+        num_patches_search: Number of search patches (N_x, default: 1024)
     """
 
-    def __init__(self, output_dim: int = 256, spatial_size: int = 14):
+    def __init__(
+        self,
+        output_dim: int = 384,
+        num_patches_template: int = 256,
+        num_patches_search: int = 1024
+    ):
         super().__init__()
         self.output_dim = output_dim
-        self.spatial_size = spatial_size
+        self.num_patches_template = num_patches_template
+        self.num_patches_search = num_patches_search
         # Minimal parameters to make it a valid nn.Module
         self.dummy_param = nn.Parameter(torch.zeros(1))
 
     def forward(
         self,
         template: torch.Tensor,
-        search: torch.Tensor,
-        return_separate: bool = False
-    ) -> Dict[str, torch.Tensor]:
+        search: torch.Tensor
+    ) -> tuple:
         """
         Return dummy features with correct shape.
 
         Args:
-            template: Template frame (B, C, H_t, W_t)
-            search: Search frame (B, C, H_s, W_s)
-            return_separate: Whether to return separate template/search features
+            template: Template frame (B, C, template_size, template_size)
+            search: Search frame (B, C, search_size, search_size)
 
         Returns:
-            Dictionary with dummy features matching real backbone interface
+            Tuple of (feat_template, feat_search):
+                - feat_template: [B, N_z, D]
+                - feat_search: [B, N_x, D]
         """
         B = template.shape[0]
         device = template.device
@@ -68,29 +78,17 @@ class DummyBackbone(nn.Module):
         gen_template = torch.Generator(device='cpu').manual_seed(42)
         gen_search = torch.Generator(device='cpu').manual_seed(43)
 
-        template_features = torch.randn(
-            B, self.output_dim, self.spatial_size, self.spatial_size,
+        feat_template = torch.randn(
+            B, self.num_patches_template, self.output_dim,
             generator=gen_template
         ).to(device)
 
-        search_features = torch.randn(
-            B, self.output_dim, self.spatial_size, self.spatial_size,
+        feat_search = torch.randn(
+            B, self.num_patches_search, self.output_dim,
             generator=gen_search
         ).to(device)
 
-        if return_separate:
-            # Return separate template and search features
-            return {
-                'template_features': template_features,
-                'search_features': search_features,
-            }
-        else:
-            # Return concatenated features (typical for tracking)
-            return {
-                'features': search_features,  # Use search features as default
-                'template_features': template_features,  # Also include for compatibility
-                'search_features': search_features,
-            }
+        return feat_template, feat_search
 
     def get_feature_dim(self) -> int:
         """Return output feature dimension."""
@@ -229,10 +227,18 @@ class BackboneFactory:
         # Handle null type: return DummyBackbone for testing
         if backbone_type is None or backbone_type == 'null':
             # Create dummy backbone with configurable dimensions
-            output_dim = config.get('output_dim', 256)
-            spatial_size = config.get('spatial_size', 14)
-            logger.info(f"Creating DummyBackbone for testing: output_dim={output_dim}, spatial_size={spatial_size}")
-            return DummyBackbone(output_dim=output_dim, spatial_size=spatial_size)
+            output_dim = config.get('output_dim', 384)
+            num_patches_template = config.get('num_patches_template', 256)
+            num_patches_search = config.get('num_patches_search', 1024)
+            logger.info(
+                f"Creating DummyBackbone for testing: output_dim={output_dim}, "
+                f"num_patches_template={num_patches_template}, num_patches_search={num_patches_search}"
+            )
+            return DummyBackbone(
+                output_dim=output_dim,
+                num_patches_template=num_patches_template,
+                num_patches_search=num_patches_search
+            )
 
         return BackboneFactory.create(backbone_type, **config)
 
@@ -265,10 +271,15 @@ class BackboneFactory:
 
 class MultiModalBackbone(nn.Module):
     """
-    Multi-modal backbone that combines RGB and Sonar encoders.
+    Multi-modal backbone that combines RGB and Sonar encoders for template-search tracking.
 
     This module manages separate encoders for RGB and Sonar modalities
-    and provides a unified interface for multi-modal feature extraction.
+    and provides a unified interface for multi-modal feature extraction using
+    template-search paradigm (OSTrack-style).
+
+    ARCHITECTURE CHANGE (Audit 2025112104):
+    Migrated from frame-sequence to template-search paradigm. Now accepts
+    template and search inputs separately for each modality.
 
     IMPORTANT: Both RGB and Sonar backbones are required for training.
     Single-modality training is not supported.
@@ -278,12 +289,14 @@ class MultiModalBackbone(nn.Module):
         sonar_config: Configuration dict for Sonar encoder (required)
 
     Example:
-        >>> rgb_config = {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224'}
-        >>> sonar_config = {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224'}
+        >>> rgb_config = {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512}
+        >>> sonar_config = {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512}
         >>> backbone = MultiModalBackbone(rgb_config, sonar_config)
-        >>> rgb_frames = torch.randn(4, 5, 3, 512, 512)
-        >>> sonar_frames = torch.randn(4, 5, 1, 512, 512)
-        >>> outputs = backbone(rgb_frames, sonar_frames)
+        >>> rgb_template = torch.randn(4, 3, 256, 256)
+        >>> rgb_search = torch.randn(4, 3, 512, 512)
+        >>> sonar_template = torch.randn(4, 1, 256, 256)
+        >>> sonar_search = torch.randn(4, 1, 512, 512)
+        >>> outputs = backbone(rgb_template, rgb_search, sonar_template, sonar_search)
     """
 
     def __init__(
@@ -305,38 +318,53 @@ class MultiModalBackbone(nn.Module):
 
     def forward(
         self,
-        rgb_frames: torch.Tensor,
-        sonar_frames: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+        rgb_template: torch.Tensor,
+        rgb_search: torch.Tensor,
+        sonar_template: torch.Tensor,
+        sonar_search: torch.Tensor
+    ) -> Dict[str, Any]:
         """
-        Forward pass through both modalities.
+        Forward pass through both modalities using template-search paradigm.
 
-        Frame-level processing: processes consecutive frames for temporal tracking.
-        Input frames can be:
-        - Single frame: (B, C, H, W)
-        - Frame sequence: (B, T, C, H, W)
+        ARCHITECTURE CHANGE (Audit 2025112104):
+        Migrated from frame-sequence to template-search processing.
 
         Args:
-            rgb_frames: RGB frames (B, C, H, W) or (B, T, C, H, W) where C=3
-            sonar_frames: Sonar frames (B, C, H, W) or (B, T, C, H, W) where C=1
+            rgb_template: RGB template (B, 3, template_size, template_size)
+            rgb_search: RGB search (B, 3, search_size, search_size)
+            sonar_template: Sonar template (B, 1, template_size, template_size)
+            sonar_search: Sonar search (B, 1, search_size, search_size)
 
         Returns:
             Dictionary containing features from both modalities:
             {
-                'rgb': {'features': ..., 'is_sequence': bool, 'batch_size': int, 'sequence_length': int},
-                'sonar': {'features': ..., 'is_sequence': bool, 'batch_size': int, 'sequence_length': int}
+                'rgb': {
+                    'template_features': [B, N_z, D],
+                    'search_features': [B, N_x, D]
+                },
+                'sonar': {
+                    'template_features': [B, N_z, D],
+                    'search_features': [B, N_x, D]
+                }
             }
+            where N_z = (template_size // patch_size)^2, N_x = (search_size // patch_size)^2
         """
-        # Extract RGB features
-        rgb_outputs = self.rgb_backbone(rgb_frames)
+        # Extract RGB template-search features
+        rgb_feat_template, rgb_feat_search = self.rgb_backbone(rgb_template, rgb_search)
 
-        # Extract Sonar features
-        sonar_outputs = self.sonar_encoder(sonar_frames)
+        # Extract Sonar template-search features
+        sonar_feat_template, sonar_feat_search = self.sonar_encoder(sonar_template, sonar_search)
 
-        # Combine outputs
+        # Package outputs
         outputs = {
-            'rgb': rgb_outputs,
-            'sonar': sonar_outputs,
+            'rgb': {
+                'template_features': rgb_feat_template,
+                'search_features': rgb_feat_search,
+            },
+            'sonar': {
+                'template_features': sonar_feat_template,
+                'search_features': sonar_feat_search,
+            },
         }
 
         return outputs

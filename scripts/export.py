@@ -59,7 +59,6 @@ def load_model(checkpoint_path, device='cpu'):
             rgb_backbone_type=cfg.model.backbone.rgb.type,
             sonar_encoder_type=cfg.model.backbone.sonar.type,
             fusion_config=cfg.model.fusion,
-            temporal_config=cfg.model.temporal,
             head_configs=cfg.model.heads
         )
     else:

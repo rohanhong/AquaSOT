@@ -1,15 +1,15 @@
 """
 Vision Transformer (ViT) Backbone for RGB Images
 
-This module implements a ViT-based backbone for frame-level temporal tracking.
+This module implements a ViT-based backbone for template-search tracking.
 Loads pretrained ViT from timm and adapts it for tracking tasks.
 
-ARCHITECTURE CHANGE (Audit 2025112006):
-Refactored from template-search paradigm to single-frame processing for
-Vision-Mamba temporal modeling.
+ARCHITECTURE CHANGE (Audit 2025112104):
+Migrated to OSTrack one-stream template-search paradigm. Processes template
+and search regions jointly through self-attention for better feature interaction.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-20
+Date: 2025-11-21
 """
 
 import torch
@@ -25,19 +25,20 @@ from aquasot3d.core import BACKBONE_REGISTRY, BaseModule
 @BACKBONE_REGISTRY.register("vit")
 class ViTBackbone(BaseModule):
     """
-    Unified Vision Transformer backbone for RGB and Sonar image encoding.
+    Unified Vision Transformer backbone for RGB and Sonar template-search tracking.
 
-    Supports both RGB (3-channel) and Sonar (1-channel) inputs through optional
-    channel adaptation. Processes frames independently for temporal modeling.
+    Implements OSTrack one-stream architecture: concatenates template and search tokens
+    before transformer processing, enabling self-attention across both regions.
 
-    ARCHITECTURE CHANGE (Audit 2025112006):
-    Refactored from template-search paradigm to single-frame processing.
-    Now supports both single-frame [B, C, H, W] and frame-sequence [B, T, C, H, W] inputs.
+    ARCHITECTURE CHANGE (Audit 2025112104):
+    Migrated from frame-sequence processing to template-search paradigm.
+    Separate positional embeddings for template (256x256) and search (512x512).
 
     Args:
         model_name: timm model name (e.g., 'vit_base_patch16_224')
         pretrained: Whether to load ImageNet pretrained weights
-        img_size: Input image size (default: 224)
+        template_size: Template input size (default: 256)
+        search_size: Search input size (default: 512)
         patch_size: Patch size for ViT (default: 16)
         embed_dim: Embedding dimension (default: 768 for ViT-Base)
         depth: Number of transformer blocks (default: 12)
@@ -49,20 +50,23 @@ class ViTBackbone(BaseModule):
         in_channels: Input channels (3 for RGB, 1 for Sonar, default: 3)
 
     Returns:
-        Dictionary containing:
-            - 'features': Final layer features (B, N, C) or (B*T, N, C) for sequences
-            - 'interm_features': Intermediate layer features (optional)
-            - 'attention_weights': Self-attention weights (optional)
+        Tuple of (feat_template, feat_search):
+            - feat_template: [B, N_z, C] where N_z = (template_size // patch_size)^2
+            - feat_search: [B, N_x, C] where N_x = (search_size // patch_size)^2
 
     Example:
-        >>> # RGB backbone
-        >>> rgb_backbone = ViTBackbone(model_name='vit_base_patch16_224', in_channels=3)
-        >>> # Single frame
-        >>> frame = torch.randn(4, 3, 384, 384)
-        >>> outputs = rgb_backbone(frame)
-        >>> # Frame sequence
-        >>> frames = torch.randn(4, 5, 3, 384, 384)  # [B, T, C, H, W]
-        >>> outputs = rgb_backbone(frames)  # Processes as [B*T, C, H, W]
+        >>> # RGB backbone for template-search
+        >>> rgb_backbone = ViTBackbone(
+        ...     model_name='vit_base_patch16_224',
+        ...     template_size=256,
+        ...     search_size=512,
+        ...     in_channels=3
+        ... )
+        >>> template = torch.randn(4, 3, 256, 256)
+        >>> search = torch.randn(4, 3, 512, 512)
+        >>> feat_z, feat_x = rgb_backbone(template, search)
+        >>> print(feat_z.shape)  # [4, 256, 768]
+        >>> print(feat_x.shape)  # [4, 1024, 768]
     """
 
     def __init__(
@@ -70,7 +74,8 @@ class ViTBackbone(BaseModule):
         model_name: str = "vit_base_patch16_224",
         pretrained: bool = True,
         pretrained_path: Optional[str] = None,
-        img_size: int = 224,
+        template_size: int = 256,  # NEW: Template image size
+        search_size: int = 512,    # NEW: Search image size
         patch_size: int = 16,
         embed_dim: int = 768,
         depth: int = 12,
@@ -87,7 +92,8 @@ class ViTBackbone(BaseModule):
         self.model_name = model_name
         self.pretrained = pretrained
         self.pretrained_path = pretrained_path
-        self.img_size = img_size
+        self.template_size = template_size  # NEW: 256
+        self.search_size = search_size      # NEW: 512
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.depth = depth
@@ -104,11 +110,12 @@ class ViTBackbone(BaseModule):
             self.channel_adapter = None
 
         # Load pretrained ViT from timm (ImageNet weights)
+        # Note: Use template_size as base img_size for pretrained loading
         try:
             self.vit = timm.create_model(
                 model_name,
                 pretrained=pretrained,
-                img_size=img_size,
+                img_size=template_size,  # Use template size for initialization
                 num_classes=0,  # Remove classification head
                 global_pool='',  # Remove global pooling
                 dynamic_img_size=True,  # Allow variable input sizes
@@ -122,9 +129,37 @@ class ViTBackbone(BaseModule):
         if hasattr(self.vit, 'patch_embed'):
             self.patch_size = self.vit.patch_embed.patch_size[0]
 
-        # Calculate number of patches
-        self.num_patches_per_side = img_size // patch_size
-        self.num_patches = self.num_patches_per_side ** 2
+        # Calculate number of patches for template and search
+        self.num_patches_template = (template_size // self.patch_size) ** 2  # 256/16 = 16, 16*16 = 256
+        self.num_patches_search = (search_size // self.patch_size) ** 2      # 512/16 = 32, 32*32 = 1024
+
+        # CRITICAL: Create SEPARATE positional embeddings for template and search (OSTrack style)
+        # Remove original pos_embed from ViT (will use our custom embeddings)
+        if hasattr(self.vit, 'pos_embed'):
+            # Copy pretrained pos_embed for initialization
+            pretrained_pos_embed = self.vit.pos_embed.data.clone()
+            # Delete ViT's pos_embed to avoid confusion
+            delattr(self.vit, 'pos_embed')
+
+        # Initialize learnable positional embeddings
+        self.pos_embed_z = nn.Parameter(torch.zeros(1, self.num_patches_template, self.embed_dim))
+        self.pos_embed_x = nn.Parameter(torch.zeros(1, self.num_patches_search, self.embed_dim))
+
+        # Initialize from pretrained pos_embed via interpolation
+        if 'pretrained_pos_embed' in locals():
+            # Remove cls token if exists
+            if pretrained_pos_embed.shape[1] == (template_size // self.patch_size) ** 2 + 1:
+                pretrained_pos_embed = pretrained_pos_embed[:, 1:, :]  # Remove cls token
+
+            # Interpolate to template size (may not need if already correct size)
+            self.pos_embed_z.data = self._interpolate_pos_embed(
+                pretrained_pos_embed, self.num_patches_template
+            )
+
+            # Interpolate to search size
+            self.pos_embed_x.data = self._interpolate_pos_embed(
+                pretrained_pos_embed, self.num_patches_search
+            )
 
         # Load pretrained checkpoint if specified (Stage 1 RGB-only weights)
         if pretrained_path is not None:
@@ -134,17 +169,13 @@ class ViTBackbone(BaseModule):
         if freeze_backbone:
             self._freeze_parameters()
 
-        # Position encoding adaptation for different input sizes
-        self.pos_embed_adapter = PositionEmbeddingAdapter(
-            embed_dim=self.embed_dim,
-            default_size=self.num_patches_per_side
-        )
-
         self.logger.info(
-            f"Initialized ViTRGBBackbone: model={model_name}, "
+            f"Initialized ViTBackbone (OSTrack one-stream): model={model_name}, "
             f"embed_dim={self.embed_dim}, patch_size={self.patch_size}, "
-            f"img_size={img_size}, pretrained={pretrained}, "
-            f"pretrained_path={pretrained_path}"
+            f"template_size={template_size}, search_size={search_size}, "
+            f"num_patches_template={self.num_patches_template}, "
+            f"num_patches_search={self.num_patches_search}, "
+            f"pretrained={pretrained}, pretrained_path={pretrained_path}"
         )
 
     def _freeze_parameters(self):
@@ -152,6 +183,46 @@ class ViTBackbone(BaseModule):
         for param in self.vit.parameters():
             param.requires_grad = False
         self.logger.info("Froze ViT backbone parameters")
+
+    def _interpolate_pos_embed(
+        self,
+        pos_embed: torch.Tensor,
+        target_num_patches: int
+    ) -> torch.Tensor:
+        """
+        Interpolate positional embeddings to target number of patches.
+
+        Args:
+            pos_embed: Source position embeddings [1, N_src, C]
+            target_num_patches: Target number of patches
+
+        Returns:
+            Interpolated position embeddings [1, target_num_patches, C]
+        """
+        if pos_embed.shape[1] == target_num_patches:
+            return pos_embed
+
+        # Get source and target grid sizes
+        src_num_patches = pos_embed.shape[1]
+        src_size = int(src_num_patches ** 0.5)
+        target_size = int(target_num_patches ** 0.5)
+
+        # Reshape to 2D grid [1, C, H, W]
+        C = pos_embed.shape[2]
+        pos_embed_2d = pos_embed.reshape(1, src_size, src_size, C).permute(0, 3, 1, 2)
+
+        # Interpolate using bilinear
+        pos_embed_interp = torch.nn.functional.interpolate(
+            pos_embed_2d,
+            size=(target_size, target_size),
+            mode='bilinear',
+            align_corners=False
+        )
+
+        # Reshape back to [1, N, C]
+        pos_embed_interp = pos_embed_interp.permute(0, 2, 3, 1).reshape(1, target_num_patches, C)
+
+        return pos_embed_interp
 
     def _load_pretrained_checkpoint(self, checkpoint_path: str):
         """
@@ -291,103 +362,79 @@ class ViTBackbone(BaseModule):
             )
             raise
 
-    def forward_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(
+        self,
+        x_template: torch.Tensor,
+        x_search: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Extract features from input image.
+        OSTrack one-stream forward pass: process template and search jointly.
+
+        ARCHITECTURE CHANGE (Audit 2025112104):
+        Migrated to template-search paradigm. Concatenates template and search tokens
+        before transformer, enabling cross-attention between regions.
 
         Args:
-            x: Input tensor (B, C, H, W)
+            x_template: Template image [B, C, template_size, template_size] (e.g., [B, 3, 256, 256])
+            x_search: Search image [B, C, search_size, search_size] (e.g., [B, 3, 512, 512])
 
         Returns:
-            Dictionary with extracted features
+            Tuple of (feat_template, feat_search):
+                - feat_template: [B, N_z, D] where N_z = (template_size // patch_size)^2
+                - feat_search: [B, N_x, D] where N_x = (search_size // patch_size)^2
+
+        Example:
+            >>> template = torch.randn(4, 3, 256, 256)
+            >>> search = torch.randn(4, 3, 512, 512)
+            >>> feat_z, feat_x = backbone(template, search)
+            >>> print(feat_z.shape)  # [4, 256, 768]
+            >>> print(feat_x.shape)  # [4, 1024, 768]
         """
-        B = x.shape[0]
+        B = x_template.shape[0]
 
-        # Patch embedding
-        if hasattr(self.vit, 'patch_embed'):
-            x = self.vit.patch_embed(x)  # (B, N, C) or (B, H, W, C) with dynamic_img_size
-            # If dynamic_img_size is enabled, flatten spatial dimensions
-            if x.dim() == 4:  # (B, H, W, C)
-                B, H, W, C = x.shape
-                x = x.reshape(B, H * W, C)  # (B, N, C)
-        else:
-            raise AttributeError("ViT model does not have patch_embed attribute")
+        # Apply channel adapter if needed (for Sonar)
+        if self.channel_adapter is not None:
+            x_template = self.channel_adapter(x_template)
+            x_search = self.channel_adapter(x_search)
 
-        # Add class token if exists
-        if hasattr(self.vit, 'cls_token'):
-            cls_tokens = self.vit.cls_token.expand(B, -1, -1)
-            x = torch.cat((cls_tokens, x), dim=1)
+        # 1. Patch embedding
+        tokens_z = self.vit.patch_embed(x_template)  # [B, N_z, D]
+        tokens_x = self.vit.patch_embed(x_search)    # [B, N_x, D]
 
-        # Add position embedding with adaptation
-        if hasattr(self.vit, 'pos_embed'):
-            x = x + self.pos_embed_adapter(self.vit.pos_embed, x.shape[1])
+        # Handle dynamic_img_size mode (flatten if needed)
+        if tokens_z.dim() == 4:  # [B, H, W, C]
+            B, H_z, W_z, D = tokens_z.shape
+            tokens_z = tokens_z.reshape(B, H_z * W_z, D)
+        if tokens_x.dim() == 4:
+            B, H_x, W_x, D = tokens_x.shape
+            tokens_x = tokens_x.reshape(B, H_x * W_x, D)
+
+        # 2. Add SEPARATE positional embeddings (OSTrack key innovation)
+        tokens_z = tokens_z + self.pos_embed_z  # [B, N_z, D]
+        tokens_x = tokens_x + self.pos_embed_x  # [B, N_x, D]
+
+        # 3. Concatenate template and search tokens (ONE-STREAM)
+        tokens = torch.cat([tokens_z, tokens_x], dim=1)  # [B, N_z + N_x, D]
 
         # Apply position dropout
         if hasattr(self.vit, 'pos_drop'):
-            x = self.vit.pos_drop(x)
+            tokens = self.vit.pos_drop(tokens)
 
-        # Transformer blocks
-        interm_features = []
+        # 4. Transformer blocks (self-attention across BOTH template and search)
         if hasattr(self.vit, 'blocks'):
-            for i, blk in enumerate(self.vit.blocks):
-                x = blk(x)
-                if self.return_interm_layers and i in [self.depth // 4, self.depth // 2, 3 * self.depth // 4]:
-                    interm_features.append(x)
+            for blk in self.vit.blocks:
+                tokens = blk(tokens)
 
-        # Final layer norm
+        # 5. Final layer norm
         if hasattr(self.vit, 'norm'):
-            x = self.vit.norm(x)
+            tokens = self.vit.norm(tokens)
 
-        outputs = {'features': x}
-        if self.return_interm_layers:
-            outputs['interm_features'] = interm_features
+        # 6. Split back into template and search features
+        N_z = self.num_patches_template
+        feat_template = tokens[:, :N_z, :]      # [B, N_z, D]
+        feat_search = tokens[:, N_z:, :]        # [B, N_x, D]
 
-        return outputs
-
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        Forward pass for single-frame or frame-sequence processing.
-
-        ARCHITECTURE CHANGE (Audit 2025112006):
-        Replaced template-search paradigm with single-frame processing.
-
-        Args:
-            x: Input frames
-                - Single frame: (B, C, H, W)
-                - Frame sequence: (B, T, C, H, W) -> reshaped to (B*T, C, H, W)
-
-        Returns:
-            Dictionary containing:
-                - 'features': Encoded features (B, N, C) or (B*T, N, C)
-                - 'interm_features': Intermediate features (optional)
-                - 'is_sequence': Boolean indicating if input was a sequence
-                - 'batch_size': Original batch size B (for sequence reshaping)
-                - 'sequence_length': T (for sequence reshaping, None for single frame)
-        """
-        # Detect input shape
-        is_sequence = x.ndim == 5  # [B, T, C, H, W]
-
-        if is_sequence:
-            B, T, C, H, W = x.shape
-            # Reshape to process all frames independently
-            x = x.reshape(B * T, C, H, W)  # [B*T, C, H, W]
-        else:
-            B = x.shape[0]
-            T = None
-
-        # Apply channel adapter for single-channel inputs (e.g., Sonar)
-        if self.channel_adapter is not None:
-            x = self.channel_adapter(x)
-
-        # Extract features
-        outputs = self.forward_features(x)
-
-        # Add metadata for sequence handling
-        outputs['is_sequence'] = is_sequence
-        outputs['batch_size'] = B
-        outputs['sequence_length'] = T
-
-        return outputs
+        return feat_template, feat_search
 
 
     def get_num_patches(self, img_size: int) -> int:
@@ -397,66 +444,6 @@ class ViTBackbone(BaseModule):
     def get_feature_dim(self) -> int:
         """Get output feature dimension."""
         return self.embed_dim
-
-
-class PositionEmbeddingAdapter(nn.Module):
-    """
-    Adapts position embeddings for different input resolutions.
-
-    Uses bilinear interpolation to resize position embeddings when input
-    resolution differs from the default resolution.
-    """
-
-    def __init__(self, embed_dim: int, default_size: int = 14):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.default_size = default_size
-
-    def forward(self, pos_embed: torch.Tensor, target_num_patches: int) -> torch.Tensor:
-        """
-        Adapt position embeddings to target number of patches.
-
-        Args:
-            pos_embed: Original position embeddings (1, N+1, C) or (1, N, C)
-            target_num_patches: Target number of patches (including cls token if present)
-
-        Returns:
-            Adapted position embeddings
-        """
-        if pos_embed.shape[1] == target_num_patches:
-            return pos_embed
-
-        # Check if cls token is present
-        has_cls_token = False
-        if pos_embed.shape[1] == self.default_size ** 2 + 1:
-            has_cls_token = True
-            cls_pos_embed = pos_embed[:, :1, :]
-            pos_embed = pos_embed[:, 1:, :]
-            target_num_patches -= 1
-
-        # Calculate target grid size
-        target_size = int(target_num_patches ** 0.5)
-
-        # Reshape to 2D
-        pos_embed = pos_embed.reshape(1, self.default_size, self.default_size, self.embed_dim)
-        pos_embed = pos_embed.permute(0, 3, 1, 2)  # (1, C, H, W)
-
-        # Interpolate
-        pos_embed = torch.nn.functional.interpolate(
-            pos_embed,
-            size=(target_size, target_size),
-            mode='bilinear',
-            align_corners=False
-        )
-
-        # Reshape back
-        pos_embed = pos_embed.permute(0, 2, 3, 1).reshape(1, target_num_patches, self.embed_dim)
-
-        # Add cls token back if present
-        if has_cls_token:
-            pos_embed = torch.cat([cls_pos_embed, pos_embed], dim=1)
-
-        return pos_embed
 
 
 def create_vit_backbone(

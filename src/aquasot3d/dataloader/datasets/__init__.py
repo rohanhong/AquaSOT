@@ -1,7 +1,11 @@
 """
 Dataset loaders for AquaSOT-3D.
 
-This module contains dataset classes for loading RGB-Sonar tracking sequences.
+ARCHITECTURE CHANGE (Audit 2025112104):
+Migrated from frame-sequence to template-search paradigm.
+Removed sequence_dataset and sequence_sampler modules.
+
+This module contains dataset classes for template-search tracking.
 """
 
 from .rgb_sonar_dataset import (
@@ -11,16 +15,8 @@ from .rgb_sonar_dataset import (
     is_occluded,
     parse_groundtruth,
 )
-from .sequence_dataset import FrameSequenceDataset
+from .template_search_dataset import TemplateSearchDataset, template_search_collate_fn
 from .evaluation_dataset import EvaluationSequenceDataset
-from .sequence_sampler import (
-    BaseSampler,
-    UniformSampler,
-    RandomSampler,
-    OcclusionAwareSampler,
-    AdaptiveSampler,
-    create_sampler,
-)
 from .augmentation import (
     BaseAugmentation,
     TrackingAugmentation,
@@ -36,20 +32,19 @@ from .augmentation import (
 )
 
 __all__ = [
+    # Base datasets
     'RGBSonarDataset',
     'MultiSequenceRGBSonarDataset',
     'SequenceMetadata',
-    'FrameSequenceDataset',
+    # Template-search training dataset
+    'TemplateSearchDataset',
+    'template_search_collate_fn',
+    # Evaluation dataset
     'EvaluationSequenceDataset',
+    # Utilities
     'is_occluded',
     'parse_groundtruth',
-    'BaseSampler',
-    'UniformSampler',
-    'RandomSampler',
-    'OcclusionAwareSampler',
-    'AdaptiveSampler',
-    'create_sampler',
-    # 'TemplateSearchSampler',  # Deprecated: full-image approach used instead
+    # Augmentation
     'BaseAugmentation',
     'TrackingAugmentation',
     'TemplateSearchAugmentation',

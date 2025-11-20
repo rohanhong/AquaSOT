@@ -151,10 +151,6 @@ class Trainer:
         self.global_step = 0
         self.best_metric = float('-inf')
 
-        # CRITICAL FIX (Audit 2025111703 Finding 3): Track sequence boundaries for smart reset
-        # Only reset temporal state when sequence changes, not every batch
-        self._last_sequence_names = set()  # Track sequences in last batch
-
         # Metrics tracking
         self.train_metrics = defaultdict(list)
         self.val_metrics = defaultdict(list)
@@ -329,10 +325,8 @@ class Trainer:
             # Move batch to device
             batch = self._to_device(batch)
 
-            # CRITICAL FIX (Audit 2025112006): Frame-level temporal tracking format
             # Extract template and search frames from sequence
-            # FrameSequenceDataset returns: rgb_frames [B, T, C, H, W], target_idx [B]
-            # Tracker expects: rgb_template [B, C, H, W], rgb_search [B, T, C, H, W]
+            # TemplateSearchDataset returns: rgb_template, rgb_search, sonar_template, sonar_search
 
             # Determine batch size from frames
             batch_size = batch['rgb_frames'].shape[0] if 'rgb_frames' in batch and batch['rgb_frames'] is not None else 0
@@ -448,29 +442,6 @@ class Trainer:
                             f"Trainer metadata validation failed: {key} has {len(meta_list)} "
                             f"entries but batch_size={batch_size}. Loader bug detected!"
                         )
-
-            # CRITICAL FIX (Audit 2025111703 Finding 3): Smart reset strategy for EMA aggregator training
-            # Only reset when sequence boundaries are crossed, not every batch
-            # This allows EMA aggregator and Vision-Mamba to learn from consecutive frames
-            if hasattr(self.model, 'reset_temporal_state'):
-                # Extract sequence names from batch
-                current_sequences = set()
-                if 'sequence_name' in batch:
-                    seq_names = batch['sequence_name']
-                    if isinstance(seq_names, (list, tuple)):
-                        current_sequences = set(seq_names)
-                    else:
-                        current_sequences = {seq_names}
-
-                # Reset only if sequences have changed from last batch
-                # This prevents cross-sequence state leakage while allowing intra-sequence learning
-                if len(current_sequences) > 0 and current_sequences != self._last_sequence_names:
-                    if len(self._last_sequence_names) > 0:  # Not first batch
-                        self.model.reset_temporal_state()
-                    self._last_sequence_names = current_sequences
-                elif len(current_sequences) == 0:
-                    # Fallback: reset every batch if no sequence info (backward compatible with Audit 2025111702)
-                    self.model.reset_temporal_state()
 
             # Forward pass with optional AMP
             if self.use_amp:
@@ -599,10 +570,8 @@ class Trainer:
         """
         self.model.eval()
 
-        # Reset temporal state at the start of validation epoch
-        # Prevents cross-sequence state leakage in adaptive weighting and temporal modules
-        if hasattr(self.model, 'reset_temporal_state'):
-            self.model.reset_temporal_state()
+        # ARCHITECTURE CHANGE (Audit 2025112104): Temporal state reset removed
+        # Template-search paradigm is stateless, no cross-sequence state leakage possible
 
         val_metrics = defaultdict(float)
         val_counts = defaultdict(int)
@@ -625,8 +594,7 @@ class Trainer:
                 # Move batch to device
                 batch = self._to_device(batch)
 
-                # CRITICAL FIX (Audit 2025112006): Frame-level temporal tracking format
-                # Extract template and search frames from sequence (same as training)
+                # Extract template and search frames from sequence
 
                 # Determine batch size from frames
                 batch_size = batch['rgb_frames'].shape[0] if 'rgb_frames' in batch and batch['rgb_frames'] is not None else 0
