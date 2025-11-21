@@ -354,7 +354,7 @@ class Trainer:
             # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
             validity_stats['total_samples'] += batch_size
 
-            # Validity flags are per-frame [B, T], extract target frame [B]
+            # Validity flags handling: support both template-search [B] and frame sequence [B, T] formats
             if 'is_valid' in batch:
                 # Legacy format: single validity flag [B]
                 valid_count = batch['is_valid'].sum().item()
@@ -362,20 +362,26 @@ class Trainer:
                 validity_stats['invalid_samples'] += (batch_size - valid_count)
 
             if 'is_valid_rgb' in batch:
-                # Frame sequence format: [B, T], extract target frame
-                if target_idx is not None:
-                    valid_rgb = batch['is_valid_rgb'][torch.arange(batch_size), target_idx]
-                    validity_stats['valid_rgb'] += valid_rgb.sum().item()
+                # Adaptive handling based on tensor shape
+                is_valid_rgb = batch['is_valid_rgb']
+                if is_valid_rgb.dim() == 2:
+                    # Frame sequence format: [B, T], extract last frame (search frame)
+                    valid_rgb = is_valid_rgb[:, -1]  # Use last frame as target
                 else:
-                    validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
+                    # Template-search format: [B], already target frame
+                    valid_rgb = is_valid_rgb
+                validity_stats['valid_rgb'] += valid_rgb.sum().item()
 
             if 'is_valid_sonar' in batch:
-                # Frame sequence format: [B, T], extract target frame
-                if target_idx is not None:
-                    valid_sonar = batch['is_valid_sonar'][torch.arange(batch_size), target_idx]
-                    validity_stats['valid_sonar'] += valid_sonar.sum().item()
+                # Adaptive handling based on tensor shape
+                is_valid_sonar = batch['is_valid_sonar']
+                if is_valid_sonar.dim() == 2:
+                    # Frame sequence format: [B, T], extract last frame (search frame)
+                    valid_sonar = is_valid_sonar[:, -1]  # Use last frame as target
                 else:
-                    validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
+                    # Template-search format: [B], already target frame
+                    valid_sonar = is_valid_sonar
+                validity_stats['valid_sonar'] += valid_sonar.sum().item()
 
             # Prepare ground truth boxes
             # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):

@@ -192,7 +192,9 @@ class Weak3DHead(BaseHead):
 
         # CRITICAL FIX (Audit 2025112103): Radial projection layer for extract_radial_activation
         # Moved from forward pass to avoid memory leak
-        self.radial_projection_layer = nn.LazyLinear(num_radial_bins)
+        # CRITICAL FIX (2025-11-21): Replaced LazyLinear with Linear to avoid uninitialized parameter error
+        # Input dimension is sonar_feat_dim (from backbone ViT embed_dim)
+        self.radial_projection_layer = nn.Linear(sonar_feat_dim, num_radial_bins)
 
         # Horizontal viewing angle (theta_x) estimation: Dual-branch with adaptive fusion
         # CRITICAL (Audit 2025112102): Predicts horizontal viewing angle theta_x (radians)

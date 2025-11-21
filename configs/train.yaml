@@ -41,8 +41,8 @@ data:
   quality_threshold_rgb: 0.7     # RGB quality threshold for template update (inference only)
   quality_threshold_sonar: 0.7   # Sonar quality threshold for template update (inference only)
 
-  num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
-  prefetch_factor: 2  # Higher performance: 3
+  num_workers: 24  # Workstation: 24 (Laptop: 8)
+  prefetch_factor: 4  # Workstation: 4 (Laptop: 3)
 
   augmentation:
     enabled: true
@@ -139,8 +139,8 @@ training:
 
   num_epochs: 100  # Extended for end-to-end convergence
 
-  batch_size: 2  # Optimized for 8GB GPU (RTX 3070 Ti)
-  gradient_accumulation_steps: 16  # Effective batch = 2×16 = 32 (Audit 2025112103)
+  batch_size: 6  # Workstation: 6 (Laptop: 2), effective batch with grad_accum = 36
+  gradient_accumulation_steps: 6  # Workstation: 6 (Laptop: 16)
 
   optimizer:
     lr: 0.0001  # Standard learning rate for ViT fine-tuning

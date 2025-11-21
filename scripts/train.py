@@ -163,7 +163,20 @@ def build_model(cfg):
     )
 
     logger.info(f"Model built successfully")
-    logger.info(f"Total parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+
+    # Count parameters safely (skip uninitialized LazyModule parameters)
+    try:
+        # Check if parameter is initialized (for LazyModules)
+        def is_initialized(p):
+            if hasattr(p, 'is_initialized'):
+                return p.is_initialized()
+            return True
+
+        total_params = sum(p.numel() for p in model.parameters() if is_initialized(p))
+        logger.info(f"Total parameters: {total_params / 1e6:.2f}M")
+    except (ValueError, RuntimeError) as e:
+        logger.warning(f"Could not count parameters (LazyModules may need initialization): {e}")
+        logger.info("Parameter count will be available after first forward pass")
 
     return model
 
