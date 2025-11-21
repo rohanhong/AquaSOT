@@ -658,43 +658,51 @@ class Trainer:
                     validity_stats['invalid_samples'] += (batch_size - valid_count)
 
                 if 'is_valid_rgb' in batch:
-                    if target_idx is not None:
-                        valid_rgb = batch['is_valid_rgb'][torch.arange(batch_size), target_idx]
-                        validity_stats['valid_rgb'] += valid_rgb.sum().item()
+                    # CRITICAL FIX (2025-11-21): Adaptive handling for template-search migration
+                    # Support both [B, T] frame sequence and [B] template-search formats
+                    is_valid_rgb = batch['is_valid_rgb']
+                    if is_valid_rgb.dim() == 2:
+                        # Frame sequence format: [B, T], extract last frame (search frame)
+                        valid_rgb = is_valid_rgb[:, -1]  # Use last frame as target
                     else:
-                        validity_stats['valid_rgb'] += batch['is_valid_rgb'].sum().item()
+                        # Template-search format: [B], already target frame
+                        valid_rgb = is_valid_rgb
+                    validity_stats['valid_rgb'] += valid_rgb.sum().item()
 
                 if 'is_valid_sonar' in batch:
-                    if target_idx is not None:
-                        valid_sonar = batch['is_valid_sonar'][torch.arange(batch_size), target_idx]
-                        validity_stats['valid_sonar'] += valid_sonar.sum().item()
+                    # CRITICAL FIX (2025-11-21): Adaptive handling for template-search migration
+                    # Support both [B, T] frame sequence and [B] template-search formats
+                    is_valid_sonar = batch['is_valid_sonar']
+                    if is_valid_sonar.dim() == 2:
+                        # Frame sequence format: [B, T], extract last frame (search frame)
+                        valid_sonar = is_valid_sonar[:, -1]  # Use last frame as target
                     else:
-                        validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
+                        # Template-search format: [B], already target frame
+                        valid_sonar = is_valid_sonar
+                    validity_stats['valid_sonar'] += valid_sonar.sum().item()
 
                 # Prepare ground truth boxes (for validation loss computation)
                 # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
-                # Support both template-search and frame sequence GT box formats
+                # CRITICAL FIX (2025-11-21): Removed legacy frame sequence format support
+                # Validation now exclusively uses template-search format with search_bbox
                 gt_boxes = {}
 
                 if 'search_bbox' in batch:
                     # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
                     gt_boxes['rgb'] = batch['search_bbox']
                     gt_boxes['sonar'] = batch['search_bbox']
-                elif 'rgb_bboxes' in batch and target_idx is not None:
-                    # Frame sequence format: extract target frame bbox [B, 4]
-                    gt_boxes['rgb'] = batch['rgb_bboxes'][torch.arange(batch_size), target_idx]
                 elif 'rgb_boxes' in batch:
-                    # Legacy fallback
+                    # Legacy fallback (rarely used)
                     gt_boxes['rgb'] = batch['rgb_boxes']
-
-                if 'search_bbox' not in batch:
-                    # Only check sonar if not already set by search_bbox
-                    if 'sonar_bboxes' in batch and target_idx is not None:
-                        # Frame sequence format
-                        gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
-                    elif 'sonar_boxes' in batch:
-                        # Legacy fallback
+                    if 'sonar_boxes' in batch:
                         gt_boxes['sonar'] = batch['sonar_boxes']
+                    else:
+                        gt_boxes['sonar'] = batch['rgb_boxes']
+                else:
+                    raise RuntimeError(
+                        "Batch must contain 'search_bbox' or 'rgb_boxes' for ground truth. "
+                        "Got keys: " + str(list(batch.keys()))
+                    )
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
                 # Add pixel coordinates for quality estimators

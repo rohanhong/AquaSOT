@@ -41,8 +41,8 @@ data:
   quality_threshold_rgb: 0.7     # RGB quality threshold for template update (inference only)
   quality_threshold_sonar: 0.7   # Sonar quality threshold for template update (inference only)
 
-  num_workers: 24  # Workstation: 24 (Laptop: 8)
-  prefetch_factor: 4  # Workstation: 4 (Laptop: 3)
+  num_workers: 8  # Laptop: 8 (Workstation: 16)
+  prefetch_factor: 3  # Laptop: 3 (Workstation: 4)
 
   augmentation:
     enabled: true
@@ -139,8 +139,8 @@ training:
 
   num_epochs: 100  # Extended for end-to-end convergence
 
-  batch_size: 6  # Workstation: 6 (Laptop: 2), effective batch with grad_accum = 36
-  gradient_accumulation_steps: 6  # Workstation: 6 (Laptop: 16)
+  batch_size: 2  # Laptop: 2 (Workstation: 8), effective batch with grad_accum = 32
+  gradient_accumulation_steps: 16  # Laptop: 16 (Workstation: 4, effective batch = 32)
 
   optimizer:
     lr: 0.0001  # Standard learning rate for ViT fine-tuning
@@ -157,7 +157,7 @@ training:
   # Gradient clipping
   grad_clip:
     enabled: true
-    max_norm: 1.0  # Higher performance: 2.0 (pretrained backbones more stable)
+    max_norm: 1.0  # Same for both Laptop and Workstation (effective_batch=32 is identical)
     norm_type: 2
 
   loss_weights:

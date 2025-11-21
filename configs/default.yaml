@@ -46,9 +46,9 @@ data:
   val_split: val
   test_split: test
 
-  num_workers: 8  # Higher performance: 24 (Xeon W9-3475X 36C/72T)
+  num_workers: 8  # Laptop: 8 (Workstation: 16)
   pin_memory: true
-  prefetch_factor: 2  # Higher performance: 3 (with more workers)
+  prefetch_factor: 3  # Laptop: 3 (Workstation: 4)
   persistent_workers: true
 
   # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
@@ -189,9 +189,9 @@ training:
 
   num_epochs: 60
 
-  batch_size: 16  # Higher performance: 64 (60% VRAM usage on high-end GPU)
-  val_batch_size: 32  # Higher performance: 128 (validation requires no gradients)
-  gradient_accumulation_steps: 1  # Higher performance: 1 (effective batch = 64)
+  batch_size: 2  # Laptop: 2 (Workstation: 8)
+  val_batch_size: 8  # Laptop: 8 (Workstation: 32), 4x training batch (validation has no gradients/optimizer states)
+  gradient_accumulation_steps: 16  # Laptop: 16 (Workstation: 4, effective batch = 32)
 
   # Optimizer
   optimizer:
@@ -227,7 +227,7 @@ training:
   # Gradient clipping
   grad_clip:
     enabled: true
-    max_norm: 1.0  # Higher performance: 2.0 (larger batch more stable gradients)
+    max_norm: 1.0  # Same for both Laptop and Workstation (effective_batch=32 is identical)
     norm_type: 2
 
   # Loss weights
