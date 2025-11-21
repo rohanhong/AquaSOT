@@ -296,11 +296,14 @@ def build_dataloaders(cfg):
     template_search_gap_range = cfg.data.get('template_search_gap_range', [1, 30])
     template_update_policy = cfg.data.get('template_update_policy', 'first_frame')
 
+    # Convert list to tuple for TemplateSearchDataset
+    gap_tuple = tuple(template_search_gap_range) if isinstance(template_search_gap_range, list) else template_search_gap_range
+
     train_dataset = TemplateSearchDataset(
         base_dataset=train_base_dataset,
         template_size=template_size,
         search_size=search_size,
-        template_search_gap_range=template_search_gap_range,
+        template_search_gap=gap_tuple,  # Fixed: correct parameter name
         template_update_policy=template_update_policy,
         augmentation=train_augmentation
     )
@@ -330,7 +333,7 @@ def build_dataloaders(cfg):
             base_dataset=val_base_dataset,
             template_size=template_size,
             search_size=search_size,
-            template_search_gap_range=template_search_gap_range,
+            template_search_gap=gap_tuple,  # Fixed: correct parameter name
             augmentation=None  # No augmentation for validation
         )
 

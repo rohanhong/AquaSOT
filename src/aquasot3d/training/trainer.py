@@ -325,44 +325,64 @@ class Trainer:
             # Move batch to device
             batch = self._to_device(batch)
 
-            # Extract template and search frames from sequence
-            # TemplateSearchDataset returns: rgb_template, rgb_search, sonar_template, sonar_search
+            # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
+            # Support both FrameSequenceDataset and TemplateSearchDataset batch formats
 
-            # Determine batch size from frames
-            batch_size = batch['rgb_frames'].shape[0] if 'rgb_frames' in batch and batch['rgb_frames'] is not None else 0
-            if batch_size == 0 and 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                batch_size = batch['sonar_frames'].shape[0]
-
-            # Extract template frames using target_idx
-            target_idx = batch.get('target_idx', None)  # [B]
-
-            # RGB template extraction
-            if 'rgb_frames' in batch and batch['rgb_frames'] is not None:
+            # Determine batch size from appropriate keys
+            if 'rgb_template' in batch and batch['rgb_template'] is not None:
+                # Template-search format
+                batch_size = batch['rgb_template'].shape[0]
+                rgb_template = batch['rgb_template']  # [B, 3, 256, 256]
+                rgb_search = batch['rgb_search']  # [B, 3, 512, 512]
+                sonar_template = batch.get('sonar_template', None)  # [B, 1, 256, 256]
+                sonar_search = batch.get('sonar_search', None)  # [B, 1, 512, 512]
+                target_idx = None  # Not used in template-search format
+            elif 'rgb_frames' in batch and batch['rgb_frames'] is not None:
+                # Frame sequence format (legacy)
                 rgb_frames = batch['rgb_frames']  # [B, T, 3, H, W]
+                batch_size = rgb_frames.shape[0]
+                target_idx = batch.get('target_idx', None)  # [B]
+
+                # Extract template from target frame
                 if target_idx is not None:
-                    # Extract target frame as template [B, 3, H, W]
                     rgb_template = rgb_frames[torch.arange(batch_size), target_idx]
                 else:
-                    # Fallback: use center frame
                     rgb_template = rgb_frames[:, rgb_frames.shape[1] // 2]
-                rgb_search = rgb_frames  # Full sequence [B, T, 3, H, W]
-            else:
-                rgb_template = None
-                rgb_search = None
+                rgb_search = rgb_frames  # Full sequence
 
-            # Sonar template extraction
-            if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
-                if target_idx is not None:
-                    # Extract target frame as template [B, 1, H, W]
-                    sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                # Sonar extraction
+                if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                    sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
+                    if target_idx is not None:
+                        sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                    else:
+                        sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
+                    sonar_search = sonar_frames
                 else:
-                    # Fallback: use center frame
-                    sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
-                sonar_search = sonar_frames  # Full sequence [B, T, 1, H, W]
+                    sonar_template = None
+                    sonar_search = None
             else:
-                sonar_template = None
-                sonar_search = None
+                # Fallback: try sonar
+                if 'sonar_template' in batch and batch['sonar_template'] is not None:
+                    batch_size = batch['sonar_template'].shape[0]
+                    rgb_template = None
+                    rgb_search = None
+                    sonar_template = batch['sonar_template']
+                    sonar_search = batch['sonar_search']
+                    target_idx = None
+                elif 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                    sonar_frames = batch['sonar_frames']
+                    batch_size = sonar_frames.shape[0]
+                    target_idx = batch.get('target_idx', None)
+                    if target_idx is not None:
+                        sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                    else:
+                        sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
+                    sonar_search = sonar_frames
+                    rgb_template = None
+                    rgb_search = None
+                else:
+                    raise RuntimeError("Batch contains neither template-search format nor frame sequence format")
 
             # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
             validity_stats['total_samples'] += batch_size
@@ -391,26 +411,30 @@ class Trainer:
                     validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
             # Prepare ground truth boxes
-            # CRITICAL FIX (Audit 2025112006 + Bbox Format Audit 2025-11-20):
-            # Frame sequence format uses rgb_bboxes/sonar_bboxes [B, T, 4]
-            # Collate_fn converts XYWH pixel → CXCYWH normalized [0,1] (loader.py:163-201)
-            # Extract target frame bboxes [B, 4] for loss computation
+            # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
+            # Support both template-search and frame sequence GT box formats
             gt_boxes = {}
-            if 'rgb_bboxes' in batch and target_idx is not None:
-                # Extract target frame bbox [B, 4] in CXCYWH normalized format
-                # Format verified by Bbox Format Audit 2025-11-20
+
+            if 'search_bbox' in batch:
+                # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
+                # Both RGB and Sonar share the same GT (unified annotation)
+                gt_boxes['rgb'] = batch['search_bbox']
+                gt_boxes['sonar'] = batch['search_bbox']
+            elif 'rgb_bboxes' in batch and target_idx is not None:
+                # Frame sequence format: extract target frame bbox [B, 4]
                 gt_boxes['rgb'] = batch['rgb_bboxes'][torch.arange(batch_size), target_idx]
             elif 'rgb_boxes' in batch:
-                # Legacy format fallback
+                # Legacy fallback
                 gt_boxes['rgb'] = batch['rgb_boxes']
 
-            if 'sonar_bboxes' in batch and target_idx is not None:
-                # Extract target frame bbox [B, 4] in CXCYWH normalized format
-                # Format verified by Bbox Format Audit 2025-11-20
-                gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
-            elif 'sonar_boxes' in batch:
-                # Legacy format fallback
-                gt_boxes['sonar'] = batch['sonar_boxes']
+            if 'search_bbox' not in batch:
+                # Only check sonar if not already set by search_bbox
+                if 'sonar_bboxes' in batch and target_idx is not None:
+                    # Frame sequence format
+                    gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
+                elif 'sonar_boxes' in batch:
+                    # Legacy fallback
+                    gt_boxes['sonar'] = batch['sonar_boxes']
 
             # CRITICAL FIX (Audit 2025111408 Finding 3):
             # Add pixel coordinates for quality estimators
@@ -423,15 +447,47 @@ class Trainer:
             if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                 gt_boxes['fusion'] = gt_boxes['rgb']
 
-            # CRITICAL FIX (Audit 2025111411 Finding 4 + 2025112006):
-            # Extract metadata for quality estimators (per-sample list of dicts)
-            # Frame sequence format: metadata is List[List[Dict]] (B lists, each with T dicts)
-            metadata = {
-                'rgb_search_metadata': batch.get('rgb_metadata'),  # Frame sequence uses rgb_metadata
-                'sonar_search_metadata': batch.get('sonar_metadata'),  # Frame sequence uses sonar_metadata
-                'template_rgb_metadata': batch.get('template_rgb_metadata'),  # Legacy
-                'template_sonar_metadata': batch.get('template_sonar_metadata'),  # Legacy
-            }
+            # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
+            # Metadata format differs between template-search and frame sequence
+            # Template-search: metadata is already List[Dict] (B dicts)
+            # Frame sequence: metadata is List[List[Dict]] (B lists of T dicts)
+            metadata = {}
+
+            if 'rgb_metadata' in batch:
+                # Template-search format: already List[Dict]
+                # Frame sequence format: List[List[Dict]]
+                rgb_meta = batch['rgb_metadata']
+                if isinstance(rgb_meta, list) and len(rgb_meta) > 0:
+                    if isinstance(rgb_meta[0], dict):
+                        # Template-search format: List[Dict]
+                        metadata['rgb_search_metadata'] = rgb_meta
+                    elif isinstance(rgb_meta[0], list):
+                        # Frame sequence format: List[List[Dict]]
+                        metadata['rgb_search_metadata'] = rgb_meta
+                    else:
+                        metadata['rgb_search_metadata'] = rgb_meta
+                else:
+                    metadata['rgb_search_metadata'] = rgb_meta
+
+            if 'sonar_metadata' in batch:
+                sonar_meta = batch['sonar_metadata']
+                if isinstance(sonar_meta, list) and len(sonar_meta) > 0:
+                    if isinstance(sonar_meta[0], dict):
+                        # Template-search format: List[Dict]
+                        metadata['sonar_search_metadata'] = sonar_meta
+                    elif isinstance(sonar_meta[0], list):
+                        # Frame sequence format: List[List[Dict]]
+                        metadata['sonar_search_metadata'] = sonar_meta
+                    else:
+                        metadata['sonar_search_metadata'] = sonar_meta
+                else:
+                    metadata['sonar_search_metadata'] = sonar_meta
+
+            # Legacy support
+            if 'template_rgb_metadata' in batch:
+                metadata['template_rgb_metadata'] = batch['template_rgb_metadata']
+            if 'template_sonar_metadata' in batch:
+                metadata['template_sonar_metadata'] = batch['template_sonar_metadata']
 
             # CRITICAL VALIDATION (Audit 2025111412 Finding 4):
             # Validate metadata list lengths before model forward
@@ -594,39 +650,64 @@ class Trainer:
                 # Move batch to device
                 batch = self._to_device(batch)
 
-                # Extract template and search frames from sequence
+                # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
+                # Support both FrameSequenceDataset and TemplateSearchDataset batch formats
 
-                # Determine batch size from frames
-                batch_size = batch['rgb_frames'].shape[0] if 'rgb_frames' in batch and batch['rgb_frames'] is not None else 0
-                if batch_size == 0 and 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                    batch_size = batch['sonar_frames'].shape[0]
-
-                # Extract template frames using target_idx
-                target_idx = batch.get('target_idx', None)  # [B]
-
-                # RGB template extraction
-                if 'rgb_frames' in batch and batch['rgb_frames'] is not None:
+                # Determine batch size from appropriate keys
+                if 'rgb_template' in batch and batch['rgb_template'] is not None:
+                    # Template-search format
+                    batch_size = batch['rgb_template'].shape[0]
+                    rgb_template = batch['rgb_template']  # [B, 3, 256, 256]
+                    rgb_search = batch['rgb_search']  # [B, 3, 512, 512]
+                    sonar_template = batch.get('sonar_template', None)  # [B, 1, 256, 256]
+                    sonar_search = batch.get('sonar_search', None)  # [B, 1, 512, 512]
+                    target_idx = None  # Not used in template-search format
+                elif 'rgb_frames' in batch and batch['rgb_frames'] is not None:
+                    # Frame sequence format (legacy)
                     rgb_frames = batch['rgb_frames']  # [B, T, 3, H, W]
+                    batch_size = rgb_frames.shape[0]
+                    target_idx = batch.get('target_idx', None)  # [B]
+
+                    # Extract template from target frame
                     if target_idx is not None:
                         rgb_template = rgb_frames[torch.arange(batch_size), target_idx]
                     else:
                         rgb_template = rgb_frames[:, rgb_frames.shape[1] // 2]
-                    rgb_search = rgb_frames
-                else:
-                    rgb_template = None
-                    rgb_search = None
+                    rgb_search = rgb_frames  # Full sequence
 
-                # Sonar template extraction
-                if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                    sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
-                    if target_idx is not None:
-                        sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                    # Sonar extraction
+                    if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                        sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
+                        if target_idx is not None:
+                            sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                        else:
+                            sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
+                        sonar_search = sonar_frames
                     else:
-                        sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
-                    sonar_search = sonar_frames
+                        sonar_template = None
+                        sonar_search = None
                 else:
-                    sonar_template = None
-                    sonar_search = None
+                    # Fallback: try sonar
+                    if 'sonar_template' in batch and batch['sonar_template'] is not None:
+                        batch_size = batch['sonar_template'].shape[0]
+                        rgb_template = None
+                        rgb_search = None
+                        sonar_template = batch['sonar_template']
+                        sonar_search = batch['sonar_search']
+                        target_idx = None
+                    elif 'sonar_frames' in batch and batch['sonar_frames'] is not None:
+                        sonar_frames = batch['sonar_frames']
+                        batch_size = sonar_frames.shape[0]
+                        target_idx = batch.get('target_idx', None)
+                        if target_idx is not None:
+                            sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
+                        else:
+                            sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
+                        sonar_search = sonar_frames
+                        rgb_template = None
+                        rgb_search = None
+                    else:
+                        raise RuntimeError("Batch contains neither template-search format nor frame sequence format")
 
                 # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
                 validity_stats['total_samples'] += batch_size
@@ -652,20 +733,29 @@ class Trainer:
                         validity_stats['valid_sonar'] += batch['is_valid_sonar'].sum().item()
 
                 # Prepare ground truth boxes (for validation loss computation)
-                # CRITICAL FIX (Audit 2025112006 + Bbox Format Audit 2025-11-20):
-                # Frame sequence format uses rgb_bboxes/sonar_bboxes [B, T, 4] in CXCYWH normalized
+                # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
+                # Support both template-search and frame sequence GT box formats
                 gt_boxes = {}
-                if 'rgb_bboxes' in batch and target_idx is not None:
-                    # Extract target frame [B, 4] in CXCYWH normalized format
+
+                if 'search_bbox' in batch:
+                    # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
+                    gt_boxes['rgb'] = batch['search_bbox']
+                    gt_boxes['sonar'] = batch['search_bbox']
+                elif 'rgb_bboxes' in batch and target_idx is not None:
+                    # Frame sequence format: extract target frame bbox [B, 4]
                     gt_boxes['rgb'] = batch['rgb_bboxes'][torch.arange(batch_size), target_idx]
                 elif 'rgb_boxes' in batch:
+                    # Legacy fallback
                     gt_boxes['rgb'] = batch['rgb_boxes']
 
-                if 'sonar_bboxes' in batch and target_idx is not None:
-                    # Extract target frame [B, 4] in CXCYWH normalized format
-                    gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
-                elif 'sonar_boxes' in batch:
-                    gt_boxes['sonar'] = batch['sonar_boxes']
+                if 'search_bbox' not in batch:
+                    # Only check sonar if not already set by search_bbox
+                    if 'sonar_bboxes' in batch and target_idx is not None:
+                        # Frame sequence format
+                        gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
+                    elif 'sonar_boxes' in batch:
+                        # Legacy fallback
+                        gt_boxes['sonar'] = batch['sonar_boxes']
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
                 # Add pixel coordinates for quality estimators
@@ -678,14 +768,39 @@ class Trainer:
                 if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
                     gt_boxes['fusion'] = gt_boxes['rgb']
 
-                # CRITICAL FIX (Audit 2025111411 Finding 4 + 2025112006):
-                # Extract metadata for quality estimators
-                metadata = {
-                    'rgb_search_metadata': batch.get('rgb_metadata'),
-                    'sonar_search_metadata': batch.get('sonar_metadata'),
-                    'template_rgb_metadata': batch.get('template_rgb_metadata'),
-                    'template_sonar_metadata': batch.get('template_sonar_metadata'),
-                }
+                # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
+                # Metadata format differs between template-search and frame sequence
+                metadata = {}
+
+                if 'rgb_metadata' in batch:
+                    rgb_meta = batch['rgb_metadata']
+                    if isinstance(rgb_meta, list) and len(rgb_meta) > 0:
+                        if isinstance(rgb_meta[0], dict):
+                            metadata['rgb_search_metadata'] = rgb_meta
+                        elif isinstance(rgb_meta[0], list):
+                            metadata['rgb_search_metadata'] = rgb_meta
+                        else:
+                            metadata['rgb_search_metadata'] = rgb_meta
+                    else:
+                        metadata['rgb_search_metadata'] = rgb_meta
+
+                if 'sonar_metadata' in batch:
+                    sonar_meta = batch['sonar_metadata']
+                    if isinstance(sonar_meta, list) and len(sonar_meta) > 0:
+                        if isinstance(sonar_meta[0], dict):
+                            metadata['sonar_search_metadata'] = sonar_meta
+                        elif isinstance(sonar_meta[0], list):
+                            metadata['sonar_search_metadata'] = sonar_meta
+                        else:
+                            metadata['sonar_search_metadata'] = sonar_meta
+                    else:
+                        metadata['sonar_search_metadata'] = sonar_meta
+
+                # Legacy support
+                if 'template_rgb_metadata' in batch:
+                    metadata['template_rgb_metadata'] = batch['template_rgb_metadata']
+                if 'template_sonar_metadata' in batch:
+                    metadata['template_sonar_metadata'] = batch['template_sonar_metadata']
 
                 # Forward pass
                 if self.use_amp:

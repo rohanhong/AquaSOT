@@ -690,21 +690,30 @@ class AquaSOT3DTracker(BaseModule):
         if isinstance(sonar_features, list):
             sonar_features = sonar_features[0]
 
+        # Handle ViT sequence features: Pool (B, N, C) -> (B, C) for weak3d_head
+        # weak3d_head expects pooled features [B, C], not sequence features [B, N, C]
+        if rgb_features.dim() == 3:
+            # Global average pooling over sequence dimension
+            rgb_features = rgb_features.mean(dim=1)  # [B, N, C] -> [B, C]
+        if sonar_features.dim() == 3:
+            sonar_features = sonar_features.mean(dim=1)  # [B, N, C] -> [B, C]
+
         # Predict 3D center
         weak3d_outputs = self.weak3d_head(
             rgb_features=rgb_features,
             sonar_features=sonar_features,
             sonar_radial_activation=sonar_radial_activation,
-            compute_consistency_loss=True
+            return_intermediate=False
         )
 
         center_3d = weak3d_outputs['center_3d']  # (B, 3) - (X, Y, Z)
 
         outputs = {
             'center_3d': center_3d,
-            'X_rgb': weak3d_outputs['X_rgb'],
-            'X_sonar': weak3d_outputs['X_sonar'],
-            'X_consistency_loss': weak3d_outputs['consistency_loss']
+            'X': weak3d_outputs['X'],
+            'Y': weak3d_outputs['Y'],
+            'Z': weak3d_outputs['Z'],
+            'routing_info': weak3d_outputs.get('routing_info', None)
         }
 
         # Compute cyclic consistency loss if ground truth boxes are provided
@@ -1062,9 +1071,8 @@ class AquaSOT3DTracker(BaseModule):
                 sonar_feat_for_3d = sonar_feat_for_3d.permute(0, 2, 1).reshape(B, C, H, W)
 
             sonar_radial = extract_radial_activation(
-                sonar_img=sonar_search,
-                sonar_feat_map=sonar_feat_for_3d,
-                num_bins=50
+                sonar_features=sonar_feat_for_3d,
+                num_radial_bins=50
             )
 
             # CRITICAL FIX (Audit 2025111412 Finding 2):
