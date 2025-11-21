@@ -19,10 +19,10 @@ system:
   dist_url: env://
 
   # Mixed precision training
-  # WARNING: AMP causes BCE assertion failures in current training setup
-  # Disable for numerical stability (~30% slower but guaranteed convergence)
-  use_amp: false
-  amp_dtype: bfloat16  # Use bfloat16 if AMP is re-enabled (better than float16)
+  # FIXED (Audit 2025112103): BCE assertion failures resolved by adding autocast protection
+  # Re-enabled for 30% faster training with bfloat16 (better numerical stability than float16)
+  use_amp: true
+  amp_dtype: bfloat16  # bfloat16 provides better numerical stability than float16
 
   # Deterministic mode (slower but reproducible)
   deterministic: false
@@ -56,7 +56,7 @@ data:
   # Training uses random template-search pairs, evaluation uses sequential pairs
   template_size: 256  # Template frame size (256x256, letterbox preprocessing)
   search_size: 512    # Search frame size (512x512, full-frame search)
-  template_search_gap_range: [1, 30]  # Gap range for template-search pairs (training only)
+  template_search_gap_range: [1, 200]  # Gap range for template-search pairs (training only, OSTrack standard)
 
   # Data augmentation (legacy params, override in specific configs)
   augmentation:
@@ -172,9 +172,10 @@ model:
       # Sonar (Oculus MD-Series): 130deg horizontal FOV
       max_angle_sonar_horizontal: 1.13446  # 65 degrees (half of 130deg FOV)
 
-      # Coordinate system units: pixels (not meters)
-      radial_range: [50.0, 500.0]  # Depth range in pixels
-      default_depth: 200.0         # Default depth for zero-modality scenarios (pixels)
+      # Coordinate system units: pixels (sonar_rect image space)
+      # Audit 2025112103: Updated to match sonar_rect image height (682x376)
+      radial_range: [0.0, 376.0]  # Depth range in pixels (sonar_rect height)
+      default_depth: 188.0         # Default depth for zero-modality scenarios (middle of range)
       num_radial_bins: 50          # Number of bins for sonar radial discretization
 
 

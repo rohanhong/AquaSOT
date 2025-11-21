@@ -73,11 +73,15 @@ from aquasot3d.core import BaseHead, PREDICTION_HEAD_REGISTRY
 
 def extract_radial_activation(
     sonar_features: torch.Tensor,
+    radial_projection_layer: nn.Module,
     num_radial_bins: int = 50,
-    radial_range: Tuple[float, float] = (50.0, 500.0)
+    radial_range: Tuple[float, float] = (0.0, 376.0)
 ) -> torch.Tensor:
     """
     Extract radial activation from sonar feature maps (already in rectangular coordinates).
+
+    CRITICAL FIX (Audit 2025112103): Moved layer creation to module initialization.
+    This function now receives a pre-initialized projection layer to avoid memory leaks.
 
     CRITICAL: This function expects preprocessed sonar data in rectangular coordinates,
     NOT raw polar data. The radial activation represents how strongly the target appears
@@ -85,8 +89,9 @@ def extract_radial_activation(
 
     Args:
         sonar_features: [B, C, H, W] sonar feature maps in rectangular coordinates
+        radial_projection_layer: Pre-initialized projection layer (nn.LazyLinear or nn.Linear)
         num_radial_bins: Number of radial bins for depth discretization
-        radial_range: (min_range, max_range) in pixels
+        radial_range: (min_range, max_range) in pixels (sonar_rect image height: 0-376)
 
     Returns:
         radial_activation: [B, num_radial_bins] activation per depth bin
@@ -98,10 +103,9 @@ def extract_radial_activation(
     channel_activation = F.adaptive_avg_pool2d(sonar_features, (1, 1))  # [B, C, 1, 1]
     channel_activation = channel_activation.squeeze(-1).squeeze(-1)  # [B, C]
 
-    # Project channel activations to radial bins
-    # Each radial bin corresponds to a depth range
-    radial_projection = nn.Linear(C, num_radial_bins).to(sonar_features.device)
-    radial_activation = radial_projection(channel_activation)  # [B, num_radial_bins]
+    # Project channel activations to radial bins using pre-initialized layer
+    # FIXED: No longer creates new parameters in forward pass
+    radial_activation = radial_projection_layer(channel_activation)  # [B, num_radial_bins]
 
     # Apply softmax to get probability distribution over depth bins
     radial_activation = F.softmax(radial_activation, dim=-1)
@@ -148,10 +152,10 @@ class Weak3DHead(BaseHead):
         rgb_feat_dim: int = 256,
         sonar_feat_dim: int = 256,
         num_radial_bins: int = 50,
-        radial_range: Tuple[float, float] = (50.0, 500.0),  # Depth range in pixels
+        radial_range: Tuple[float, float] = (0.0, 376.0),  # Depth range in pixels (sonar_rect height)
         hidden_dim: int = 512,
         dropout: float = 0.1,
-        default_depth: float = 200.0,  # Default depth in pixels
+        default_depth: float = 188.0,  # Default depth in pixels (middle of range)
         max_angle_rgb_horizontal: float = 0.41015,  # 23.5 degrees (half of 47deg FOV)
         max_angle_rgb_vertical: float = 0.23562,    # 13.5 degrees (half of 27deg FOV)
         max_angle_sonar_horizontal: float = 1.13446,  # 65 degrees (half of 130deg FOV)
@@ -185,6 +189,10 @@ class Weak3DHead(BaseHead):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim // 2, 1)
         )
+
+        # CRITICAL FIX (Audit 2025112103): Radial projection layer for extract_radial_activation
+        # Moved from forward pass to avoid memory leak
+        self.radial_projection_layer = nn.LazyLinear(num_radial_bins)
 
         # Horizontal viewing angle (theta_x) estimation: Dual-branch with adaptive fusion
         # CRITICAL (Audit 2025112102): Predicts horizontal viewing angle theta_x (radians)

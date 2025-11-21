@@ -32,10 +32,14 @@ data:
   # Removed: sequence_length, frame_stride, use_sequence_grouping
   template_size: 256  # Template image size (256x256)
   search_size: 512    # Search image size (512x512, full-frame search)
-  template_search_gap_range: [1, 30]  # Random gap between template and search frames
-  template_update_policy: 'mixformer'  # MixFormer-style quality-driven independent RGB/Sonar updates
-  quality_threshold_rgb: 0.7  # RGB quality threshold for template update (default: 0.7)
-  quality_threshold_sonar: 0.7  # Sonar quality threshold for template update (default: 0.7)
+  template_search_gap_range: [1, 200]  # Random gap between template and search frames (OSTrack standard)
+
+  # Template Update Policy (MixFormer Implementation)
+  # - Training: Uses random gap sampling (behaves like 'recent') to learn from diverse temporal distances
+  # - Inference: Quality-driven updates in OnlineTracker (independent RGB/Sonar refresh based on quality)
+  template_update_policy: 'mixformer'
+  quality_threshold_rgb: 0.7     # RGB quality threshold for template update (inference only)
+  quality_threshold_sonar: 0.7   # Sonar quality threshold for template update (inference only)
 
   num_workers: 8  # Higher performance: 16 (Xeon W9-3475X 36C/72T)
   prefetch_factor: 2  # Higher performance: 3
@@ -135,8 +139,8 @@ training:
 
   num_epochs: 100  # Extended for end-to-end convergence
 
-  batch_size: 1  # Optimized for 8GB GPU (RTX 3070 Ti)
-  gradient_accumulation_steps: 4  # Effective batch = 1×4 = 4
+  batch_size: 2  # Optimized for 8GB GPU (RTX 3070 Ti)
+  gradient_accumulation_steps: 16  # Effective batch = 2×16 = 32 (Audit 2025112103)
 
   optimizer:
     lr: 0.0001  # Standard learning rate for ViT fine-tuning

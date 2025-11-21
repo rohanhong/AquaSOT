@@ -72,6 +72,8 @@ class TemplateSearchDataset(Dataset):
         search_size: int = 512,
         template_search_gap: Tuple[int, int] = (1, 30),
         template_update_policy: str = 'first_frame',
+        quality_threshold_rgb: float = 0.7,
+        quality_threshold_sonar: float = 0.7,
         context_factor: float = 2.0,
         augmentation=None  # Deprecated
     ):
@@ -80,6 +82,8 @@ class TemplateSearchDataset(Dataset):
         self.search_size = search_size
         self.gap_range = template_search_gap
         self.update_policy = template_update_policy
+        self.quality_threshold_rgb = quality_threshold_rgb
+        self.quality_threshold_sonar = quality_threshold_sonar
         self.context_factor = context_factor
 
         # Augmentation Order Optimization (Audit 2025-11-20):
@@ -263,7 +267,10 @@ class TemplateSearchDataset(Dataset):
             - 'first_frame': Always use first frame of sequence
             - 'recent': Sample recent frame within gap_range
             - 'keyframe': Use keyframe from sequence (future work)
-            - 'mixformer': During training, behaves like 'recent' to learn from diverse template gaps
+            - 'mixformer': MixFormer-style quality-driven updates
+                * Training: Behaves like 'recent' (random gap sampling) to learn from diverse template gaps
+                * Inference: Quality-driven updates (implemented in OnlineTracker)
+                * Note: quality_threshold params stored but not used during training (no prior predictions)
 
         Args:
             search_idx: Search frame index

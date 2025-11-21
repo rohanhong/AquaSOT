@@ -518,16 +518,22 @@ class LossManager(nn.Module):
             Classification loss
         """
         if loss_type == 'bce':
-            # Clamp both predictions and targets to [0, 1] for numerical stability
-            pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
-            target_clamped = torch.clamp(target_labels.float(), min=0.0, max=1.0)
+            # CRITICAL (Audit 2025112103): Disable AMP for BCE to avoid assertion failures
+            # Convert to FP32 for numerical stability
+            with torch.cuda.amp.autocast(enabled=False):
+                pred_scores_fp32 = pred_scores.float()
+                target_fp32 = target_labels.float()
 
-            # CRITICAL (Audit 2025111903 Phase 4): Compute per-sample loss for masking
-            loss_per_sample = F.binary_cross_entropy(
-                pred_scores_clamped,
-                target_clamped,
-                reduction='none'
-            )
+                # Clamp both predictions and targets to [0, 1] for numerical stability
+                pred_scores_clamped = torch.clamp(pred_scores_fp32, min=0.0, max=1.0)
+                target_clamped = torch.clamp(target_fp32, min=0.0, max=1.0)
+
+                # CRITICAL (Audit 2025111903 Phase 4): Compute per-sample loss for masking
+                loss_per_sample = F.binary_cross_entropy(
+                    pred_scores_clamped,
+                    target_clamped,
+                    reduction='none'
+                )
 
             # Apply validity masking before reduction
             if validity_mask is not None:
@@ -557,13 +563,18 @@ class LossManager(nn.Module):
                 return loss_per_sample.mean() if self.reduction == 'mean' else loss_per_sample.sum()
 
         # Default fallback to BCE with masking
-        pred_scores_clamped = torch.clamp(pred_scores, min=0.0, max=1.0)
-        target_clamped = torch.clamp(target_labels.float(), min=0.0, max=1.0)
-        loss_per_sample = F.binary_cross_entropy(
-            pred_scores_clamped,
-            target_clamped,
-            reduction='none'
-        )
+        # CRITICAL (Audit 2025112103): Disable AMP for BCE to avoid assertion failures
+        with torch.cuda.amp.autocast(enabled=False):
+            pred_scores_fp32 = pred_scores.float()
+            target_fp32 = target_labels.float()
+
+            pred_scores_clamped = torch.clamp(pred_scores_fp32, min=0.0, max=1.0)
+            target_clamped = torch.clamp(target_fp32, min=0.0, max=1.0)
+            loss_per_sample = F.binary_cross_entropy(
+                pred_scores_clamped,
+                target_clamped,
+                reduction='none'
+            )
 
         # Apply validity masking before reduction
         if validity_mask is not None:

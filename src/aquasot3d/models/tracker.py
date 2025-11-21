@@ -1072,6 +1072,7 @@ class AquaSOT3DTracker(BaseModule):
 
             sonar_radial = extract_radial_activation(
                 sonar_features=sonar_feat_for_3d,
+                radial_projection_layer=self.weak3d_head.radial_projection_layer,
                 num_radial_bins=50
             )
 
