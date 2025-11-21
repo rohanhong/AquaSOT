@@ -49,7 +49,7 @@ class SequenceGroupedBatchSampler(Sampler):
 
         # Check if dataset has sequence information
         if hasattr(dataset, 'get_sequence_name'):
-            # Dataset with get_sequence_name method (e.g., FrameSequenceDataset)
+            # Dataset with get_sequence_name method (e.g., TemplateSearchDataset, EvaluationSequenceDataset)
             for idx in range(len(dataset)):
                 try:
                     seq_name = dataset.get_sequence_name(idx)
@@ -97,134 +97,11 @@ class SequenceGroupedBatchSampler(Sampler):
         return total_batches
 
 
-def collate_fn_sequence(batch: List[Dict]) -> Dict:
-    """
-    Collate function for frame sequence datasets.
+# DELETED (Audit 2025112105): collate_fn_sequence removed
+# This function was for the OLD temporal/frame-sequence architecture.
+# The current template-search architecture uses template_search_collate_fn instead.
+# See: src/aquasot3d/dataloader/datasets/template_search_dataset.py
 
-    ARCHITECTURE CHANGE (Audit 2025112006):
-    Designed for FrameSequenceDataset which returns continuous frame sequences
-    instead of template-search pairs.
-
-    Args:
-        batch: List of samples from FrameSequenceDataset
-            Each sample: {
-                'rgb_frames': [T, 3, H, W] or None,
-                'sonar_frames': [T, 1, H, W] or None,
-                'rgb_bboxes': [T, 4],
-                'sonar_bboxes': [T, 4],
-                'is_valid_rgb': [T],
-                'is_valid_sonar': [T],
-                'target_idx': int,
-                'sequence_name': str,
-                ...
-            }
-
-    Returns:
-        Batched dictionary: {
-            'rgb_frames': [B, T, 3, H, W] or None,
-            'sonar_frames': [B, T, 1, H, W] or None,
-            'rgb_bboxes': [B, T, 4],
-            'sonar_bboxes': [B, T, 4],
-            'is_valid_rgb': [B, T],
-            'is_valid_sonar': [B, T],
-            'target_idx': [B],
-            ...
-        }
-
-    CRITICAL: Preserves validity flag batching for 0000 handling (Audit 2025112001)
-    """
-    # Filter out None samples
-    batch = [sample for sample in batch if sample is not None]
-
-    if len(batch) == 0:
-        return None
-
-    batched = {}
-
-    # Stack frame sequences
-    # CRITICAL FIX (Audit 2025112003): Handle single-modality mode (None frames)
-    if 'rgb_frames' in batch[0]:
-        rgb_frames_list = [sample['rgb_frames'] for sample in batch if sample['rgb_frames'] is not None]
-        if len(rgb_frames_list) > 0:
-            batched['rgb_frames'] = torch.stack(rgb_frames_list, dim=0)  # [B, T, 3, H, W]
-        else:
-            batched['rgb_frames'] = None
-
-    if 'sonar_frames' in batch[0]:
-        sonar_frames_list = [sample['sonar_frames'] for sample in batch if sample['sonar_frames'] is not None]
-        if len(sonar_frames_list) > 0:
-            batched['sonar_frames'] = torch.stack(sonar_frames_list, dim=0)  # [B, T, 1, H, W]
-        else:
-            batched['sonar_frames'] = None
-
-    # Stack bounding boxes [B, T, 4]
-    # CRITICAL FIX (Bbox Format Audit 2025-11-20): Convert and normalize bboxes
-    # Old collate_fn_template_search did this, but collate_fn_sequence was missing it.
-    # Without this, loss receives XYWH pixel instead of CXCYWH normalized → training broken
-    bbox_keys = ['rgb_bboxes', 'sonar_bboxes']
-    for key in bbox_keys:
-        if key in batch[0]:
-            bboxes = [sample[key] for sample in batch]
-            bbox_tensor = torch.stack(bboxes, dim=0)  # [B, T, 4] in XYWH pixel format
-
-            # Get frame size for normalization
-            # Letterbox Migration (2025-11-20): All frames letterboxed to frame_size x frame_size (default 512x512)
-            # Normalization uses full frame size (including padding) - matches YOLO/DETR practice
-            if 'rgb' in key and 'rgb_frames' in batched and batched['rgb_frames'] is not None:
-                frame_size = float(batched['rgb_frames'].shape[-1])  # H or W (square)
-            elif 'sonar' in key and 'sonar_frames' in batched and batched['sonar_frames'] is not None:
-                frame_size = float(batched['sonar_frames'].shape[-1])
-            else:
-                # Fallback to default frame_size from config (default 512)
-                frame_size = 512.0
-
-            # Convert XYWH pixel to CXCYWH normalized
-            # Input:  [x, y, w, h] in [0, frame_size] (pixel coordinates, scaled)
-            # Output: [cx, cy, w, h] in [0, 1] (normalized, center format)
-            x = bbox_tensor[..., 0]  # [B, T]
-            y = bbox_tensor[..., 1]
-            w = bbox_tensor[..., 2]
-            h = bbox_tensor[..., 3]
-
-            # Convert to center coordinates and normalize
-            cx = (x + w / 2.0) / frame_size       # Center x, normalized to [0, 1]
-            cy = (y + h / 2.0) / frame_size       # Center y, normalized to [0, 1]
-            w_norm = w / frame_size               # Width, normalized to [0, 1]
-            h_norm = h / frame_size               # Height, normalized to [0, 1]
-
-            # Stack normalized CXCYWH [B, T, 4]
-            batched[key] = torch.stack([cx, cy, w_norm, h_norm], dim=-1)
-
-            # CRITICAL (Audit 2025111408 Finding 3): Store pixel XYWH for quality estimators
-            # Quality estimators need pixel coordinates to crop ROIs from feature maps
-            batched[key + '_pixels'] = bbox_tensor.clone()  # [B, T, 4] in XYWH pixel
-
-    # CRITICAL: Stack validity flags [B, T] (0000 handling)
-    validity_keys = ['is_valid_rgb', 'is_valid_sonar']
-    for key in validity_keys:
-        if key in batch[0]:
-            validity = [sample[key] for sample in batch]
-            batched[key] = torch.stack(validity, dim=0)  # [B, T]
-
-    # Stack target indices [B]
-    if 'target_idx' in batch[0]:
-        batched['target_idx'] = torch.tensor([
-            sample['target_idx'] for sample in batch
-        ], dtype=torch.long)
-
-    # Stack sequence lengths [B]
-    if 'sequence_length' in batch[0]:
-        batched['sequence_length'] = torch.tensor([
-            sample['sequence_length'] for sample in batch
-        ], dtype=torch.long)
-
-    # Collect metadata lists
-    metadata_keys = ['rgb_metadata', 'sonar_metadata', 'sequence_name', 'frame_ids', 'frame_indices']
-    for key in metadata_keys:
-        if key in batch[0]:
-            batched[key] = [sample[key] for sample in batch]
-
-    return batched
 
 
 def collate_fn_template_search(batch: List[Dict]) -> Dict:
@@ -345,7 +222,11 @@ def create_dataloader(
     the EMA aggregator to learn from consecutive frames.
     """
     if collate_fn is None:
-        collate_fn = collate_fn_sequence
+        # CRITICAL FIX (Audit 2025112105): Use template-search collate function
+        # Changed from collate_fn_sequence (legacy temporal architecture) to
+        # template_search_collate_fn (current template-search architecture)
+        from aquasot3d.dataloader.datasets import template_search_collate_fn
+        collate_fn = template_search_collate_fn
 
     # Set defaults for prefetch_factor and persistent_workers
     if prefetch_factor is None:
@@ -558,6 +439,10 @@ def create_training_loaders(
     Returns:
         Tuple of (train_loader, val_loader)
     """
+    # CRITICAL FIX (Audit 2025112105): Use template-search collate function
+    # Changed from collate_fn_sequence (legacy) to template_search_collate_fn
+    from aquasot3d.dataloader.datasets import template_search_collate_fn
+
     train_loader = create_dataloader(
         train_dataset,
         batch_size=batch_size,
@@ -565,7 +450,7 @@ def create_training_loaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=collate_fn_sequence,
+        collate_fn=template_search_collate_fn,
         distributed=distributed,
     )
 
@@ -576,7 +461,7 @@ def create_training_loaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
-        collate_fn=collate_fn_sequence,
+        collate_fn=template_search_collate_fn,
         distributed=False,  # No distributed for validation
     )
 

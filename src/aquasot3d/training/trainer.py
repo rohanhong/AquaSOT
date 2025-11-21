@@ -326,63 +326,30 @@ class Trainer:
             batch = self._to_device(batch)
 
             # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
-            # Support both FrameSequenceDataset and TemplateSearchDataset batch formats
+            # CRITICAL FIX (Audit 2025112105): Template-search format only
+            # Removed backward compatibility for frame sequence format (legacy temporal architecture)
 
-            # Determine batch size from appropriate keys
+            # Extract template-search pairs
             if 'rgb_template' in batch and batch['rgb_template'] is not None:
-                # Template-search format
+                # Template-search format (RGB available)
                 batch_size = batch['rgb_template'].shape[0]
                 rgb_template = batch['rgb_template']  # [B, 3, 256, 256]
                 rgb_search = batch['rgb_search']  # [B, 3, 512, 512]
                 sonar_template = batch.get('sonar_template', None)  # [B, 1, 256, 256]
                 sonar_search = batch.get('sonar_search', None)  # [B, 1, 512, 512]
-                target_idx = None  # Not used in template-search format
-            elif 'rgb_frames' in batch and batch['rgb_frames'] is not None:
-                # Frame sequence format (legacy)
-                rgb_frames = batch['rgb_frames']  # [B, T, 3, H, W]
-                batch_size = rgb_frames.shape[0]
-                target_idx = batch.get('target_idx', None)  # [B]
-
-                # Extract template from target frame
-                if target_idx is not None:
-                    rgb_template = rgb_frames[torch.arange(batch_size), target_idx]
-                else:
-                    rgb_template = rgb_frames[:, rgb_frames.shape[1] // 2]
-                rgb_search = rgb_frames  # Full sequence
-
-                # Sonar extraction
-                if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                    sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
-                    if target_idx is not None:
-                        sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
-                    else:
-                        sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
-                    sonar_search = sonar_frames
-                else:
-                    sonar_template = None
-                    sonar_search = None
+            elif 'sonar_template' in batch and batch['sonar_template'] is not None:
+                # Template-search format (Sonar only)
+                batch_size = batch['sonar_template'].shape[0]
+                rgb_template = None
+                rgb_search = None
+                sonar_template = batch['sonar_template']  # [B, 1, 256, 256]
+                sonar_search = batch['sonar_search']  # [B, 1, 512, 512]
             else:
-                # Fallback: try sonar
-                if 'sonar_template' in batch and batch['sonar_template'] is not None:
-                    batch_size = batch['sonar_template'].shape[0]
-                    rgb_template = None
-                    rgb_search = None
-                    sonar_template = batch['sonar_template']
-                    sonar_search = batch['sonar_search']
-                    target_idx = None
-                elif 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                    sonar_frames = batch['sonar_frames']
-                    batch_size = sonar_frames.shape[0]
-                    target_idx = batch.get('target_idx', None)
-                    if target_idx is not None:
-                        sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
-                    else:
-                        sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
-                    sonar_search = sonar_frames
-                    rgb_template = None
-                    rgb_search = None
-                else:
-                    raise RuntimeError("Batch contains neither template-search format nor frame sequence format")
+                raise RuntimeError(
+                    "Batch must contain template-search format with keys: "
+                    "'rgb_template/rgb_search' or 'sonar_template/sonar_search'. "
+                    "Got keys: " + str(list(batch.keys()))
+                )
 
             # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
             validity_stats['total_samples'] += batch_size
@@ -651,63 +618,29 @@ class Trainer:
                 batch = self._to_device(batch)
 
                 # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
-                # Support both FrameSequenceDataset and TemplateSearchDataset batch formats
+                # CRITICAL FIX (Audit 2025112105): Template-search format only
 
-                # Determine batch size from appropriate keys
+                # Extract template-search pairs
                 if 'rgb_template' in batch and batch['rgb_template'] is not None:
-                    # Template-search format
+                    # Template-search format (RGB available)
                     batch_size = batch['rgb_template'].shape[0]
                     rgb_template = batch['rgb_template']  # [B, 3, 256, 256]
                     rgb_search = batch['rgb_search']  # [B, 3, 512, 512]
                     sonar_template = batch.get('sonar_template', None)  # [B, 1, 256, 256]
                     sonar_search = batch.get('sonar_search', None)  # [B, 1, 512, 512]
-                    target_idx = None  # Not used in template-search format
-                elif 'rgb_frames' in batch and batch['rgb_frames'] is not None:
-                    # Frame sequence format (legacy)
-                    rgb_frames = batch['rgb_frames']  # [B, T, 3, H, W]
-                    batch_size = rgb_frames.shape[0]
-                    target_idx = batch.get('target_idx', None)  # [B]
-
-                    # Extract template from target frame
-                    if target_idx is not None:
-                        rgb_template = rgb_frames[torch.arange(batch_size), target_idx]
-                    else:
-                        rgb_template = rgb_frames[:, rgb_frames.shape[1] // 2]
-                    rgb_search = rgb_frames  # Full sequence
-
-                    # Sonar extraction
-                    if 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                        sonar_frames = batch['sonar_frames']  # [B, T, 1, H, W]
-                        if target_idx is not None:
-                            sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
-                        else:
-                            sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
-                        sonar_search = sonar_frames
-                    else:
-                        sonar_template = None
-                        sonar_search = None
+                elif 'sonar_template' in batch and batch['sonar_template'] is not None:
+                    # Template-search format (Sonar only)
+                    batch_size = batch['sonar_template'].shape[0]
+                    rgb_template = None
+                    rgb_search = None
+                    sonar_template = batch['sonar_template']  # [B, 1, 256, 256]
+                    sonar_search = batch['sonar_search']  # [B, 1, 512, 512]
                 else:
-                    # Fallback: try sonar
-                    if 'sonar_template' in batch and batch['sonar_template'] is not None:
-                        batch_size = batch['sonar_template'].shape[0]
-                        rgb_template = None
-                        rgb_search = None
-                        sonar_template = batch['sonar_template']
-                        sonar_search = batch['sonar_search']
-                        target_idx = None
-                    elif 'sonar_frames' in batch and batch['sonar_frames'] is not None:
-                        sonar_frames = batch['sonar_frames']
-                        batch_size = sonar_frames.shape[0]
-                        target_idx = batch.get('target_idx', None)
-                        if target_idx is not None:
-                            sonar_template = sonar_frames[torch.arange(batch_size), target_idx]
-                        else:
-                            sonar_template = sonar_frames[:, sonar_frames.shape[1] // 2]
-                        sonar_search = sonar_frames
-                        rgb_template = None
-                        rgb_search = None
-                    else:
-                        raise RuntimeError("Batch contains neither template-search format nor frame sequence format")
+                    raise RuntimeError(
+                        "Batch must contain template-search format with keys: "
+                        "'rgb_template/rgb_search' or 'sonar_template/sonar_search'. "
+                        "Got keys: " + str(list(batch.keys()))
+                    )
 
                 # CRITICAL (Audit 2025111903 Phase 5): Track validity statistics for this batch
                 validity_stats['total_samples'] += batch_size
