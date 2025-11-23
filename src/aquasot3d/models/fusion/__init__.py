@@ -50,17 +50,13 @@ from aquasot3d.models.fusion.consistency_loss import (
     build_projection_head
 )
 
-# G2-DCMA
+# G2-DCMA (including ConditionalG2DCMA - consolidated in Audit 2025112309)
 from aquasot3d.models.fusion.g2_dcma import (
     G2DCMA,
     G2DCMALite,
-    build_g2_dcma,
-    build_g2_dcma_lite
-)
-
-# Conditional G2-DCMA (Audit 2025112101 Phase 2.1)
-from aquasot3d.models.fusion.conditional_g2_dcma import (
     ConditionalG2DCMA,
+    build_g2_dcma,
+    build_g2_dcma_lite,
     build_conditional_g2_dcma
 )
 

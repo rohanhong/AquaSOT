@@ -48,7 +48,6 @@ def tracker_config():
             'num_heads': 4
         },
         'use_temporal': True,
-        'use_weak3d': True
     }
 
 

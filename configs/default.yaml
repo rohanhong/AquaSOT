@@ -140,6 +140,8 @@ model:
       hidden_dim: 256
       num_layers: 3
       output_format: cxcywh
+      use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
+      loss_weight_conf: 1.0
 
     sonar_box:
       type: BoxHead
@@ -147,6 +149,8 @@ model:
       hidden_dim: 256
       num_layers: 3
       output_format: cxcywh
+      use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
+      loss_weight_conf: 1.0
 
     fusion_box:
       type: FusionHead
@@ -155,28 +159,8 @@ model:
       hidden_dim: 256
       num_layers: 3
       output_format: cxcywh
-
-    weak3d:
-      type: Weak3DHead
-      in_channels: 768
-      hidden_dim: 256
-      output_dim: 3
-      use_cyclic_loss: true
-      cycle_weight: 0.5
-
-      # CRITICAL (Audit 2025112103): Hardware-specific FOV parameters
-      # RGB Camera (HD Zoom SeaCam): 47deg horizontal x 27deg vertical FOV
-      max_angle_rgb_horizontal: 0.41015  # 23.5 degrees (half of 47deg FOV)
-      max_angle_rgb_vertical: 0.23562    # 13.5 degrees (half of 27deg FOV)
-
-      # Sonar (Oculus MD-Series): 130deg horizontal FOV
-      max_angle_sonar_horizontal: 1.13446  # 65 degrees (half of 130deg FOV)
-
-      # Coordinate system units: pixels (sonar_rect image space)
-      # Audit 2025112103: Updated to match sonar_rect image height (682x376)
-      radial_range: [0.0, 376.0]  # Depth range in pixels (sonar_rect height)
-      default_depth: 188.0         # Default depth for zero-modality scenarios (middle of range)
-      num_radial_bins: 50          # Number of bins for sonar radial discretization
+      use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
+      loss_weight_conf: 1.0
 
 
 # ------------------------------------------------------------------------------
@@ -231,33 +215,26 @@ training:
     norm_type: 2
 
   # Loss weights
+  # CRITICAL FIX (Audit 2025112302): Removed Weak3D component
+  # Architecture simplified to focus on 2D tracking with cross-modal fusion
+  # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 6): Added confidence losses
   loss_weights:
     # Box regression losses
     rgb_box: 1.0
-    sonar_box: 1.0
-    fusion_box: 2.0
-
-    # Classification losses (if applicable)
     rgb_cls: 0.5
+    rgb_conf: 1.0  # Objectness confidence (has_object prediction)
+    sonar_box: 1.0
     sonar_cls: 0.5
-    fusion_cls: 1.0
+    sonar_conf: 1.0  # Objectness confidence (has_object prediction)
+    fusion_box: 1.5
+    fusion_cls: 0.8
+    fusion_conf: 1.0  # Objectness confidence (has_object prediction)
 
-    # Weak 3D losses
-    weak3d_reg: 1.0
-    weak3d_cycle: 0.5
-
-    # Consistency losses (renamed for clarity)
+    # Cross-modal consistency losses
     # geometric_consistency: compares geometric encodings (fusion layer, scale vs radial)
-    # component_consistency: compares X coordinate predictions (weak3d head, X_rgb vs X_sonar)
-    geometric_consistency: 0.1
-    component_consistency: 0.1
-    representation_consistency: 0.1
-
-    # CRITICAL FIX (Audit 2025111414 Finding 3): Quality fusion loss
-    # Supervises learned fusion weights against physical quality cues
-    quality_fusion_loss: 0.2
-
-    # temporal_smooth removed (Audit 2025112104) - no temporal modeling
+    # representation_consistency: InfoNCE contrastive loss for feature alignment
+    geometric_consistency: 0.5
+    representation_consistency: 0.3
 
   # Loss weight scheduling
   loss_schedule:
@@ -268,7 +245,6 @@ training:
     # Target weights at end of training (if enabled)
     target_weights:
       fusion_box: 3.0
-      weak3d_cycle: 1.0
 
   # Validation
   val_interval: 1  # Validate every N epochs
@@ -355,7 +331,6 @@ ablation:
     # vision_mamba removed (Audit 2025112104) - no temporal modeling
     geometry_gating: true
     quality_gating: true
-    weak3d_cycle: true
     deformable_attention: true
     dual_consistency: true
 

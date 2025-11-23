@@ -1,12 +1,12 @@
 # AquaSOT-3D
 
-**End-to-End RGB+Sonar Single-Object Tracking with Weak 3D Estimation**
+**End-to-End RGB+Sonar Single-Object Tracking**
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-AquaSOT-3D is a unified end-to-end multi-modal single-object tracking system that fuses RGB camera and Forward-Looking Sonar (FLS) data for robust underwater object tracking. The system outputs 2D tracking bounding boxes for each modality and provides weak 3D center estimation (X, Y, Z) without requiring extrinsic calibration between sensors.
+AquaSOT-3D is a unified end-to-end multi-modal single-object tracking system that fuses RGB camera and Forward-Looking Sonar (FLS) data for robust underwater object tracking. The system outputs 2D tracking bounding boxes for each modality using advanced cross-modal attention fusion without requiring extrinsic calibration between sensors.
 
 ---
 
@@ -17,9 +17,7 @@ AquaSOT-3D is a unified end-to-end multi-modal single-object tracking system tha
 - [Algorithm Overview](#algorithm-overview)
   - [1. Geometry-Gated Deformable Cross-Modal Attention (G²-DCMA)](#1-geometry-gated-deformable-cross-modal-attention-g-dcma)
   - [2. Differentiable Log-Polar Preprocessing](#2-differentiable-log-polar-preprocessing)
-  - [3. Vision-Mamba Temporal Modeling](#3-vision-mamba-temporal-modeling)
-  - [4. Weak 3D Center Estimation](#4-weak-3d-center-estimation)
-  - [5. Quality-Aware Adaptive Fusion](#5-quality-aware-adaptive-fusion)
+  - [3. Confidence-Aware Adaptive Fusion](#3-confidence-aware-adaptive-fusion)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Dataset](#dataset)
@@ -40,9 +38,9 @@ AquaSOT-3D is a unified end-to-end multi-modal single-object tracking system tha
 - **Calibration-Free Multi-Modal Fusion**: Fuses RGB and Sonar data without requiring extrinsic calibration parameters
 - **Novel G²-DCMA Module**: Geometry-Gated Deformable Cross-Modal Attention with geometric regularization for spatially misaligned modalities
 - **Differentiable Log-Polar Transform**: Handles sonar fan-shaped field of view with learnable parameters for end-to-end optimization
-- **Linear-Complexity Temporal Modeling**: Vision-Mamba based temporal aggregation for efficient long-sequence tracking
-- **Weak 3D Estimation**: Outputs 3D center position (X, Y, Z) with cyclic consistency constraints
-- **Quality-Aware Weighting**: Adaptive fusion based on RGB sharpness and Sonar SNR
+- **Template-Search Paradigm**: OSTrack-inspired one-stream architecture with per-frame template updates
+- **Confidence-Aware Weighting**: Learnable confidence estimation for adaptive multi-modal fusion
+- **Multi-Scale Prediction**: Separate prediction heads for RGB, Sonar, and fused modalities
 - **OSTrack Compatible**: Built on the proven one-stream template-search framework
 
 ---
@@ -85,30 +83,23 @@ AquaSOT-3D employs a template-search paradigm inspired by OSTrack, processing pa
 │              │  └───────────────┘  │                                 │
 │              └─────────┬───────────┘                                 │
 │                        ↓                                              │
-│              ┌─────────────────────┐                                 │
-│              │ Temporal Head       │                                 │
-│              │ (Vision-Mamba SSM)  │                                 │
-│              └─────────┬───────────┘                                 │
-│                        ↓                                              │
-│         ┌──────────────┴────────────────┐                           │
+│         ┌──────────────┼────────────────┐                           │
 │         ↓              ↓                ↓                            │
 │   ┌─────────┐   ┌──────────┐   ┌────────────┐                      │
 │   │RGB Box  │   │Sonar Box │   │Fusion Box  │                      │
 │   │Head     │   │Head      │   │Head        │                      │
-│   └─────────┘   └──────────┘   └─────┬──────┘                      │
-│                                       ↓                               │
-│                            ┌──────────────────┐                      │
-│                            │ Weak 3D Center   │                      │
-│                            │ Head (X, Y, Z)   │                      │
-│                            └──────────────────┘                      │
+│   │(CXCYWH) │   │(CXCYWH)  │   │(CXCYWH)    │                      │
+│   └─────────┘   └──────────┘   └────────────┘                      │
+│                                                                       │
+│  Output: 2D Bounding Boxes (RGB, Sonar, Fusion)                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Components:**
-- **Dual Backbones**: ViT/ConvNeXt for RGB, Lightweight ViT with log-polar preprocessing for Sonar
+- **Dual Backbones**: ViT for RGB (3-channel), ViT with 1-to-3 channel adapter for Sonar
 - **G²-DCMA Fusion**: Geometry-aware cross-modal attention with deformable sampling
-- **Vision-Mamba Temporal**: Linear-complexity state-space model for temporal aggregation
-- **Multi-Head Prediction**: Separate heads for RGB, Sonar, Fusion boxes and weak 3D center
+- **Dual Consistency**: Geometric consistency (scale vs radial) and representation consistency (InfoNCE)
+- **Multi-Head Prediction**: Separate 2D box prediction heads for RGB, Sonar, and Fusion modalities
 
 ---
 
@@ -180,51 +171,7 @@ Where:
 
 The log-polar representation is processed by a lightweight ViT encoder before fusion.
 
-### 3. Vision-Mamba Temporal Modeling
-
-Long-term temporal modeling is crucial for tracking under occlusions and rapid motion. Traditional transformers have quadratic complexity O(T²) in sequence length T.
-
-**Vision-Mamba** employs State-Space Models (SSMs) for linear complexity O(T):
-
-```
-h_t = A · h_{t-1} + B · x_t    # State update
-y_t = C · h_t + D · x_t        # Output projection
-```
-
-Where A, B, C, D are learnable matrices. The model maintains a compressed state vector h_t that summarizes historical information.
-
-**Benefits**:
-- **Linear complexity**: Efficient for long sequences (hundreds of frames)
-- **Long-term dependencies**: State vector aggregates information over time
-- **Occlusion recovery**: Predicts target position when temporarily invisible
-
-Alternative: ARTrackV2 autoregressive head for ablation studies.
-
-### 4. Weak 3D Center Estimation
-
-The system estimates 3D center position (X, Y, Z) without extrinsic calibration through **cyclic consistency**:
-
-#### Estimation Strategy
-- **X (Horizontal)**: Regressed by both RGB and Sonar branches independently, enforced with component consistency loss
-- **Y (Vertical)**: Primarily from RGB branch (better vertical resolution)
-- **Z (Depth)**: Extracted from Sonar log-polar radial activation distribution via learnable weighted integral
-
-#### Cyclic Consistency
-A learnable projection head maps 3D center back to 2D bounding boxes:
-```
-(X, Y, Z) → Project → (bbox_rgb, bbox_sonar)
-```
-
-The projected boxes are compared with ground truth 2D annotations:
-```
-L_cycle = L(bbox_rgb_proj, bbox_rgb_gt) + L(bbox_sonar_proj, bbox_sonar_gt)
-```
-
-This ensures 3D estimates are geometrically consistent with 2D observations across modalities.
-
-**Key Insight**: No calibration matrix is required. The model learns implicit sensor relationships through 3D→2D→3D cyclic constraints.
-
-### 5. Quality-Aware Adaptive Fusion
+### 3. Confidence-Aware Adaptive Fusion
 
 Not all frames provide equally reliable information. AquaSOT-3D estimates per-frame quality and adapts fusion weights:
 
@@ -530,7 +477,7 @@ python scripts/train.py --config configs/train/train.yaml
 **Key Training Settings**:
 - Small batch size (2-8) with gradient accumulation for memory efficiency
 - Lower learning rate for pretrained backbones (0.1x multiplier)
-- All loss components enabled (RGB, Sonar, Fusion, Weak3D, Consistency)
+- All loss components enabled (RGB, Sonar, Fusion, Cross-Modal Consistency)
 
 ### Loss Functions
 
@@ -539,13 +486,15 @@ AquaSOT-3D employs a multi-task loss with initial weights:
 | Loss Component | Weight | Description |
 |----------------|--------|-------------|
 | RGB Box Loss | 1.0 | GIoU + L1 + Quality Focal |
-| Sonar Box Loss | 1.0 | GIoU + L1 + Quality Focal (log-polar domain) |
-| Component Consistency | 0.2 | RGB-Sonar X coordinate consistency |
-| Representation Consistency | 0.1 | InfoNCE contrastive loss |
-| Weak 3D Cyclic | 0.6 | 3D→2D projection consistency |
-| Temporal Smoothness | 0.1 | Short-term EMA regularization |
+| RGB Cls Loss | 0.5 | Classification confidence |
+| Sonar Box Loss | 1.0 | GIoU + L1 + Quality Focal |
+| Sonar Cls Loss | 0.5 | Classification confidence |
+| Fusion Box Loss | 1.5 | GIoU + L1 + Quality Focal for fused predictions |
+| Fusion Cls Loss | 0.8 | Classification confidence for fusion |
+| Geometric Consistency | 0.5 | Fusion layer: scale vs radial encoding alignment |
+| Representation Consistency | 0.3 | InfoNCE contrastive loss for feature alignment |
 
-**Dynamic Weighting**: Loss weights are automatically adjusted during training based on task convergence.
+**Static Weighting**: Loss weights are fixed during training to maintain stable 2D tracking performance.
 
 ### Optimization
 
@@ -664,20 +613,15 @@ Detailed per-frame results for further analysis.
 Evaluate model variants to analyze component contributions:
 
 ```bash
-# No Vision-Mamba (Transformer baseline)
-python scripts/eval.py \
-    --config configs/ablation/ablation_no_mamba.yaml \
-    --checkpoint model_no_mamba.pth
-
 # No Geometric Gating
 python scripts/eval.py \
     --config configs/ablation/ablation_no_gating.yaml \
     --checkpoint model_no_gating.pth
 
-# No Weak 3D Estimation
+# No Deformable Attention
 python scripts/eval.py \
-    --config configs/ablation/ablation_no_3d.yaml \
-    --checkpoint model_no_3d.pth
+    --config configs/ablation/ablation_no_deformable.yaml \
+    --checkpoint model_no_deformable.pth
 ```
 
 ---
@@ -802,13 +746,12 @@ AquaSOT-3D uses a unified **Fusion Frame** coordinate system:
 **Modality Alignment**:
 - RGB frame is aligned with Fusion frame
 - Sonar-to-Fusion transformation is learned implicitly (no calibration required)
-- All 2D bounding boxes and 3D centers are expressed in Fusion frame
+- All 2D bounding boxes are expressed in normalized [0,1] CXCYWH format
 
-**Weak 3D Center**:
-- Output: `(X, Y, Z)` in Fusion frame coordinates
-- X: Horizontal displacement from image center
-- Y: Vertical displacement from image center
-- Z: Estimated depth/range (not metrically accurate, relative scale)
+**Coordinate Format**:
+- All bounding boxes use normalized center-width-height format: `(cx, cy, w, h)` in [0, 1]
+- `cx, cy`: Normalized center coordinates
+- `w, h`: Normalized width and height
 
 ---
 
@@ -818,8 +761,7 @@ AquaSOT-3D uses a unified **Fusion Frame** coordinate system:
 
 - **PyTorch 2.3.0+**: Core deep learning framework with CUDA 11.8
 - **torchvision 0.18.0+**: Image transformations and pretrained models
-- **timm (PyTorch Image Models)**: Vision Transformer and ConvNeXt backbones
-- **mamba-ssm 1.2+**: Vision-Mamba state-space models for temporal modeling
+- **timm (PyTorch Image Models)**: Vision Transformer backbones
 - **einops**: Elegant tensor operations for multi-dimensional arrays
 
 ### Computer Vision
@@ -864,18 +806,6 @@ AquaSOT-3D uses a unified **Fusion Frame** coordinate system:
   - Paper: https://arxiv.org/abs/2406.07189
   - Code: https://github.com/LiYunfengLYF/RGBS50
 
-### Temporal Modeling
-
-- **Vision-Mamba** (ICML 2024): *Vision Mamba: Efficient Visual Representation Learning with Bidirectional State Space Model*
-  - Code: https://github.com/hustvl/Vim
-
-- **VMamba** (2024): *VMamba: Visual State Space Models*
-  - Code: https://github.com/MzeroMiko/VMamba
-
-- **ARTrackV2** (CVPR 2024): *ARTrackV2: Prompting Autoregressive Tracker Where to Look and How to Describe*
-  - Paper: https://arxiv.org/abs/2312.17133
-  - Code: https://github.com/MIV-XJTU/ARTrack
-
 ### Attention Mechanisms
 
 - **Deformable DETR** (ICLR 2021): *Deformable DETR: Deformable Transformers for End-to-End Object Detection*
@@ -895,11 +825,11 @@ If you use AquaSOT-3D in your research, please cite:
 
 ```bibtex
 @software{aquasot3d2025,
-  title={AquaSOT-3D: End-to-End RGB+Sonar Single-Object Tracking with Weak 3D Estimation},
+  title={AquaSOT-3D: End-to-End RGB+Sonar Single-Object Tracking},
   author={AquaSOT-3D Team},
   year={2025},
   url={https://github.com/yourusername/AquaSOT-3D},
-  note={Calibration-free multi-modal underwater tracking with geometry-aware fusion}
+  note={Calibration-free multi-modal underwater tracking with geometry-gated deformable cross-modal attention}
 }
 ```
 
@@ -917,13 +847,6 @@ If you use AquaSOT-3D in your research, please cite:
   title={RGB-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer Tracker},
   author={Li, Yunfeng and others},
   journal={arXiv preprint arXiv:2406.07189},
-  year={2024}
-}
-
-@inproceedings{visionmamba2024,
-  title={Vision Mamba: Efficient Visual Representation Learning with Bidirectional State Space Model},
-  author={Zhu, Lianghui and Liao, Bencheng and Zhang, Qian and Wang, Xinlong and Liu, Wenyu and Wang, Xinggang},
-  booktitle={ICML},
   year={2024}
 }
 ```
@@ -969,4 +892,4 @@ For questions, issues, or collaboration inquiries:
 
 ---
 
-**Acknowledgments**: This project builds upon the excellent work of OSTrack, RGBS50, Vision-Mamba, and the broader computer vision research community. We thank the authors for open-sourcing their implementations.
+**Acknowledgments**: This project builds upon the excellent work of OSTrack, RGBS50, Deformable DETR, and the broader computer vision research community. We thank the authors for open-sourcing their implementations.

@@ -249,7 +249,7 @@ class TestConfigIntegration:
                 },
                 'heads': [
                     {'type': 'BoxHead', 'num_classes': 1},
-                    {'type': 'Weak3DHead', 'num_bins': 50}
+                    {'type': 'FusionHead', 'hidden_dim': 256}
                 ]
             },
             'training': {

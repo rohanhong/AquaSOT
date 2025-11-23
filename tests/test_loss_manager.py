@@ -96,41 +96,9 @@ class TestLossManager:
         assert 'representation_consistency' in loss_dict
         assert loss_dict['component_consistency'] == 0.5
 
-    def test_weak3d_cycle_loss(self):
-        """Test weak 3D cycle loss handling"""
-        manager = LossManager()
-
-        predictions = {
-            'weak3d': {
-                'cyclic_loss': torch.tensor(0.8)
-            }
-        }
-        targets = {}
-
-        total_loss, loss_dict = manager.compute_losses(predictions, targets)
-
-        assert 'weak3d_cycle' in loss_dict
-        assert loss_dict['weak3d_cycle'] == 0.8
-
-    def test_temporal_smoothness_loss(self):
-        """Test temporal smoothness loss"""
-        manager = LossManager()
-
-        predictions = {
-            'temporal': {
-                'smoothness_loss': torch.tensor(0.1)
-            }
-        }
-        targets = {}
-
-        total_loss, loss_dict = manager.compute_losses(predictions, targets)
-
-        assert 'temporal_smooth' in loss_dict
-        assert loss_dict['temporal_smooth'] == 0.1
-
     def test_linear_schedule(self):
         """Test linear weight scheduling"""
-        target_weights = {'fusion_box': 1.5, 'weak3d_cycle': 1.0}
+        target_weights = {'fusion_box': 1.5, 'geometric_consistency': 1.0}
         manager = LossManager(
             weight_schedule='linear',
             schedule_config={'max_epoch': 60, 'target_weights': target_weights}

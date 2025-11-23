@@ -304,9 +304,25 @@ class TrackingAugmentation(BaseAugmentation):
         # Update data dictionary
         data['rgb_img'] = rgb_img
         data['sonar_img'] = sonar_img
-        # CRITICAL FIX (Audit 2025112003): Preserve None bbox for disabled modalities
-        data['rgb_bbox'] = torch.from_numpy(rgb_bbox) if isinstance(rgb_bbox, np.ndarray) else rgb_bbox
-        data['sonar_bbox'] = torch.from_numpy(sonar_bbox) if isinstance(sonar_bbox, np.ndarray) else sonar_bbox
+
+        # CONTINUOUS FLOW DESIGN (Audit 2025112310 P2 FIX):
+        # Replace dummy bbox with [0,0,0,0] for invalid samples
+        # Dummy bbox was only used as placeholder to prevent normalize errors
+        if rgb_bbox is not None:
+            if not is_valid_rgb:
+                # Invalid RGB: replace dummy bbox with [0,0,0,0]
+                rgb_bbox = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            data['rgb_bbox'] = torch.from_numpy(rgb_bbox) if isinstance(rgb_bbox, np.ndarray) else rgb_bbox
+        else:
+            data['rgb_bbox'] = None
+
+        if sonar_bbox is not None:
+            if not is_valid_sonar:
+                # Invalid Sonar: replace dummy bbox with [0,0,0,0]
+                sonar_bbox = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            data['sonar_bbox'] = torch.from_numpy(sonar_bbox) if isinstance(sonar_bbox, np.ndarray) else sonar_bbox
+        else:
+            data['sonar_bbox'] = None
 
         # CRITICAL FIX (Audit 2025111903 Phase 2): Include updated validity flags
         data['is_valid_rgb'] = is_valid_rgb

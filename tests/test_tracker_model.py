@@ -45,7 +45,6 @@ class TestAquaSOT3DTracker:
             },
             'temporal_config': None,  # Disable temporal for minimal test
             'use_temporal': False,
-            'use_weak3d': False
         }
 
     @pytest.fixture
@@ -74,12 +73,7 @@ class TestAquaSOT3DTracker:
                 'num_layers': 2,
                 'num_heads': 4
             },
-            'weak3d_config': {
-                'hidden_dim': 128,
-                'num_radial_bins': 50
-            },
-            'use_temporal': True,
-            'use_weak3d': True
+            'use_temporal': True
         }
 
     def test_minimal_tracker_initialization(self, minimal_config):
@@ -90,9 +84,7 @@ class TestAquaSOT3DTracker:
         assert tracker.rgb_feat_dim == 192
         assert tracker.sonar_feat_dim == 128
         assert not tracker.use_temporal
-        assert not tracker.use_weak3d
         assert tracker.temporal_head is None
-        assert tracker.weak3d_head is None
 
     def test_full_tracker_initialization(self, full_config):
         """Test tracker initialization with all features."""
@@ -100,9 +92,7 @@ class TestAquaSOT3DTracker:
 
         assert isinstance(tracker, AquaSOT3DTracker)
         assert tracker.use_temporal
-        assert tracker.use_weak3d
         assert tracker.temporal_head is not None
-        assert tracker.weak3d_head is not None
         assert tracker.rgb_projector is not None
         assert tracker.sonar_projector is not None
 
@@ -207,12 +197,6 @@ class TestAquaSOT3DTracker:
         # Consistency losses
         assert 'component_consistency' in losses
         assert 'representation_consistency' in losses
-
-        # 3D losses (if weak3d is enabled)
-        if tracker.use_weak3d:
-            assert 'X_consistency_loss' in losses
-            assert 'rgb_cyclic_loss' in losses
-            assert 'sonar_cyclic_loss' in losses
 
         # All losses should be scalars
         for loss_name, loss_value in losses.items():
@@ -360,7 +344,6 @@ class TestAquaSOT3DTracker:
                 'output_dim': 192
             },
             'use_temporal': True,
-            'use_weak3d': False
         }
 
         temporal_types = ['transformer', 'artrack']  # Skip mamba (requires CUDA)
@@ -447,56 +430,6 @@ class TestAquaSOT3DTracker:
         assert hasattr(tracker, 'fusion_head')
 
         # Check 3D components
-        if tracker.use_weak3d:
-            assert hasattr(tracker, 'weak3d_head')
-            assert hasattr(tracker, 'rgb_projector')
-            assert hasattr(tracker, 'sonar_projector')
-
-    def test_disable_weak3d(self):
-        """Test tracker with weak 3D estimation disabled."""
-        config = {
-            'rgb_backbone_config': {
-                'type': 'vit_rgb',
-                'model_name': 'vit_tiny_patch16_224',
-                'pretrained': False,
-                'output_dim': 192
-            },
-            'sonar_backbone_config': {
-                'type': 'sonar',
-                'encoder_type': 'conv',
-                'output_dim': 128
-            },
-            'fusion_config': {
-                'type': 'g2_dcma_lite',
-                'output_dim': 192
-            },
-            'use_temporal': False,
-            'use_weak3d': False
-        }
-
-        tracker = AquaSOT3DTracker(**config)
-
-        assert not tracker.use_weak3d
-        assert tracker.weak3d_head is None
-        assert tracker.rgb_projector is None
-        assert tracker.sonar_projector is None
-
-        # Forward pass should not produce 3D outputs
-        batch_size = 2
-        rgb_template = torch.randn(batch_size, 3, 128, 128)
-        rgb_search = torch.randn(batch_size, 3, 256, 256)
-        sonar_template = torch.randn(batch_size, 1, 376, 682)
-        sonar_search = torch.randn(batch_size, 1, 376, 682)
-
-        tracker.eval()
-        with torch.no_grad():
-            outputs = tracker(
-                rgb_template, rgb_search,
-                sonar_template, sonar_search
-            )
-
-        assert 'center_3d' not in outputs
-
     def test_quality_scores_output(self, minimal_config):
         """Test quality score predictions."""
         tracker = AquaSOT3DTracker(**minimal_config)

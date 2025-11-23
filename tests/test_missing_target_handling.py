@@ -51,7 +51,6 @@ class TestZeroModalityHandling:
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
             'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
             'use_temporal': False,
-            'use_weak3d': False
         }
 
         tracker = build_tracker('AquaSOT3DTracker', **config)
@@ -91,7 +90,6 @@ class TestSingleModalityHandling:
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
             'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
             'use_temporal': False,
-            'use_weak3d': False
         }
 
         tracker = build_tracker('AquaSOT3DTracker', **config)
@@ -125,7 +123,6 @@ class TestSingleModalityHandling:
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
             'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
             'use_temporal': False,
-            'use_weak3d': False
         }
 
         tracker = build_tracker('AquaSOT3DTracker', **config)
@@ -163,7 +160,6 @@ class TestDualModalityHandling:
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
             'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
             'use_temporal': False,
-            'use_weak3d': False
         }
 
         tracker = build_tracker('AquaSOT3DTracker', **config)
@@ -201,7 +197,6 @@ class TestSequenceIntegrity:
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
             'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
             'use_temporal': False,
-            'use_weak3d': False
         }
 
         tracker = build_tracker('AquaSOT3DTracker', **config)

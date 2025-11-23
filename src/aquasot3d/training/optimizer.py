@@ -162,7 +162,7 @@ def _get_default_parameter_groups(
             backbone_params.append(param)
         elif 'fusion' in name.lower() or 'g2_dcma' in name.lower() or 'g2dcma' in name.lower():
             fusion_params.append(param)
-        elif 'head' in name.lower() or 'projector' in name.lower():
+        elif 'head' in name.lower():
             head_params.append(param)
         else:
             other_params.append(param)

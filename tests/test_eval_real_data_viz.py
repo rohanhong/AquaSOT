@@ -50,7 +50,6 @@ def tracker_config():
             'num_points': 2
         },
         'temporal_config': None,
-        'use_weak3d': False,
         'use_quality_gating': True,
         'quality_config': {
             'rgb': {'method': 'combined', 'learnable': True},

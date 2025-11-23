@@ -431,6 +431,8 @@ class BoxHead(BaseHead):
         loss_weight_cls: float = 1.0,
         loss_weight_l1: float = 1.0,  # Reduced from 5.0 for numerical stability
         loss_weight_iou: float = 2.0,
+        use_confidence_head: bool = True,
+        loss_weight_conf: float = 1.0,
         **kwargs
     ):
         super().__init__()
@@ -444,6 +446,8 @@ class BoxHead(BaseHead):
         self.loss_weight_cls = loss_weight_cls
         self.loss_weight_l1 = loss_weight_l1
         self.loss_weight_iou = loss_weight_iou
+        self.use_confidence_head = use_confidence_head
+        self.loss_weight_conf = loss_weight_conf
 
         # Build MLP layers for shared feature processing
         layers = []
@@ -474,6 +478,20 @@ class BoxHead(BaseHead):
             nn.Sigmoid()  # Constrain to [0, 1] for normalized coordinates
         )
 
+        # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
+        # Confidence head for objectness prediction (has_object)
+        # Predicts whether an object exists in the frame (0=no object, 1=has object)
+        # This is independent from quality (which assumes object exists)
+        if use_confidence_head:
+            self.confidence_head = nn.Sequential(
+                nn.Linear(current_dim, hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(hidden_dim, 1),
+                nn.Sigmoid()
+            )
+        else:
+            self.confidence_head = None
+
         # Loss functions
         if use_quality_focal:
             self.cls_loss_fn = QualityFocalLoss(beta=2.0)
@@ -489,6 +507,10 @@ class BoxHead(BaseHead):
         else:
             raise ValueError(f"Unknown IoU loss type: {iou_loss_type}")
 
+        # Confidence loss (BCE for binary objectness)
+        if use_confidence_head:
+            self.confidence_loss_fn = nn.BCELoss()
+
         # Initialize regression head with small weights for stable initial predictions
         # This ensures initial box predictions are centered around [0.5, 0.5, 0.3, 0.3]
         self._init_weights()
@@ -497,7 +519,7 @@ class BoxHead(BaseHead):
             f"Initialized BoxHead: in_channels={in_channels}, "
             f"hidden_dim={hidden_dim}, num_layers={num_layers}, "
             f"box_format={box_format}, use_quality_focal={use_quality_focal}, "
-            f"iou_loss={iou_loss_type}"
+            f"iou_loss={iou_loss_type}, use_confidence_head={use_confidence_head}"
         )
 
     def _init_weights(self):
@@ -532,7 +554,8 @@ class BoxHead(BaseHead):
         features: torch.Tensor,
         target_boxes: Optional[torch.Tensor] = None,
         target_labels: Optional[torch.Tensor] = None,
-        validity_mask: Optional[torch.Tensor] = None
+        validity_mask: Optional[torch.Tensor] = None,
+        has_object: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for box prediction.
@@ -540,12 +563,17 @@ class BoxHead(BaseHead):
         CRITICAL FIX (Audit 2025112002): Added validity_mask parameter to enable
         proper training of quality/objectness scores for invalid samples.
 
+        CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4): Added has_object parameter
+        to train confidence head for objectness prediction.
+
         Args:
             features: Input features, shape (B, C) or (B, C, H, W)
             target_boxes: Target boxes in cxcywh format, shape (B, 4), optional
             target_labels: Target labels (0 or 1), shape (B,), optional
             validity_mask: Validity mask for samples (0=invalid, 1=valid), shape (B,), optional
                           Invalid samples will have target_quality forced to 0.0
+            has_object: Has-object flags (0=no object, 1=has object), shape (B,), optional
+                       Used for training confidence head in continuous flow design
 
         Returns:
             Dictionary with predictions and losses
@@ -579,6 +607,14 @@ class BoxHead(BaseHead):
         # This prevents CUDA assertion failures in BCE loss computation
         pred_scores = torch.clamp(pred_scores, min=0.0, max=1.0)
 
+        # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
+        # Confidence (objectness score) - predicts has_object probability
+        if self.confidence_head is not None:
+            pred_confidence = self.confidence_head(shared_feat).squeeze(-1)  # (B,)
+            pred_confidence = torch.clamp(pred_confidence, min=0.0, max=1.0)
+        else:
+            pred_confidence = None
+
         # Regression (box coordinates in cxcywh)
         pred_boxes_cxcywh = self.reg_head(shared_feat)  # (B, 4)
 
@@ -592,6 +628,9 @@ class BoxHead(BaseHead):
             'pred_boxes': pred_boxes,
             'pred_scores': pred_scores,
         }
+
+        if pred_confidence is not None:
+            outputs['pred_confidence'] = pred_confidence
 
         # Compute losses if targets are provided
         if target_boxes is not None:
@@ -665,16 +704,38 @@ class BoxHead(BaseHead):
                 else:
                     cls_loss = self.cls_loss_fn(pred_scores, target_labels)
 
+            # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
+            # Confidence loss for objectness prediction
+            conf_loss = torch.tensor(0.0, device=features.device)
+            if self.confidence_head is not None and has_object is not None:
+                # Ensure has_object is float tensor
+                if has_object.dtype != torch.float32:
+                    has_object = has_object.float()
+
+                # Compute BCE loss between predicted confidence and has_object ground truth
+                conf_loss = self.confidence_loss_fn(pred_confidence, has_object)
+
             outputs.update({
                 'cls_loss': cls_loss * self.loss_weight_cls,
                 'l1_loss': l1_loss * self.loss_weight_l1,
                 'iou_loss': iou_loss * self.loss_weight_iou,
-                'total_loss': (
+            })
+
+            # Add confidence loss if computed
+            if self.confidence_head is not None:
+                outputs['conf_loss'] = conf_loss * self.loss_weight_conf
+                outputs['total_loss'] = (
+                    cls_loss * self.loss_weight_cls +
+                    l1_loss * self.loss_weight_l1 +
+                    iou_loss * self.loss_weight_iou +
+                    conf_loss * self.loss_weight_conf
+                )
+            else:
+                outputs['total_loss'] = (
                     cls_loss * self.loss_weight_cls +
                     l1_loss * self.loss_weight_l1 +
                     iou_loss * self.loss_weight_iou
                 )
-            })
 
         return outputs
 

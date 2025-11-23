@@ -117,16 +117,7 @@ def tracker_config():
             'num_layers': 2,
             'num_heads': 4
         },
-        'weak3d_config': {
-            'hidden_dim': 128,
-            'num_radial_bins': 50
-        },
-        'projector_config': {
-            'projection_type': 'mlp',
-            'hidden_dim': 128
-        },
-        'use_temporal': True,
-        'use_weak3d': True
+        'use_temporal': True
     }
 
 

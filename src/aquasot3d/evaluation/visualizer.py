@@ -712,6 +712,115 @@ class TrackingVisualizer:
         logger.info(f"Saved video to: {output_path}")
         return str(output_path)
 
+    @staticmethod
+    def estimate_3d_position(
+        rgb_box: Optional[np.ndarray] = None,
+        sonar_box: Optional[np.ndarray] = None,
+        rgb_fov_h: float = 47.0,
+        rgb_fov_v: float = 27.0,
+        sonar_fov_h: float = 130.0,
+        default_depth: float = 5.0
+    ) -> Optional[np.ndarray]:
+        """
+        Simple post-processing function to estimate 3D position from 2D predictions.
+
+        This function provides a rough 3D coordinate estimate for visualization purposes
+        only. It does NOT participate in training or model feedback.
+
+        NOTE: Without extrinsic calibration, 3D estimates are approximate and should
+        only be used for qualitative visualization, not quantitative evaluation.
+
+        Args:
+            rgb_box: RGB bounding box in CXCYWH format, normalized [0,1] (cx, cy, w, h)
+            sonar_box: Sonar bounding box in CXCYWH format, normalized [0,1] (cx, cy, w, h)
+            rgb_fov_h: RGB camera horizontal FOV in degrees (default: 47.0)
+            rgb_fov_v: RGB camera vertical FOV in degrees (default: 27.0)
+            sonar_fov_h: Sonar horizontal FOV in degrees (default: 130.0)
+            default_depth: Default depth in meters when only one modality is available (default: 5.0)
+
+        Returns:
+            Estimated 3D position [x, y, depth] in meters, or None if insufficient data
+            - x: horizontal displacement (left-right)
+            - y: vertical displacement (up-down)
+            - depth: forward distance from sensors
+
+        Method:
+            1. Convert normalized 2D centers to angular displacements using FOV
+            2. Estimate depth from bbox size (larger = closer, inverse relationship)
+            3. Calculate X and Y using depth and angles
+            4. Fuse RGB and Sonar estimates with simple averaging
+
+        Example:
+            >>> rgb_box = np.array([0.5, 0.5, 0.2, 0.15])  # Center, 20% width, 15% height
+            >>> sonar_box = np.array([0.5, 0.6, 0.25, 0.3])
+            >>> pos_3d = TrackingVisualizer.estimate_3d_position(rgb_box, sonar_box)
+            >>> print(f"Estimated position: x={pos_3d[0]:.2f}m, y={pos_3d[1]:.2f}m, depth={pos_3d[2]:.2f}m")
+        """
+        if rgb_box is None and sonar_box is None:
+            return None
+
+        # Convert FOV to radians
+        rgb_fov_h_rad = np.deg2rad(rgb_fov_h)
+        rgb_fov_v_rad = np.deg2rad(rgb_fov_v)
+        sonar_fov_h_rad = np.deg2rad(sonar_fov_h)
+
+        estimates = []
+
+        # Process RGB estimate
+        if rgb_box is not None:
+            cx, cy, w, h = rgb_box
+
+            # Estimate depth from bbox size (inverse relationship: larger = closer)
+            # Assume object is roughly 1m in size, depth inversely proportional to bbox area
+            bbox_area = w * h  # Normalized area [0, 1]
+            if bbox_area > 0:
+                depth_rgb = 1.0 / np.sqrt(bbox_area)  # Rough depth estimate
+            else:
+                depth_rgb = default_depth
+
+            # Convert normalized center to angular displacement
+            # cx=0.5 means centered (angle=0), cx=0 means left edge, cx=1 means right edge
+            angle_h_rgb = (cx - 0.5) * rgb_fov_h_rad  # Horizontal angle
+            angle_v_rgb = (0.5 - cy) * rgb_fov_v_rad  # Vertical angle (inverted: y=0 is top)
+
+            # Calculate X, Y from depth and angles
+            x_rgb = depth_rgb * np.tan(angle_h_rgb)
+            y_rgb = depth_rgb * np.tan(angle_v_rgb)
+
+            estimates.append(np.array([x_rgb, y_rgb, depth_rgb]))
+
+        # Process Sonar estimate
+        if sonar_box is not None:
+            cx, cy, w, h = sonar_box
+
+            # Estimate depth from bbox size
+            bbox_area = w * h
+            if bbox_area > 0:
+                depth_sonar = 1.0 / np.sqrt(bbox_area)
+            else:
+                depth_sonar = default_depth
+
+            # Sonar only provides horizontal angle (no vertical angle)
+            angle_h_sonar = (cx - 0.5) * sonar_fov_h_rad
+
+            # Calculate X from sonar (Y uses default or RGB estimate)
+            x_sonar = depth_sonar * np.tan(angle_h_sonar)
+
+            # For Y, use middle of vertical range (sonar doesn't provide vertical angle)
+            y_sonar = 0.0
+
+            estimates.append(np.array([x_sonar, y_sonar, depth_sonar]))
+
+        # Fuse estimates with simple averaging
+        if len(estimates) == 2:
+            # Both RGB and Sonar available: average them
+            pos_3d = np.mean(estimates, axis=0)
+        else:
+            # Only one modality available
+            pos_3d = estimates[0]
+
+        return pos_3d
+
 
 def create_video_from_frames(
     frames: List[np.ndarray],

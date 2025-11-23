@@ -54,7 +54,6 @@ def tracker_config():
             'num_points': 2
         },
         'use_temporal': False,
-        'use_weak3d': False
     }
 
 

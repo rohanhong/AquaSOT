@@ -169,10 +169,19 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             else:
                 batched[key] = None
 
+    # CRITICAL FIX (Audit 2025112306 P0-2): Stack validity flags as tensors
+    # Validity flags must be float32 tensors for loss masking, NOT metadata lists
+    validity_keys = ['is_valid', 'is_valid_rgb', 'is_valid_sonar', 'has_object', 'has_object_rgb', 'has_object_sonar']
+    for key in validity_keys:
+        if key in batch[0]:
+            # Convert bool/int to float32 tensor [B]
+            validity_list = [sample.get(key, True) for sample in batch]
+            batched[key] = torch.tensor(validity_list, dtype=torch.float32)
+
     # Collect metadata (keep as lists)
     metadata_keys = [
         'sequence_name', 'frame_id', 'template_frame_id',
-        'rgb_boxes', 'sonar_boxes', 'is_valid',
+        'rgb_boxes', 'sonar_boxes',  # Removed 'is_valid' - now handled above
         'template_rgb_metadata', 'template_sonar_metadata',
         'search_rgb_metadata', 'search_sonar_metadata'
     ]

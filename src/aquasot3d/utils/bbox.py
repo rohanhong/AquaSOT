@@ -107,7 +107,6 @@ class BBoxCXCYWH:
         - Model predictions (normalized [0,1] during training)
         - Loss functions (L1, GIoU)
         - Template/search boxes in Siamese networks
-        - Weak-3D projectors
     """
     data: Union[torch.Tensor, np.ndarray]
 

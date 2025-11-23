@@ -5,15 +5,17 @@ This module implements a comprehensive loss manager for multi-modal tracking,
 handling multiple task-specific losses with dynamic weighting strategies.
 
 Loss Components:
-- RGB Branch: classification + bbox regression (GIoU/CIoU)
-- Sonar Branch: classification + bbox regression (GIoU/CIoU)
-- Fusion Branch: classification + bbox regression (GIoU/CIoU)
+- RGB Branch: classification + bbox regression (GIoU/CIoU) + confidence (objectness)
+- Sonar Branch: classification + bbox regression (GIoU/CIoU) + confidence (objectness)
+- Fusion Branch: classification + bbox regression (GIoU/CIoU) + confidence (objectness)
 - Cross-Modal Consistency: component + representation (InfoNCE)
-- Weak 3D Center: cyclic consistency loss
-- Temporal: smoothness loss (optional)
+
+CONTINUOUS FLOW DESIGN (Audit 2025112306):
+Confidence losses train the model to predict object presence/absence (has_object flag),
+enabling proper handling of no-object cases in continuous data flow.
 
 Author: AquaSOT-3D Team
-Date: 2025-11-10
+Date: 2025-11-23
 """
 
 import torch
@@ -43,9 +45,8 @@ class LossManager(nn.Module):
         ...     'rgb_cls': 1.0, 'rgb_box': 1.0,
         ...     'sonar_cls': 1.0, 'sonar_box': 1.0,
         ...     'fusion_cls': 1.5, 'fusion_box': 1.5,
-        ...     'component_consistency': 0.3,
-        ...     'representation_consistency': 0.15,
-        ...     'weak3d_cycle': 0.8
+        ...     'geometric_consistency': 0.5,
+        ...     'representation_consistency': 0.3
         ... }
         >>> manager = LossManager(loss_weights)
         >>> total_loss, loss_dict = manager.compute_losses(predictions, targets)
@@ -61,17 +62,20 @@ class LossManager(nn.Module):
     ):
         super().__init__()
 
-        # Default loss weights (as specified in Development_Planning.md)
+        # Default loss weights
+        # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 5): Added confidence loss weights
         self.loss_weights = loss_weights or {
             'rgb_cls': 1.0,
             'rgb_box': 1.0,
+            'rgb_conf': 1.0,  # Objectness confidence for RGB
             'sonar_cls': 1.0,
             'sonar_box': 1.0,
+            'sonar_conf': 1.0,  # Objectness confidence for Sonar
             'fusion_cls': 1.0,
             'fusion_box': 1.0,
-            'component_consistency': 0.2,
-            'representation_consistency': 0.1,
-            'weak3d_cycle': 0.6
+            'fusion_conf': 1.0,  # Objectness confidence for Fusion
+            'geometric_consistency': 0.5,
+            'representation_consistency': 0.3
         }
 
         self.weight_schedule = weight_schedule
@@ -87,6 +91,72 @@ class LossManager(nn.Module):
         logger.info(f"LossManager initialized with weights: {self.loss_weights}")
         if weight_schedule:
             logger.info(f"Using dynamic weight schedule: {weight_schedule}")
+
+    def _get_batch_size(self, predictions: Dict[str, Any]) -> int:
+        """
+        Extract batch size from predictions.
+
+        Args:
+            predictions: Model predictions dictionary
+
+        Returns:
+            Batch size
+
+        Raises:
+            ValueError: If batch size cannot be determined
+        """
+        for key in ['rgb_box', 'rgb_boxes', 'sonar_box', 'sonar_boxes', 'fusion_box']:
+            if key in predictions and predictions[key] is not None:
+                return predictions[key].shape[0]
+
+        raise ValueError("Cannot determine batch size from predictions")
+
+    def _validate_validity_mask(
+        self,
+        mask: Optional[torch.Tensor],
+        mask_name: str,
+        batch_size: int
+    ) -> Optional[torch.Tensor]:
+        """
+        Validate validity mask shape and dtype.
+
+        CRITICAL FIX (Audit 2025112306 P0-3): Ensure validity masks have correct format
+        to prevent silent failures in loss masking.
+
+        Args:
+            mask: Validity mask tensor or None
+            mask_name: Name for error messages
+            batch_size: Expected batch size
+
+        Returns:
+            Validated mask as float32 [B] tensor, or None
+
+        Raises:
+            ValueError: If mask has incorrect shape/dtype
+        """
+        if mask is None:
+            return None
+
+        # Convert to tensor if needed
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.tensor(mask, dtype=torch.float32)
+
+        # Check shape
+        if mask.ndim != 1:
+            raise ValueError(
+                f"{mask_name} must be 1D tensor [B], got shape {mask.shape}"
+            )
+
+        if mask.shape[0] != batch_size:
+            raise ValueError(
+                f"{mask_name} batch size {mask.shape[0]} != expected {batch_size}"
+            )
+
+        # Convert to float32 if needed (for masking operations)
+        if mask.dtype != torch.float32:
+            mask = mask.float()
+
+        return mask
 
     def compute_losses(
         self,
@@ -109,7 +179,6 @@ class LossManager(nn.Module):
                 - 'rgb_cls': RGB classification scores (optional)
                 - 'sonar_cls': Sonar classification scores (optional)
                 - 'fusion_cls': Fusion classification scores (optional)
-                - 'weak3d': Weak 3D center predictions (optional)
                 - 'consistency': Consistency losses (optional)
             targets: Dictionary containing ground truth
                 - 'rgb_box': RGB target boxes
@@ -117,7 +186,6 @@ class LossManager(nn.Module):
                 - 'fusion_box': Fusion target boxes (optional, fallback to rgb_box)
                 - 'rgb_cls': RGB classification targets (optional)
                 - 'sonar_cls': Sonar classification targets (optional)
-                - 'weak3d': 3D center targets (optional)
             epoch: Current training epoch (for weight scheduling)
 
         Returns:
@@ -148,9 +216,17 @@ class LossManager(nn.Module):
 
         # CRITICAL (Audit 2025111903 Phase 4): Extract validity masks from targets
         # These masks propagate from dataset → augmentation → collate → here
-        is_valid = targets.get('is_valid', None)  # Combined validity
-        is_valid_rgb = targets.get('is_valid_rgb', None)  # RGB-specific validity
-        is_valid_sonar = targets.get('is_valid_sonar', None)  # Sonar-specific validity
+        # CRITICAL FIX (Audit 2025112306 P0-3): Validate all masks
+        batch_size = self._get_batch_size(predictions)
+        is_valid = self._validate_validity_mask(
+            targets.get('is_valid', None), 'is_valid', batch_size
+        )
+        is_valid_rgb = self._validate_validity_mask(
+            targets.get('is_valid_rgb', None), 'is_valid_rgb', batch_size
+        )
+        is_valid_sonar = self._validate_validity_mask(
+            targets.get('is_valid_sonar', None), 'is_valid_sonar', batch_size
+        )
 
         # ============================================
         # 1. RGB Branch Losses
@@ -236,13 +312,26 @@ class LossManager(nn.Module):
                 loss_dict['representation_consistency'] = consistency_dict['representation']
 
         # ============================================
-        # 5. Weak 3D Cycle Loss
+        # 4.5. Confidence Losses (Continuous Flow Design - Audit 2025112306 Phase 5)
         # ============================================
-        if 'weak3d' in predictions and 'cyclic_loss' in predictions['weak3d']:
-            loss_dict['weak3d_cycle'] = predictions['weak3d']['cyclic_loss']
+        # CONTINUOUS FLOW DESIGN: Extract confidence losses from predictions
+        # These losses are computed by BoxHead when has_object targets are provided
+        # Confidence loss trains the model to predict object presence/absence
+
+        # RGB confidence loss
+        if 'rgb_conf_loss' in predictions and predictions['rgb_conf_loss'] is not None:
+            loss_dict['rgb_conf'] = predictions['rgb_conf_loss']
+
+        # Sonar confidence loss
+        if 'sonar_conf_loss' in predictions and predictions['sonar_conf_loss'] is not None:
+            loss_dict['sonar_conf'] = predictions['sonar_conf_loss']
+
+        # Fusion confidence loss
+        if 'fusion_conf_loss' in predictions and predictions['fusion_conf_loss'] is not None:
+            loss_dict['fusion_conf'] = predictions['fusion_conf_loss']
 
         # ============================================
-        # 6. Combine All Losses
+        # 5. Combine All Losses
         # ============================================
         # Collect weighted losses first to ensure proper gradient tracking
         weighted_losses = {}
@@ -300,15 +389,12 @@ class LossManager(nn.Module):
         weights = self._get_current_weights()
 
         # Define loss name mapping from model internal names to config keys
-        # Note: renamed for clarity (fusion geometric vs weak3d component consistency)
         loss_name_map = {
             'rgb_box_loss': 'rgb_box',
             'sonar_box_loss': 'sonar_box',
             'fusion_box_loss': 'fusion_box',
-            'geometric_consistency': 'geometric_consistency',  # Fusion: scale vs radial encodings
-            'component_consistency': 'component_consistency',  # Weak3D: X_rgb vs X_sonar agreement
+            'geometric_consistency': 'geometric_consistency',
             'representation_consistency': 'representation_consistency',
-            'X_consistency_loss': 'component_consistency',  # Legacy: map old key to new name
         }
 
         # Process individual losses with name mapping
@@ -329,37 +415,6 @@ class LossManager(nn.Module):
             # Store both raw and weighted loss for logging
             loss_dict[f'{config_key}_raw'] = loss_value.detach()
             loss_dict[config_key] = weighted_loss.detach()
-
-        # Handle cyclic losses (combine rgb_cyclic_loss + sonar_cyclic_loss -> weak3d_cycle)
-        cyclic_losses = []
-        if 'rgb_cyclic_loss' in model_losses and model_losses['rgb_cyclic_loss'] is not None:
-            cyclic_losses.append(model_losses['rgb_cyclic_loss'])
-        if 'sonar_cyclic_loss' in model_losses and model_losses['sonar_cyclic_loss'] is not None:
-            cyclic_losses.append(model_losses['sonar_cyclic_loss'])
-
-        if cyclic_losses:
-            avg_cyclic_loss = sum(cyclic_losses) / len(cyclic_losses)
-            weight = weights.get('weak3d_cycle', 0.0)
-            weighted_cyclic = weight * avg_cyclic_loss
-            total_loss = total_loss + weighted_cyclic
-            loss_dict['weak3d_cycle_raw'] = avg_cyclic_loss.detach()
-            loss_dict['weak3d_cycle'] = weighted_cyclic.detach()
-
-        # Handle projection losses (combine rgb_proj_loss + sonar_proj_loss)
-        proj_losses = []
-        if 'rgb_proj_loss' in model_losses and model_losses['rgb_proj_loss'] is not None:
-            proj_losses.append(model_losses['rgb_proj_loss'])
-        if 'sonar_proj_loss' in model_losses and model_losses['sonar_proj_loss'] is not None:
-            proj_losses.append(model_losses['sonar_proj_loss'])
-
-        if proj_losses:
-            avg_proj_loss = sum(proj_losses) / len(proj_losses)
-            # Use same weight as cyclic or create a new one
-            weight = weights.get('weak3d_proj', weights.get('weak3d_cycle', 0.0))
-            weighted_proj = weight * avg_proj_loss
-            total_loss = total_loss + weighted_proj
-            loss_dict['weak3d_proj_raw'] = avg_proj_loss.detach()
-            loss_dict['weak3d_proj'] = weighted_proj.detach()
 
         # Add total loss to dict
         loss_dict['total'] = total_loss.detach()

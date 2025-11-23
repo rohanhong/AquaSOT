@@ -49,16 +49,7 @@ class TestTrackerIntegration:
                 'num_layers': 2,
                 'num_heads': 4
             },
-            'weak3d_config': {
-                'hidden_dim': 128,
-                'num_radial_bins': 50
-            },
-            'projector_config': {
-                'projection_type': 'mlp',
-                'hidden_dim': 128
-            },
-            'use_temporal': True,
-            'use_weak3d': True
+            'use_temporal': True
         }
 
     def test_end_to_end_forward_pass(self, integration_config):
@@ -186,7 +177,6 @@ class TestTrackerIntegration:
             'sonar_box_head': tracker.sonar_box_head,
             'fusion_box_head': tracker.fusion_box_head,
             'fusion_head': tracker.fusion_head,
-            'weak3d_head': tracker.weak3d_head,
         }
 
         for module_name, module in modules_with_grads.items():
@@ -412,25 +402,18 @@ class TestTrackerIntegration:
             }
         }
 
-        # Test 1: No temporal, no weak3d
-        config1 = {**base_config, 'use_temporal': False, 'use_weak3d': False}
         tracker1 = build_tracker('AquaSOT3DTracker', **config1)
 
-        # Test 2: Temporal, no weak3d
         config2 = {
             **base_config,
             'use_temporal': True,
             'temporal_config': {'type': 'transformer', 'num_layers': 2},
-            'use_weak3d': False
         }
         tracker2 = build_tracker('AquaSOT3DTracker', **config2)
 
-        # Test 3: No temporal, weak3d
         config3 = {
             **base_config,
             'use_temporal': False,
-            'use_weak3d': True,
-            'weak3d_config': {'hidden_dim': 128}
         }
         tracker3 = build_tracker('AquaSOT3DTracker', **config3)
 

@@ -648,9 +648,11 @@ class FusionHead(BaseHead):
             # L1 loss between weighted quality and target
             quality_consistency_loss = F.l1_loss(weighted_quality, target_quality)
         else:
-            # Encourage high quality when both modalities agree
-            agreement = 1.0 - torch.abs(rgb_quality - sonar_quality)
-            quality_consistency_loss = -agreement.mean()  # Maximize agreement
+            # CRITICAL FIX (Audit 2025112301): Fix negative loss bug
+            # Minimize disagreement between modalities (NOT maximize agreement)
+            # Negative loss causes gradient conflicts and unstable training
+            disagreement = torch.abs(rgb_quality - sonar_quality)
+            quality_consistency_loss = disagreement.mean()  # Minimize disagreement
 
         # Combine losses
         # Validity supervision is critical for single-modality learning

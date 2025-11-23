@@ -427,16 +427,16 @@ class RGBSonarDataset(Dataset):
             rgb_img_path = self.rgb_img_dir / f"{frame_id}.jpg"
             rgb_img = self._load_image(rgb_img_path, is_sonar=False)
             rgb_bbox = self.rgb_bboxes[idx].copy()
-            is_rgb_valid = not is_occluded(rgb_bbox) and rgb_img is not None
 
-            # CRITICAL FIX (Audit 2025111903 Phase 1): Replace [0,0,0,0] with centered bbox
-            if not is_rgb_valid and rgb_img is not None:
-                h, w = rgb_img.shape[:2]
-                rgb_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
+            # CRITICAL FIX (Audit 2025112306 Phase 2): Continuous flow design
+            # Preserve 0000 annotation (no-object), do NOT replace with dummy bbox
+            # This allows network to learn "no object" concept via confidence head
+            has_rgb_object = not is_occluded(rgb_bbox)
+            is_rgb_valid = has_rgb_object and rgb_img is not None
 
-            # Apply transforms
+            # Apply transforms (pass None bbox for no-object cases)
             if self.rgb_transform is not None and rgb_img is not None:
-                rgb_img = self.rgb_transform(rgb_img, rgb_bbox if is_rgb_valid else None)
+                rgb_img = self.rgb_transform(rgb_img, rgb_bbox if has_rgb_object else None)
         else:
             rgb_img = None
             rgb_bbox = None
@@ -447,17 +447,16 @@ class RGBSonarDataset(Dataset):
             sonar_img_path = self.sonar_img_dir / f"{frame_id}.jpg"
             sonar_img = self._load_image(sonar_img_path, is_sonar=True)
             sonar_bbox = self.sonar_bboxes[idx].copy()
-            is_sonar_valid = not is_occluded(sonar_bbox) and sonar_img is not None
 
-            # CRITICAL FIX (Audit 2025111903 Phase 1): Replace [0,0,0,0] with centered bbox
-            if not is_sonar_valid and sonar_img is not None:
-                h, w = sonar_img.shape[:2]
-                sonar_bbox = np.array([w // 2, h // 2, 1, 1], dtype=np.float32)
+            # CRITICAL FIX (Audit 2025112306 Phase 2): Continuous flow design
+            # Preserve 0000 annotation (no-object), do NOT replace with dummy bbox
+            has_sonar_object = not is_occluded(sonar_bbox)
+            is_sonar_valid = has_sonar_object and sonar_img is not None
 
-            # Apply transforms
+            # Apply transforms (pass None bbox for no-object cases)
             if self.sonar_transform is not None and sonar_img is not None:
                 sonar_img = self.sonar_transform(
-                    sonar_img, sonar_bbox if is_sonar_valid else None
+                    sonar_img, sonar_bbox if has_sonar_object else None
                 )
         else:
             sonar_img = None
@@ -472,6 +471,26 @@ class RGBSonarDataset(Dataset):
         else:  # Both modalities
             is_valid = is_rgb_valid and is_sonar_valid
 
+        # CRITICAL FIX (Audit 2025112306 Phase 3): Add has_object flags
+        # Compute has_object for each modality (explicit no-object detection)
+        if 'rgb' in self.modalities:
+            has_object_rgb = has_rgb_object
+        else:
+            has_object_rgb = None  # Not applicable
+
+        if 'sonar' in self.modalities:
+            has_object_sonar = has_sonar_object
+        else:
+            has_object_sonar = None  # Not applicable
+
+        # Combined has_object flag
+        if self.modalities == ['rgb']:
+            has_object = has_object_rgb
+        elif self.modalities == ['sonar']:
+            has_object = has_object_sonar
+        else:  # Both modalities
+            has_object = has_object_rgb and has_object_sonar
+
         return {
             "rgb_img": rgb_img,
             "sonar_img": sonar_img,
@@ -481,6 +500,9 @@ class RGBSonarDataset(Dataset):
             "is_rgb_valid": is_rgb_valid,
             "is_sonar_valid": is_sonar_valid,
             "is_valid": is_valid,
+            "has_object_rgb": has_object_rgb,  # NEW: Explicit no-object detection
+            "has_object_sonar": has_object_sonar,
+            "has_object": has_object,
         }
 
     def __getitem__(self, index: int) -> Dict:

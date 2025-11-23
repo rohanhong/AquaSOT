@@ -78,7 +78,6 @@ def test_batch_size(batch_size: int, config_path: str = "configs/train/train.yam
             sonar_backbone_config=cfg.model.backbone.sonar,
             fusion_config=cfg.model.fusion,
             temporal_config=cfg.model.temporal,
-            weak3d_config=cfg.model.heads.weak3d,
             quality_config=None  # Not in train.yaml
         ).to(device)
 

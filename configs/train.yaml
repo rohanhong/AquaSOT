@@ -110,24 +110,23 @@ model:
       type: BoxHead
       in_channels: 768
       hidden_dim: 256
+      use_confidence_head: true  # CONTINUOUS FLOW: Enable objectness prediction
+      loss_weight_conf: 1.0
 
     sonar_box:
       type: BoxHead
       in_channels: 768
       hidden_dim: 256
+      use_confidence_head: true  # CONTINUOUS FLOW: Enable objectness prediction
+      loss_weight_conf: 1.0
 
     fusion_box:
       type: FusionHead
       rgb_channels: 768
       sonar_channels: 768
       hidden_dim: 256
-
-    weak3d:
-      type: Weak3DHead
-      in_channels: 768
-      hidden_dim: 256
-      output_dim: 3
-      use_cyclic_loss: true
+      use_confidence_head: true  # CONTINUOUS FLOW: Enable objectness prediction
+      loss_weight_conf: 1.0
 
 
 # ------------------------------------------------------------------------------
@@ -160,20 +159,24 @@ training:
     max_norm: 1.0  # Same for both Laptop and Workstation (effective_batch=32 is identical)
     norm_type: 2
 
+  # CRITICAL FIX (Audit 2025112302): Removed Weak3D component
+  # Architecture simplified to focus on 2D tracking with cross-modal fusion
+  # CONTINUOUS FLOW DESIGN (Audit 2025112310): Added confidence loss weights
   loss_weights:
+    # Box regression
     rgb_box: 1.0
     rgb_cls: 0.5
+    rgb_conf: 1.0  # Objectness confidence (has_object prediction)
     sonar_box: 1.0
     sonar_cls: 0.5
-    fusion_box: 2.0
-    fusion_cls: 1.0
-    weak3d_reg: 1.0
-    weak3d_cycle: 0.5
-    geometric_consistency: 0.1
-    component_consistency: 0.1
-    representation_consistency: 0.1
-    quality_fusion_loss: 0.2
-    # temporal_smooth removed (Audit 2025112104) - no temporal modeling
+    sonar_conf: 1.0  # Objectness confidence (has_object prediction)
+    fusion_box: 1.5
+    fusion_cls: 0.8
+    fusion_conf: 1.0  # Objectness confidence (has_object prediction)
+
+    # Cross-modal consistency losses
+    geometric_consistency: 0.5         # Fusion layer: scale vs radial encoding alignment
+    representation_consistency: 0.3    # InfoNCE contrastive loss for feature alignment
 
   loss_schedule:
     enabled: false

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def parse_args():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(description='AquaSOT-3D Model Export')
-    
+
     parser.add_argument('--checkpoint', type=str, required=True,
                         help='Path to model checkpoint')
     parser.add_argument('--format', type=str, required=True,
@@ -42,7 +42,11 @@ def parse_args():
                         help='ONNX opset version (default: 11)')
     parser.add_argument('--simplify', action='store_true',
                         help='Simplify ONNX model (requires onnx-simplifier)')
-    
+    parser.add_argument('--template-size', type=int, default=256,
+                        help='Template image size (default: 256)')
+    parser.add_argument('--search-size', type=int, default=512,
+                        help='Search image size (default: 512)')
+
     return parser.parse_args()
 
 
@@ -80,16 +84,26 @@ def load_model(checkpoint_path, device='cpu'):
     return model
 
 
-def export_onnx(model, output_path, opset_version=11, simplify=False):
-    """Export model to ONNX format"""
+def export_onnx(model, output_path, opset_version=11, simplify=False, template_size=256, search_size=512):
+    """Export model to ONNX format
+
+    Args:
+        model: PyTorch model to export
+        output_path: Path to save ONNX model
+        opset_version: ONNX opset version (default: 11)
+        simplify: Whether to simplify ONNX model (default: False)
+        template_size: Template image size (default: 256)
+        search_size: Search image size (default: 512)
+    """
     logger.info(f"Exporting to ONNX (opset {opset_version})")
-    
-    # Dummy inputs
+    logger.info(f"Using template_size={template_size}, search_size={search_size}")
+
+    # Dummy inputs with configurable sizes
     batch_size = 1
-    rgb_template = torch.randn(batch_size, 3, 127, 127)
-    rgb_search = torch.randn(batch_size, 3, 255, 255)
-    sonar_template = torch.randn(batch_size, 1, 127, 127)
-    sonar_search = torch.randn(batch_size, 1, 255, 255)
+    rgb_template = torch.randn(batch_size, 3, template_size, template_size)
+    rgb_search = torch.randn(batch_size, 3, search_size, search_size)
+    sonar_template = torch.randn(batch_size, 1, template_size, template_size)
+    sonar_search = torch.randn(batch_size, 1, search_size, search_size)
     
     # Export
     torch.onnx.export(
@@ -100,7 +114,7 @@ def export_onnx(model, output_path, opset_version=11, simplify=False):
         opset_version=opset_version,
         do_constant_folding=True,
         input_names=['rgb_template', 'rgb_search', 'sonar_template', 'sonar_search'],
-        output_names=['rgb_box', 'sonar_box', 'fusion_box', 'weak3d'],
+        output_names=['rgb_box', 'sonar_box', 'fusion_box'],
         dynamic_axes={
             'rgb_template': {0: 'batch_size'},
             'rgb_search': {0: 'batch_size'},
@@ -130,15 +144,23 @@ def export_onnx(model, output_path, opset_version=11, simplify=False):
             logger.warning("onnx-simplifier not installed, skipping simplification")
 
 
-def export_torchscript(model, output_path):
-    """Export model to TorchScript format"""
+def export_torchscript(model, output_path, template_size=256, search_size=512):
+    """Export model to TorchScript format
+
+    Args:
+        model: PyTorch model to export
+        output_path: Path to save TorchScript model
+        template_size: Template image size (default: 256)
+        search_size: Search image size (default: 512)
+    """
     logger.info("Exporting to TorchScript")
-    
-    # Dummy inputs
-    rgb_template = torch.randn(1, 3, 127, 127)
-    rgb_search = torch.randn(1, 3, 255, 255)
-    sonar_template = torch.randn(1, 1, 127, 127)
-    sonar_search = torch.randn(1, 1, 255, 255)
+    logger.info(f"Using template_size={template_size}, search_size={search_size}")
+
+    # Dummy inputs with configurable sizes
+    rgb_template = torch.randn(1, 3, template_size, template_size)
+    rgb_search = torch.randn(1, 3, search_size, search_size)
+    sonar_template = torch.randn(1, 1, template_size, template_size)
+    sonar_search = torch.randn(1, 1, search_size, search_size)
     
     # Trace model
     traced_model = torch.jit.trace(
@@ -164,19 +186,33 @@ def main():
     logger.info(f"Checkpoint: {args.checkpoint}")
     logger.info(f"Format: {args.format}")
     logger.info(f"Output: {args.output}")
-    
+    logger.info(f"Template size: {args.template_size}")
+    logger.info(f"Search size: {args.search_size}")
+
     # Load model (use CPU for export)
     model = load_model(args.checkpoint, device='cpu')
-    
+
     # Create output directory
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Export
     if args.format == 'onnx':
-        export_onnx(model, args.output, args.opset, args.simplify)
+        export_onnx(
+            model,
+            args.output,
+            args.opset,
+            args.simplify,
+            args.template_size,
+            args.search_size
+        )
     elif args.format == 'torchscript':
-        export_torchscript(model, args.output)
+        export_torchscript(
+            model,
+            args.output,
+            args.template_size,
+            args.search_size
+        )
     
     logger.info("="*70)
     logger.info("Export completed successfully")

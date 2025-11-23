@@ -83,24 +83,6 @@ def build_model(cfg):
 
     box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
     fusion_head_cfg = clean_head_config(cfg.model.heads.get('fusion_box', {}))
-    weak3d_cfg = clean_head_config(cfg.model.heads.get('weak3d', {}))
-
-    # CRITICAL FIX (Audit 2025111702 Finding 4): Wire quality_config and projector_config
-    # Mirror training build path to ensure evaluation uses the same architecture
-    quality_cfg = None
-    if hasattr(cfg.model, 'quality') and cfg.model.quality:
-        quality_dict = _config_to_dict(cfg.model.quality)
-        if quality_dict:
-            quality_cfg = quality_dict
-
-    projector_cfg = None
-    if hasattr(cfg.model, 'projector') and cfg.model.projector:
-        projector_dict = _config_to_dict(cfg.model.projector)
-        if projector_dict:
-            projector_cfg = projector_dict
-
-    # Determine use_weak3d
-    use_weak3d = cfg.model.heads.get('weak3d', {}).get('type') not in [None, 'null']
 
     # Build model
     model = AquaSOT3DTracker(
@@ -108,11 +90,7 @@ def build_model(cfg):
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
         box_head_config=box_head_cfg,
-        fusion_head_config=fusion_head_cfg,
-        weak3d_config=weak3d_cfg,
-        quality_config=quality_cfg,
-        projector_config=projector_cfg,
-        use_weak3d=use_weak3d
+        fusion_head_config=fusion_head_cfg
     )
 
     logger.info(f"Model built successfully")

@@ -388,26 +388,18 @@ class Trainer:
             # Support both template-search and frame sequence GT box formats
             gt_boxes = {}
 
+            # CRITICAL FIX (Audit 2025112306): Template-search architecture only
+            # Remove frame sequence fallback with undefined target_idx
             if 'search_bbox' in batch:
                 # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
                 # Both RGB and Sonar share the same GT (unified annotation)
                 gt_boxes['rgb'] = batch['search_bbox']
                 gt_boxes['sonar'] = batch['search_bbox']
-            elif 'rgb_bboxes' in batch and target_idx is not None:
-                # Frame sequence format: extract target frame bbox [B, 4]
-                gt_boxes['rgb'] = batch['rgb_bboxes'][torch.arange(batch_size), target_idx]
-            elif 'rgb_boxes' in batch:
-                # Legacy fallback
-                gt_boxes['rgb'] = batch['rgb_boxes']
-
-            if 'search_bbox' not in batch:
-                # Only check sonar if not already set by search_bbox
-                if 'sonar_bboxes' in batch and target_idx is not None:
-                    # Frame sequence format
-                    gt_boxes['sonar'] = batch['sonar_bboxes'][torch.arange(batch_size), target_idx]
-                elif 'sonar_boxes' in batch:
-                    # Legacy fallback
-                    gt_boxes['sonar'] = batch['sonar_boxes']
+            else:
+                raise RuntimeError(
+                    "Template-search architecture requires 'search_bbox' in batch. "
+                    f"Got keys: {list(batch.keys())}"
+                )
 
             # CRITICAL FIX (Audit 2025111408 Finding 3):
             # Add pixel coordinates for quality estimators
@@ -472,6 +464,12 @@ class Trainer:
                             f"entries but batch_size={batch_size}. Loader bug detected!"
                         )
 
+            # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX):
+            # Extract has_object flags for confidence head training
+            has_object_rgb = batch.get('has_object_rgb', None)
+            has_object_sonar = batch.get('has_object_sonar', None)
+            has_object = batch.get('has_object', None)
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():
@@ -482,7 +480,10 @@ class Trainer:
                         sonar_search,
                         gt_boxes=gt_boxes,
                         return_losses=True,
-                        metadata=metadata
+                        metadata=metadata,
+                        has_object_rgb=has_object_rgb,
+                        has_object_sonar=has_object_sonar,
+                        has_object=has_object
                     )
                     # Use LossManager for all losses (handles model-internal losses with scheduling)
                     total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -498,7 +499,10 @@ class Trainer:
                     sonar_search,
                     gt_boxes=gt_boxes,
                     return_losses=True,
-                    metadata=metadata
+                    metadata=metadata,
+                    has_object_rgb=has_object_rgb,
+                    has_object_sonar=has_object_sonar,
+                    has_object=has_object
                 )
                 # Use LossManager for all losses (handles model-internal losses with scheduling)
                 total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -687,21 +691,15 @@ class Trainer:
                 # Validation now exclusively uses template-search format with search_bbox
                 gt_boxes = {}
 
+                # CRITICAL FIX (Audit 2025112306): Template-search architecture only
                 if 'search_bbox' in batch:
                     # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
                     gt_boxes['rgb'] = batch['search_bbox']
                     gt_boxes['sonar'] = batch['search_bbox']
-                elif 'rgb_boxes' in batch:
-                    # Legacy fallback (rarely used)
-                    gt_boxes['rgb'] = batch['rgb_boxes']
-                    if 'sonar_boxes' in batch:
-                        gt_boxes['sonar'] = batch['sonar_boxes']
-                    else:
-                        gt_boxes['sonar'] = batch['rgb_boxes']
                 else:
                     raise RuntimeError(
-                        "Batch must contain 'search_bbox' or 'rgb_boxes' for ground truth. "
-                        "Got keys: " + str(list(batch.keys()))
+                        "Template-search architecture requires 'search_bbox' in batch. "
+                        f"Got keys: {list(batch.keys())}"
                     )
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
@@ -749,6 +747,12 @@ class Trainer:
                 if 'template_sonar_metadata' in batch:
                     metadata['template_sonar_metadata'] = batch['template_sonar_metadata']
 
+                # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX):
+                # Extract has_object flags for confidence head training
+                has_object_rgb = batch.get('has_object_rgb', None)
+                has_object_sonar = batch.get('has_object_sonar', None)
+                has_object = batch.get('has_object', None)
+
                 # Forward pass
                 if self.use_amp:
                     with autocast():
@@ -759,7 +763,10 @@ class Trainer:
                             sonar_search,
                             gt_boxes=gt_boxes if gt_boxes else None,
                             return_losses=True if gt_boxes else False,
-                            metadata=metadata
+                            metadata=metadata,
+                            has_object_rgb=has_object_rgb,
+                            has_object_sonar=has_object_sonar,
+                            has_object=has_object
                         )
                         # Use LossManager for all losses (handles model-internal losses with scheduling)
                         total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -775,7 +782,10 @@ class Trainer:
                         sonar_search,
                         gt_boxes=gt_boxes if gt_boxes else None,
                         return_losses=True if gt_boxes else False,
-                        metadata=metadata
+                        metadata=metadata,
+                        has_object_rgb=has_object_rgb,
+                        has_object_sonar=has_object_sonar,
+                        has_object=has_object
                     )
                     # Use LossManager for all losses (handles model-internal losses with scheduling)
                     total_loss, loss_dict = self.loss_manager.compute_losses(
