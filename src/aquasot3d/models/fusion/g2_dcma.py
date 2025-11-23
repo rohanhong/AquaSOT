@@ -296,49 +296,139 @@ class G2DCMA(BaseModule):
             conf_modulation = combined_confidence.view(B, 1, 1, 1)
             geometry_gated = geometry_gated * conf_modulation
 
-        # Step 2: Deformable Attention
-        # Apply deformable attention to geometry-gated features
-        deformable_output = self.deformable_attention(
-            query_features=rgb_features,  # Use original RGB as queries
-            key_features=sonar_features,  # Sonar as keys
-            value_features=geometry_gated  # Geometry-gated as values
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Step 2: Bidirectional Deformable Attention for Dual-View Fusion
+        # Learn implicit RGB-Sonar correspondence without calibration
+
+        # Direction 1: RGB→Sonar (RGB queries attend to Sonar)
+        rgb_to_sonar_output = self.deformable_attention(
+            query_features=rgb_features,  # RGB queries
+            key_features=sonar_features,  # Sonar keys (learn RGB→Sonar mapping)
+            value_features=geometry_gated  # Geometry-gated values
         )
-        deformable_attended = deformable_output['fused_features']  # [B, C, H_rgb, W_rgb]
+        rgb_attended_sonar = rgb_to_sonar_output['fused_features']  # [B, C, H_rgb, W_rgb]
 
-        concat_features = torch.cat([rgb_features, deformable_attended], dim=1)
+        # Direction 2: Sonar→RGB (Sonar queries attend to RGB)
+        sonar_to_rgb_output = self.deformable_attention(
+            query_features=sonar_features,  # Sonar queries
+            key_features=rgb_features,      # RGB keys (learn Sonar→RGB mapping)
+            value_features=rgb_features     # RGB values
+        )
+        sonar_attended_rgb = sonar_to_rgb_output['fused_features']  # [B, C, H_sonar, W_sonar]
 
-        concat_dim = concat_features.shape[1]
+        # Resize sonar_attended_rgb to match RGB spatial dimensions
+        if sonar_attended_rgb.shape[2:] != rgb_features.shape[2:]:
+            sonar_attended_rgb = F.interpolate(
+                sonar_attended_rgb,
+                size=rgb_features.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+
+        # Step 3: Dual-View Fusion
+        # RGB-view fusion: RGB perspective with complementary Sonar information
+        rgb_view_input = torch.cat([rgb_features, rgb_attended_sonar], dim=1)
+
+        # Dimension adaptation for RGB view
+        concat_dim_rgb = rgb_view_input.shape[1]
         expected_dim = self.embed_dim * 2
-        if concat_dim != expected_dim:
-            adapter_key = f'{concat_dim}_to_{expected_dim}'
+        if concat_dim_rgb != expected_dim:
+            adapter_key = f'rgb_view_{concat_dim_rgb}_to_{expected_dim}'
             if adapter_key not in self.concat_adapters:
                 self.concat_adapters[adapter_key] = nn.Conv2d(
-                    concat_dim, expected_dim, kernel_size=1
-                ).to(concat_features.device)
-            concat_features = self.concat_adapters[adapter_key](concat_features)
+                    concat_dim_rgb, expected_dim, kernel_size=1
+                ).to(rgb_view_input.device)
+            rgb_view_input = self.concat_adapters[adapter_key](rgb_view_input)
 
-        fused_features = self.fusion_layer(concat_features)
+        rgb_view_fused_raw = self.fusion_layer(rgb_view_input)
 
-        if rgb_features.shape[1] != fused_features.shape[1]:
-            adapter_key = f'{rgb_features.shape[1]}_to_{fused_features.shape[1]}'
+        # Sonar-view fusion: Sonar perspective with complementary RGB information
+        sonar_view_input = torch.cat([sonar_features, sonar_attended_rgb], dim=1)
+
+        # Dimension adaptation for Sonar view
+        concat_dim_sonar = sonar_view_input.shape[1]
+        if concat_dim_sonar != expected_dim:
+            adapter_key = f'sonar_view_{concat_dim_sonar}_to_{expected_dim}'
+            if adapter_key not in self.concat_adapters:
+                self.concat_adapters[adapter_key] = nn.Conv2d(
+                    concat_dim_sonar, expected_dim, kernel_size=1
+                ).to(sonar_view_input.device)
+            sonar_view_input = self.concat_adapters[adapter_key](sonar_view_input)
+
+        # Create sonar fusion layer if not exists
+        if not hasattr(self, 'sonar_fusion_layer'):
+            self.sonar_fusion_layer = nn.Sequential(
+                nn.Conv2d(self.embed_dim * 2, self.embed_dim, kernel_size=1),
+                nn.BatchNorm2d(self.embed_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(self.dropout if hasattr(self, 'dropout') else 0.1)
+            ).to(sonar_view_input.device)
+
+        sonar_view_fused_raw = self.sonar_fusion_layer(sonar_view_input)
+
+        # Resize sonar_view to match RGB spatial dimensions for consistency
+        if sonar_view_fused_raw.shape[2:] != rgb_features.shape[2:]:
+            sonar_view_fused_raw = F.interpolate(
+                sonar_view_fused_raw,
+                size=rgb_features.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+
+        # Step 4: Residual Connections with Dual-View Specific Adaptations
+        # RGB-view residual
+        if rgb_features.shape[1] != rgb_view_fused_raw.shape[1]:
+            adapter_key = f'rgb_residual_{rgb_features.shape[1]}_to_{rgb_view_fused_raw.shape[1]}'
             if adapter_key not in self.rgb_residual_adapters:
                 self.rgb_residual_adapters[adapter_key] = nn.Conv2d(
-                    rgb_features.shape[1], fused_features.shape[1], kernel_size=1
+                    rgb_features.shape[1], rgb_view_fused_raw.shape[1], kernel_size=1
                 ).to(rgb_features.device)
             rgb_features_proj = self.rgb_residual_adapters[adapter_key](rgb_features)
         else:
             rgb_features_proj = rgb_features
 
         alpha = torch.sigmoid(self.residual_weight)
-        fused_features = alpha * fused_features + (1 - alpha) * rgb_features_proj
+        rgb_view_fused = alpha * rgb_view_fused_raw + (1 - alpha) * rgb_features_proj
+
+        # Sonar-view residual (use Sonar features as residual connection)
+        if sonar_features.shape[1] != sonar_view_fused_raw.shape[1]:
+            adapter_key = f'sonar_residual_{sonar_features.shape[1]}_to_{sonar_view_fused_raw.shape[1]}'
+            if adapter_key not in self.concat_adapters:
+                self.concat_adapters[adapter_key] = nn.Conv2d(
+                    sonar_features.shape[1], sonar_view_fused_raw.shape[1], kernel_size=1
+                ).to(sonar_features.device)
+            sonar_features_proj = self.concat_adapters[adapter_key](sonar_features)
+        else:
+            sonar_features_proj = sonar_features
+
+        # Resize sonar_features_proj if needed
+        if sonar_features_proj.shape[2:] != sonar_view_fused_raw.shape[2:]:
+            sonar_features_proj = F.interpolate(
+                sonar_features_proj,
+                size=sonar_view_fused_raw.shape[2:],
+                mode='bilinear',
+                align_corners=False
+            )
+
+        sonar_view_fused = alpha * sonar_view_fused_raw + (1 - alpha) * sonar_features_proj
+
+        # Step 5: Cross-View Consistency (for regularization)
+        # Ensure both views can reconstruct each other
+        view_consistency_loss = F.mse_loss(
+            rgb_view_fused, sonar_view_fused
+        ) * 0.1  # Small weight for consistency regularization
 
         output = {
-            'fused_features': fused_features,
+            'rgb_view_fused': rgb_view_fused,  # [B, C, H_rgb, W_rgb] - For RGB BoxHead
+            'sonar_view_fused': sonar_view_fused,  # [B, C, H_rgb, W_rgb] - For Sonar BoxHead
+            'fused_features': rgb_view_fused,  # Backward compatibility (use RGB view as default)
             'rgb_confidence': rgb_confidence,
             'sonar_confidence': sonar_confidence,
             'combined_confidence': combined_confidence,
             'geometry_gated': geometry_gated,
-            'deformable_attended': deformable_attended,
+            'rgb_attended_sonar': rgb_attended_sonar,  # For analysis
+            'sonar_attended_rgb': sonar_attended_rgb,  # For analysis
+            'view_consistency_loss': view_consistency_loss,  # Cross-view regularization
             'geometric_info': {
                 'gating_weights': geometry_output['gating_weights'],
                 'radial_encoding': geometry_output['radial_encoding'],
@@ -346,9 +436,12 @@ class G2DCMA(BaseModule):
                 'attention_probs': geometry_output['attention_probs']
             },
             'deformable_info': {
-                'offsets': deformable_output['offsets'],
-                'sampling_locations': deformable_output['sampling_locations'],
-                'attention_weights': deformable_output['attention_weights']
+                'rgb_to_sonar_offsets': rgb_to_sonar_output['offsets'],  # RGB→Sonar mapping
+                'sonar_to_rgb_offsets': sonar_to_rgb_output['offsets'],  # Sonar→RGB mapping
+                'rgb_sampling_locations': rgb_to_sonar_output['sampling_locations'],
+                'sonar_sampling_locations': sonar_to_rgb_output['sampling_locations'],
+                'rgb_attention_weights': rgb_to_sonar_output['attention_weights'],
+                'sonar_attention_weights': sonar_to_rgb_output['attention_weights']
             }
         }
 

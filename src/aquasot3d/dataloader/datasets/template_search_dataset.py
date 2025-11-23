@@ -213,7 +213,7 @@ class TemplateSearchDataset(Dataset):
         # Trainer expects normalized CXCYWH format to match model predictions
         # Use existing bbox_utils functions per code review
 
-        # Template bbox (in 256x256 template crop)
+        # Template bbox (in 256x256 template crop) - RGB only for template
         template_bbox_cxcywh = convert_bbox_format(
             template_sample['rgb_bbox'].reshape(1, 4),
             src_format='xywh',
@@ -225,17 +225,38 @@ class TemplateSearchDataset(Dataset):
             format='cxcywh'
         )[0]  # Extract single box from batch
 
-        # Search bbox (in 512x512 search image)
-        search_bbox_cxcywh = convert_bbox_format(
+        # CRITICAL FIX (Audit 2025112312 - Single-Modality Visibility):
+        # Process RGB and Sonar search bboxes separately to support
+        # single-modality visibility scenarios (e.g., target out of RGB FOV but in Sonar FOV)
+
+        # RGB search bbox (in 512x512 search image, RGB coordinate system)
+        search_bbox_rgb_cxcywh = convert_bbox_format(
             search_sample['rgb_bbox'].reshape(1, 4),
             src_format='xywh',
             dst_format='cxcywh'
         )
-        search_bbox_normalized = normalize_bbox(
-            search_bbox_cxcywh,
+        search_bbox_rgb_normalized = normalize_bbox(
+            search_bbox_rgb_cxcywh,
             image_size=(self.search_size, self.search_size),
             format='cxcywh'
         )[0]  # Extract single box from batch
+
+        # Sonar search bbox (in 512x512 search image, Sonar coordinate system)
+        search_bbox_sonar_cxcywh = convert_bbox_format(
+            search_sample['sonar_bbox'].reshape(1, 4),
+            src_format='xywh',
+            dst_format='cxcywh'
+        )
+        search_bbox_sonar_normalized = normalize_bbox(
+            search_bbox_sonar_cxcywh,
+            image_size=(self.search_size, self.search_size),
+            format='cxcywh'
+        )[0]  # Extract single box from batch
+
+        # Extract has_object flags from base_dataset
+        has_object_rgb = search_sample.get('has_object_rgb', None)
+        has_object_sonar = search_sample.get('has_object_sonar', None)
+        has_object = search_sample.get('has_object', None)
 
         # General validity flag (required by trainer)
         # Valid if BOTH modalities are valid (conservative approach)
@@ -246,11 +267,15 @@ class TemplateSearchDataset(Dataset):
             'rgb_search': rgb_search,
             'sonar_template': sonar_template,
             'sonar_search': sonar_search,
-            'template_bbox': template_bbox_normalized,  # Normalized CXCYWH [0,1]
-            'search_bbox': search_bbox_normalized,      # Normalized CXCYWH [0,1] TARGET
+            'template_bbox': template_bbox_normalized,  # Normalized CXCYWH [0,1] (RGB)
+            'search_bbox_rgb': search_bbox_rgb_normalized,      # RGB GT in RGB coordinate system
+            'search_bbox_sonar': search_bbox_sonar_normalized,  # Sonar GT in Sonar coordinate system
             'is_valid': is_valid,                       # General validity flag
             'is_valid_rgb': search_sample['is_rgb_valid'],
             'is_valid_sonar': search_sample['is_sonar_valid'],
+            'has_object_rgb': has_object_rgb,           # RGB objectness flag
+            'has_object_sonar': has_object_sonar,       # Sonar objectness flag
+            'has_object': has_object,                   # Combined objectness flag
             'gap': index - template_idx,
             'sequence_name': search_sample.get('sequence_name', 'default'),
             'template_frame_id': template_idx + 1,  # 1-based
@@ -444,10 +469,14 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             'sonar_template': [1, 256, 256],
             'sonar_search': [1, 512, 512],
             'template_bbox': [4] CXCYWH normalized [0,1],
-            'search_bbox': [4] CXCYWH normalized [0,1],
+            'search_bbox_rgb': [4] CXCYWH normalized [0,1] - RGB GT,
+            'search_bbox_sonar': [4] CXCYWH normalized [0,1] - Sonar GT,
             'is_valid': bool,
             'is_valid_rgb': bool,
             'is_valid_sonar': bool,
+            'has_object_rgb': bool,
+            'has_object_sonar': bool,
+            'has_object': bool,
             'gap': int,
             'sequence_name': str,
             'template_frame_id': int,
@@ -463,9 +492,13 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             'sonar_template': [B, 1, 256, 256],
             'sonar_search': [B, 1, 512, 512],
             'template_bbox': [B, 4],
-            'search_bbox': [B, 4],
+            'search_bbox_rgb': [B, 4],
+            'search_bbox_sonar': [B, 4],
             'is_valid_rgb': [B],
             'is_valid_sonar': [B],
+            'has_object_rgb': [B],
+            'has_object_sonar': [B],
+            'has_object': [B],
             'gap': [B],
             'sequence_name': List[str],
             'template_frame_id': [B],
@@ -474,6 +507,9 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             'sonar_metadata': List[Dict],
         }
     """
+    # CRITICAL FIX (Audit 2025112312 - Single-Modality Visibility):
+    # Handle separate RGB and Sonar GT boxes + has_object flags
+
     return {
         'rgb_template': torch.stack([b['rgb_template'] for b in batch]),
         'rgb_search': torch.stack([b['rgb_search'] for b in batch]),
@@ -484,14 +520,33 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             else b['template_bbox']
             for b in batch
         ]),
-        'search_bbox': torch.stack([
-            torch.from_numpy(b['search_bbox']) if isinstance(b['search_bbox'], np.ndarray)
-            else b['search_bbox']
+        # Separate RGB and Sonar GT boxes
+        'search_bbox_rgb': torch.stack([
+            torch.from_numpy(b['search_bbox_rgb']) if isinstance(b['search_bbox_rgb'], np.ndarray)
+            else b['search_bbox_rgb']
+            for b in batch
+        ]),
+        'search_bbox_sonar': torch.stack([
+            torch.from_numpy(b['search_bbox_sonar']) if isinstance(b['search_bbox_sonar'], np.ndarray)
+            else b['search_bbox_sonar']
             for b in batch
         ]),
         'is_valid': torch.tensor([b['is_valid'] for b in batch], dtype=torch.bool),
         'is_valid_rgb': torch.tensor([b['is_valid_rgb'] for b in batch], dtype=torch.bool),
         'is_valid_sonar': torch.tensor([b['is_valid_sonar'] for b in batch], dtype=torch.bool),
+        # has_object flags for continuous flow design
+        'has_object_rgb': torch.tensor([
+            b['has_object_rgb'] if b['has_object_rgb'] is not None else True
+            for b in batch
+        ], dtype=torch.float32),
+        'has_object_sonar': torch.tensor([
+            b['has_object_sonar'] if b['has_object_sonar'] is not None else True
+            for b in batch
+        ], dtype=torch.float32),
+        'has_object': torch.tensor([
+            b['has_object'] if b['has_object'] is not None else True
+            for b in batch
+        ], dtype=torch.float32),
         'gap': torch.tensor([b['gap'] for b in batch], dtype=torch.long),
         'sequence_name': [b['sequence_name'] for b in batch],
         'template_frame_id': torch.tensor([b['template_frame_id'] for b in batch], dtype=torch.long),

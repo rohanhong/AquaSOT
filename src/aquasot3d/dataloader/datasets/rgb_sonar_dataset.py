@@ -484,12 +484,16 @@ class RGBSonarDataset(Dataset):
             has_object_sonar = None  # Not applicable
 
         # Combined has_object flag
+        # CRITICAL FIX (Audit 2025112312 - Single-Modality Visibility):
+        # Use OR logic instead of AND to support single-modality visibility
+        # If target is visible in EITHER modality, has_object should be True
+        # This allows Fusion BoxHead to learn from partial observations
         if self.modalities == ['rgb']:
             has_object = has_object_rgb
         elif self.modalities == ['sonar']:
             has_object = has_object_sonar
         else:  # Both modalities
-            has_object = has_object_rgb and has_object_sonar
+            has_object = has_object_rgb or has_object_sonar
 
         return {
             "rgb_img": rgb_img,

@@ -152,15 +152,11 @@ model:
       use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
       loss_weight_conf: 1.0
 
-    fusion_box:
-      type: FusionHead
-      rgb_channels: 768
-      sonar_channels: 768
-      hidden_dim: 256
-      num_layers: 3
-      output_format: cxcywh
-      use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
-      loss_weight_conf: 1.0
+    # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+    # fusion_box REMOVED. RGB and Sonar BoxHeads now use dual-view fused features.
+    # - rgb_box uses rgb_view_fused (RGB perspective with complementary Sonar)
+    # - sonar_box uses sonar_view_fused (Sonar perspective with complementary RGB)
+    # This enables end-to-end learning of RGB-Sonar correspondence without calibration.
 
 
 # ------------------------------------------------------------------------------
@@ -218,23 +214,27 @@ training:
   # CRITICAL FIX (Audit 2025112302): Removed Weak3D component
   # Architecture simplified to focus on 2D tracking with cross-modal fusion
   # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 6): Added confidence losses
+  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion): Removed fusion losses
   loss_weights:
-    # Box regression losses
+    # Box regression losses (dual-view fused features)
     rgb_box: 1.0
     rgb_cls: 0.5
     rgb_conf: 1.0  # Objectness confidence (has_object prediction)
     sonar_box: 1.0
     sonar_cls: 0.5
     sonar_conf: 1.0  # Objectness confidence (has_object prediction)
-    fusion_box: 1.5
-    fusion_cls: 0.8
-    fusion_conf: 1.0  # Objectness confidence (has_object prediction)
+
+    # Auxiliary losses (feature degradation prevention, training only)
+    aux_rgb_loss: 0.3  # Lightweight auxiliary head on pre-fusion RGB features
+    aux_sonar_loss: 0.3  # Lightweight auxiliary head on pre-fusion Sonar features
 
     # Cross-modal consistency losses
     # geometric_consistency: compares geometric encodings (fusion layer, scale vs radial)
     # representation_consistency: InfoNCE contrastive loss for feature alignment
+    # view_consistency: dual-view consistency (rgb_view_fused vs sonar_view_fused)
     geometric_consistency: 0.5
     representation_consistency: 0.3
+    view_consistency: 0.1
 
   # Loss weight scheduling
   loss_schedule:
@@ -242,9 +242,8 @@ training:
     type: linear  # linear, step, cosine
     max_epoch: 60
 
-    # Target weights at end of training (if enabled)
-    target_weights:
-      fusion_box: 3.0
+    # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+    # Target weights removed (fusion_box no longer exists)
 
   # Validation
   val_interval: 1  # Validate every N epochs
@@ -289,9 +288,11 @@ evaluation:
     - success_0.5
 
   # Per-modality evaluation
+  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+  # evaluate_fusion removed (fusion boxes no longer exist)
+  # RGB and Sonar boxes now use dual-view fused features
   evaluate_rgb: true
   evaluate_sonar: true
-  evaluate_fusion: true
 
   # CRITICAL FIX (Audit 2025111703 Finding 4): Template update strategy
   # Enable evaluation of template-update protocols (OSTrack, TrDiMP baselines)
@@ -358,7 +359,9 @@ demo:
   fps: 30
 
   # Modality to display
-  show_modality: fusion  # rgb, sonar, fusion
+  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+  # fusion option removed (use rgb or sonar, both use dual-view fused features)
+  show_modality: rgb  # rgb, sonar (both use dual-view fused features)
 
 
 # ------------------------------------------------------------------------------

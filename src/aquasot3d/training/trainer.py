@@ -390,14 +390,19 @@ class Trainer:
 
             # CRITICAL FIX (Audit 2025112306): Template-search architecture only
             # Remove frame sequence fallback with undefined target_idx
-            if 'search_bbox' in batch:
-                # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
-                # Both RGB and Sonar share the same GT (unified annotation)
+            # CRITICAL FIX (Audit 2025112312 - Single-Modality Visibility):
+            # Use separate RGB and Sonar GT boxes to support single-modality scenarios
+            if 'search_bbox_rgb' in batch and 'search_bbox_sonar' in batch:
+                # Separate GT boxes (post-2025112312 format)
+                gt_boxes['rgb'] = batch['search_bbox_rgb']
+                gt_boxes['sonar'] = batch['search_bbox_sonar']
+            elif 'search_bbox' in batch:
+                # Legacy unified GT (backward compatibility)
                 gt_boxes['rgb'] = batch['search_bbox']
                 gt_boxes['sonar'] = batch['search_bbox']
             else:
                 raise RuntimeError(
-                    "Template-search architecture requires 'search_bbox' in batch. "
+                    "Template-search architecture requires 'search_bbox_rgb' and 'search_bbox_sonar' in batch. "
                     f"Got keys: {list(batch.keys())}"
                 )
 
@@ -408,9 +413,9 @@ class Trainer:
             if 'sonar_boxes_pixels' in batch:
                 gt_boxes['sonar_pixels'] = batch['sonar_boxes_pixels']
 
-            # Priority 0.2: Add fusion GT fallback (use RGB GT as fusion target)
-            if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
-                gt_boxes['fusion'] = gt_boxes['rgb']
+            # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+            # Fusion GT generation REMOVED. Fusion box head no longer exists.
+            # RGB and Sonar BoxHeads now use dual-view fused features with separate GT.
 
             # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
             # Metadata format differs between template-search and frame sequence
@@ -691,14 +696,19 @@ class Trainer:
                 # Validation now exclusively uses template-search format with search_bbox
                 gt_boxes = {}
 
-                # CRITICAL FIX (Audit 2025112306): Template-search architecture only
-                if 'search_bbox' in batch:
-                    # Template-search format: search_bbox is already [B, 4] in CXCYWH normalized
+                # CRITICAL FIX (Audit 2025112312 - Single-Modality Visibility):
+                # Use separate RGB and Sonar GT boxes
+                if 'search_bbox_rgb' in batch and 'search_bbox_sonar' in batch:
+                    # Separate GT boxes (post-2025112312 format)
+                    gt_boxes['rgb'] = batch['search_bbox_rgb']
+                    gt_boxes['sonar'] = batch['search_bbox_sonar']
+                elif 'search_bbox' in batch:
+                    # Legacy unified GT (backward compatibility)
                     gt_boxes['rgb'] = batch['search_bbox']
                     gt_boxes['sonar'] = batch['search_bbox']
                 else:
                     raise RuntimeError(
-                        "Template-search architecture requires 'search_bbox' in batch. "
+                        "Template-search architecture requires 'search_bbox_rgb' and 'search_bbox_sonar' in batch. "
                         f"Got keys: {list(batch.keys())}"
                     )
 
@@ -709,9 +719,8 @@ class Trainer:
                 if 'sonar_boxes_pixels' in batch:
                     gt_boxes['sonar_pixels'] = batch['sonar_boxes_pixels']
 
-                # Add fusion GT fallback
-                if 'fusion' not in gt_boxes and 'rgb' in gt_boxes:
-                    gt_boxes['fusion'] = gt_boxes['rgb']
+                # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+                # Fusion GT generation REMOVED. Fusion box head no longer exists.
 
                 # ARCHITECTURE CHANGE (Template-Search Migration 2025112104):
                 # Metadata format differs between template-search and frame sequence

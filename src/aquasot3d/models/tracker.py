@@ -9,9 +9,13 @@ This module implements the complete tracking pipeline integrating:
 Architecture:
     Input: RGB template/search + Sonar template/search
     -> Backbones: OSTrack one-stream ViT for RGB (3-channel) and Sonar (1-channel)
-    -> Fusion: ConfidenceAwareG2DCMA (geometry-gated deformable cross-modal attention)
-    -> Heads: BoxHead (RGB/Sonar/Fusion)
-    Output: 2D boxes (RGB/Sonar/Fusion) + losses
+    -> Fusion: ConfidenceAwareG2DCMA with Dual-View Fusion (rgb_view_fused, sonar_view_fused)
+    -> Heads: BoxHead (RGB uses rgb_view_fused, Sonar uses sonar_view_fused)
+    Output: 2D boxes (RGB/Sonar) + losses
+
+    ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+    Fusion BoxHead removed. RGB and Sonar BoxHeads now use dual-view fused features,
+    enabling end-to-end learning of RGB-Sonar correspondence without calibration.
 
 Author: AquaSOT-3D Team
 Date: 2025-11-23
@@ -172,17 +176,40 @@ class AquaSOT3DTracker(BaseModule):
         else:
             logger.info("Sonar box head disabled (no Sonar encoder)")
 
-        # Fusion box head (only if both modalities exist)
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Fusion box head REMOVED. RGB and Sonar BoxHeads now use dual-view fused features.
+        # This simplifies architecture and strengthens G2-DCMA supervision through dual gradients.
         self.fusion_box_head = None
+        logger.info("Fusion box head disabled (Dual-View Fusion architecture)")
+
+        # 4.3 Auxiliary Heads for Feature Degradation Prevention
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Add lightweight auxiliary heads that predict from original features (pre-fusion).
+        # This prevents backbone feature degradation by providing direct gradient flow.
+        # These heads are ONLY used during training, not inference.
+        self.aux_rgb_head = None
+        self.aux_sonar_head = None
         if self.backbone.rgb_backbone is not None and self.backbone.sonar_encoder is not None:
-            self.fusion_box_head = build_box_head(
-                'fusion',
-                in_channels=self.fused_feat_dim,
-                **box_head_config
+            # Very lightweight: just adaptive pooling + linear layers
+            self.aux_rgb_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),  # [B, C, H, W] -> [B, C, 1, 1]
+                nn.Flatten(),  # [B, C, 1, 1] -> [B, C]
+                nn.Linear(self.rgb_feat_dim, 256),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.1),
+                nn.Linear(256, 4)  # Predict bbox [cx, cy, w, h]
             )
-            logger.info("Initialized Fusion box head (multi-modal training)")
+            self.aux_sonar_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(self.sonar_feat_dim, 256),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.1),
+                nn.Linear(256, 4)
+            )
+            logger.info("Initialized auxiliary heads for feature degradation prevention")
         else:
-            logger.info("Fusion box head disabled (single-modal training)")
+            logger.info("Auxiliary heads disabled (single-modal training)")
 
         # 4.2 Multi-Modal Fusion Head (learnable uncertainty estimation)
         # FusionHead provides uncertainty-aware feature fusion with confidence scores
@@ -439,11 +466,22 @@ class AquaSOT3DTracker(BaseModule):
 
         outputs = {}
 
-        # RGB box prediction
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # RGB box prediction now uses RGB-view fused features instead of original features
+        # This forces G2-DCMA to learn RGB-Sonar correspondence through dual supervision
         if self.rgb_box_head is not None and rgb_features is not None:
-            # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Pass has_object to box head
+            # Extract RGB-view fused features from dual-view fusion output
+            if isinstance(fused_features, dict) and 'rgb_view_fused' in fused_features:
+                rgb_input_features = fused_features['rgb_view_fused']
+            elif isinstance(fused_features, dict) and 'fused_features' in fused_features:
+                # Fallback: use 'fused_features' key (backward compatibility)
+                rgb_input_features = fused_features['fused_features']
+            else:
+                # Legacy: fused_features is a tensor, not a dict
+                rgb_input_features = fused_features
+
             rgb_box_outputs = self.rgb_box_head(
-                rgb_features,
+                rgb_input_features,  # ← CHANGED: Now uses fused features instead of rgb_features
                 target_boxes=gt_boxes.get('rgb') if gt_boxes and 'rgb' in gt_boxes else None,
                 target_labels=None,
                 validity_mask=is_rgb_valid,
@@ -468,11 +506,21 @@ class AquaSOT3DTracker(BaseModule):
                 )
                 outputs['rgb_box_loss'] = rgb_loss
 
-        # Sonar box prediction
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Sonar box prediction now uses Sonar-view fused features instead of original features
         if self.sonar_box_head is not None and sonar_features is not None:
-            # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Pass has_object to box head
+            # Extract Sonar-view fused features from dual-view fusion output
+            if isinstance(fused_features, dict) and 'sonar_view_fused' in fused_features:
+                sonar_input_features = fused_features['sonar_view_fused']
+            elif isinstance(fused_features, dict) and 'fused_features' in fused_features:
+                # Fallback: use 'fused_features' key (backward compatibility)
+                sonar_input_features = fused_features['fused_features']
+            else:
+                # Legacy: fused_features is a tensor, not a dict
+                sonar_input_features = fused_features
+
             sonar_box_outputs = self.sonar_box_head(
-                sonar_features,
+                sonar_input_features,  # ← CHANGED: Now uses fused features instead of sonar_features
                 target_boxes=gt_boxes.get('sonar') if gt_boxes and 'sonar' in gt_boxes else None,
                 target_labels=None,
                 validity_mask=is_sonar_valid,
@@ -497,39 +545,11 @@ class AquaSOT3DTracker(BaseModule):
                 )
                 outputs['sonar_box_loss'] = sonar_loss
 
-        # Fusion box prediction
-        if self.fusion_box_head is not None and fused_features is not None:
-            # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Pass has_object to box head
-            # For fusion, use combined is_valid and has_object flags
-            fusion_is_valid = None
-            if is_rgb_valid is not None and is_sonar_valid is not None:
-                fusion_is_valid = is_rgb_valid & is_sonar_valid
-
-            fusion_box_outputs = self.fusion_box_head(
-                fused_features,
-                target_boxes=gt_boxes.get('fusion') if gt_boxes and 'fusion' in gt_boxes else None,
-                target_labels=None,
-                validity_mask=fusion_is_valid,
-                has_object=has_object
-            )
-            outputs['fusion_boxes'] = fusion_box_outputs['pred_boxes']
-            outputs['fusion_quality'] = fusion_box_outputs['pred_scores']
-
-            # Add confidence prediction if available
-            if 'pred_confidence' in fusion_box_outputs:
-                outputs['fusion_confidence'] = fusion_box_outputs['pred_confidence']
-
-            # Add confidence loss if available
-            if 'conf_loss' in fusion_box_outputs:
-                outputs['fusion_conf_loss'] = fusion_box_outputs['conf_loss']
-
-            # Legacy loss handling
-            if gt_boxes is not None and 'fusion' in gt_boxes and 'total_loss' not in fusion_box_outputs:
-                fusion_loss = self.fusion_box_head.compute_loss(
-                    fusion_box_outputs,
-                    gt_boxes['fusion']
-                )
-                outputs['fusion_box_loss'] = fusion_loss
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Fusion box prediction REMOVED. Primary tracking output now comes from:
+        # - RGB BoxHead (using rgb_view_fused features)
+        # - Sonar BoxHead (using sonar_view_fused features)
+        # During inference, use RGB boxes as primary output (or Sonar if RGB is invalid)
 
         # Always output modality validity for evaluation/analysis
         if is_rgb_valid is not None:
@@ -587,14 +607,16 @@ class AquaSOT3DTracker(BaseModule):
 
         Returns:
             Dictionary containing:
-                - 'rgb_boxes': RGB box predictions (B, 4)
-                - 'sonar_boxes': Sonar box predictions (B, 4)
-                - 'fusion_boxes': Fusion box predictions (B, 4) [PRIMARY OUTPUT]
-                - 'rgb_confidence': RGB objectness scores (B,) [if confidence head enabled]
-                - 'sonar_confidence': Sonar objectness scores (B,)
-                - 'fusion_confidence': Fusion objectness scores (B,)
+                - 'rgb_boxes': RGB box predictions (B, 4) [PRIMARY OUTPUT - uses rgb_view_fused]
+                - 'sonar_boxes': Sonar box predictions (B, 4) [PRIMARY OUTPUT - uses sonar_view_fused]
+                - 'pred_confidence_rgb': RGB objectness scores (B,) [if confidence head enabled]
+                - 'pred_confidence_sonar': Sonar objectness scores (B,)
                 - Various losses [if return_losses=True]
                 - Intermediate features [if return_intermediate=True]
+
+            ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+            Fusion boxes removed. RGB and Sonar BoxHeads now use dual-view fused features,
+            forcing G2-DCMA to learn RGB-Sonar correspondence through dual supervision.
         """
         # Get batch size from template (template-search paradigm)
         batch_size = rgb_template.shape[0]
@@ -632,6 +654,59 @@ class AquaSOT3DTracker(BaseModule):
         sonar_features = backbone_outputs['sonar_search_features']
 
         # =====================================================
+        # Stage 1.5: Auxiliary Predictions (Pre-Fusion)
+        # =====================================================
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Compute auxiliary predictions from original features to prevent feature degradation.
+        # These predictions provide direct gradient flow to backbones.
+        aux_outputs = {}
+        if self.training and return_losses and self.aux_rgb_head is not None:
+            # Prepare features for auxiliary heads (need spatial format [B, C, H, W])
+            # RGB features
+            if rgb_features.dim() == 3:  # [B, N, C]
+                B, N, C = rgb_features.shape
+                # Remove class token if present
+                if int((N - 1) ** 0.5) ** 2 == N - 1:
+                    rgb_features_spatial = rgb_features[:, 1:, :]
+                    N = N - 1
+                else:
+                    rgb_features_spatial = rgb_features
+                H = W = int(N ** 0.5)
+                rgb_features_spatial = rgb_features_spatial.permute(0, 2, 1).reshape(B, C, H, W)
+            else:
+                rgb_features_spatial = rgb_features
+
+            # Sonar features
+            if sonar_features.dim() == 3:  # [B, N, C]
+                B, N, C = sonar_features.shape
+                if int((N - 1) ** 0.5) ** 2 == N - 1:
+                    sonar_features_spatial = sonar_features[:, 1:, :]
+                    N = N - 1
+                else:
+                    sonar_features_spatial = sonar_features
+                H = W = int(N ** 0.5)
+                sonar_features_spatial = sonar_features_spatial.permute(0, 2, 1).reshape(B, C, H, W)
+            else:
+                sonar_features_spatial = sonar_features
+
+            # Auxiliary predictions (very simple, just for gradient flow)
+            aux_rgb_boxes = self.aux_rgb_head(rgb_features_spatial)  # [B, 4]
+            aux_sonar_boxes = self.aux_sonar_head(sonar_features_spatial)  # [B, 4]
+
+            aux_outputs['aux_rgb_boxes'] = aux_rgb_boxes
+            aux_outputs['aux_sonar_boxes'] = aux_sonar_boxes
+
+            # Compute auxiliary losses if GT is available
+            if gt_boxes is not None:
+                # Simple L1 loss for auxiliary predictions (lightweight supervision)
+                if 'rgb' in gt_boxes:
+                    aux_rgb_loss = F.l1_loss(aux_rgb_boxes, gt_boxes['rgb'], reduction='mean')
+                    aux_outputs['aux_rgb_loss'] = aux_rgb_loss * 0.3  # Lower weight
+                if 'sonar' in gt_boxes:
+                    aux_sonar_loss = F.l1_loss(aux_sonar_boxes, gt_boxes['sonar'], reduction='mean')
+                    aux_outputs['aux_sonar_loss'] = aux_sonar_loss * 0.3  # Lower weight
+
+        # =====================================================
         # Stage 2: Cross-Modal Fusion
         # =====================================================
         # CRITICAL FIX (Audit 2025112101 Phase 2.2):
@@ -648,7 +723,10 @@ class AquaSOT3DTracker(BaseModule):
             return_consistency=return_losses
         )
 
-        fused_features = fusion_outputs['fused_features']  # (B, C_fused, H, W)
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # fusion_outputs now contains both rgb_view_fused and sonar_view_fused
+        # Keep the full dict for passing to predict_boxes
+        fused_features = fusion_outputs  # Keep as dict to access both views
 
 
         # =====================================================
@@ -670,11 +748,9 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         outputs = {}
 
+        # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+        # Fusion boxes removed. Primary output now from RGB/Sonar BoxHeads on fused features.
         # Add predictions conditionally based on available modalities
-        if 'fusion_boxes' in box_outputs:
-            outputs['fusion_boxes'] = box_outputs['fusion_boxes']
-            # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Add confidence predictions
-            outputs['pred_confidence_fusion'] = box_outputs.get('fusion_confidence', None)
         if 'rgb_boxes' in box_outputs:
             outputs['rgb_boxes'] = box_outputs['rgb_boxes']
             outputs['rgb_quality'] = box_outputs.get('rgb_quality', None)
@@ -690,13 +766,13 @@ class AquaSOT3DTracker(BaseModule):
         if return_losses:
             losses = {}
 
+            # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+            # Fusion losses removed. Only RGB and Sonar losses now.
             # 2D box losses
             if 'rgb_box_loss' in box_outputs:
                 losses['rgb_box_loss'] = box_outputs['rgb_box_loss']
             if 'sonar_box_loss' in box_outputs:
                 losses['sonar_box_loss'] = box_outputs['sonar_box_loss']
-            if 'fusion_box_loss' in box_outputs:
-                losses['fusion_box_loss'] = box_outputs['fusion_box_loss']
 
             # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX):
             # Extract confidence losses for objectness prediction
@@ -704,14 +780,24 @@ class AquaSOT3DTracker(BaseModule):
                 losses['rgb_conf_loss'] = box_outputs['rgb_conf_loss']
             if 'sonar_conf_loss' in box_outputs:
                 losses['sonar_conf_loss'] = box_outputs['sonar_conf_loss']
-            if 'fusion_conf_loss' in box_outputs:
-                losses['fusion_conf_loss'] = box_outputs['fusion_conf_loss']
 
             # Consistency losses
             if 'consistency_losses' in fusion_outputs:
                 # Geometric consistency: compares geometric encodings (scale vs radial)
                 losses['geometric_consistency'] = fusion_outputs['consistency_losses']['component_loss']
                 losses['representation_consistency'] = fusion_outputs['consistency_losses']['infonce_loss']
+
+            # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
+            # Add cross-view consistency loss
+            if 'view_consistency_loss' in fusion_outputs:
+                losses['view_consistency'] = fusion_outputs['view_consistency_loss']
+
+            # ARCHITECTURE UPDATE (Audit 2025112313 - Auxiliary Heads):
+            # Add auxiliary losses for feature degradation prevention
+            if 'aux_rgb_loss' in aux_outputs:
+                losses['aux_rgb_loss'] = aux_outputs['aux_rgb_loss']
+            if 'aux_sonar_loss' in aux_outputs:
+                losses['aux_sonar_loss'] = aux_outputs['aux_sonar_loss']
 
             outputs['losses'] = losses
 
