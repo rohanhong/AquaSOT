@@ -57,7 +57,6 @@ class TrackingVisualizer:
         self.colors = {
             'pred': (0, 255, 0),      # Green for predictions
             'gt': (255, 0, 0),        # Red for ground truth
-            'fusion': (255, 255, 0),  # Yellow for fusion
             'rgb': (0, 255, 255),     # Cyan for RGB
             'sonar': (255, 0, 255)    # Magenta for Sonar
         }
@@ -145,7 +144,6 @@ class TrackingVisualizer:
         sonar_frame: np.ndarray,
         rgb_pred: Optional[np.ndarray] = None,
         sonar_pred: Optional[np.ndarray] = None,
-        fusion_pred: Optional[np.ndarray] = None,
         rgb_gt: Optional[np.ndarray] = None,
         sonar_gt: Optional[np.ndarray] = None,
         frame_id: Optional[int] = None,
@@ -158,12 +156,14 @@ class TrackingVisualizer:
         ENHANCEMENT (Audit 2025111405 Requirement #2): Added bbox_format parameter
         to explicitly specify coordinate format for all bboxes.
 
+        ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed (dual-view fusion
+        architecture). RGB and Sonar predictions now use dual-view fused features.
+
         Args:
             rgb_frame: RGB frame
             sonar_frame: Sonar frame
-            rgb_pred: RGB prediction
-            sonar_pred: Sonar prediction
-            fusion_pred: Fusion prediction
+            rgb_pred: RGB prediction (uses rgb_view_fused features)
+            sonar_pred: Sonar prediction (uses sonar_view_fused features)
             rgb_gt: RGB ground truth
             sonar_gt: Sonar ground truth
             frame_id: Frame ID
@@ -181,8 +181,6 @@ class TrackingVisualizer:
             rgb_vis = self._draw_bbox(rgb_vis, rgb_gt, self.colors['gt'], label='GT', format=bbox_format)
         if rgb_pred is not None:
             rgb_vis = self._draw_bbox(rgb_vis, rgb_pred, self.colors['rgb'], label='RGB', format=bbox_format)
-        if fusion_pred is not None:
-            rgb_vis = self._draw_bbox(rgb_vis, fusion_pred, self.colors['fusion'], label='Fusion', thickness=2, format=bbox_format)
 
         # Draw on Sonar frame
         sonar_vis = sonar_frame.copy()
@@ -192,8 +190,6 @@ class TrackingVisualizer:
             sonar_vis = self._draw_bbox(sonar_vis, sonar_gt, self.colors['gt'], label='GT', format=bbox_format)
         if sonar_pred is not None:
             sonar_vis = self._draw_bbox(sonar_vis, sonar_pred, self.colors['sonar'], label='Sonar', format=bbox_format)
-        if fusion_pred is not None:
-            sonar_vis = self._draw_bbox(sonar_vis, fusion_pred, self.colors['fusion'], label='Fusion', thickness=2, format=bbox_format)
 
         # Add labels
         cv2.putText(rgb_vis, 'RGB', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
@@ -282,16 +278,16 @@ class TrackingVisualizer:
         self,
         rgb_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         sonar_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-        fusion_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         save_name: Optional[str] = None
     ) -> Figure:
         """
-        Plot success curves for all modalities.
+        Plot success curves for RGB and Sonar modalities.
+
+        ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed (dual-view fusion).
 
         Args:
             rgb_curve: (thresholds, success_rates) for RGB (optional)
             sonar_curve: (thresholds, success_rates) for Sonar (optional)
-            fusion_curve: (thresholds, success_rates) for Fusion (optional)
             save_name: Filename to save
 
         Returns:
@@ -304,8 +300,6 @@ class TrackingVisualizer:
             ax.plot(rgb_curve[0], rgb_curve[1], 'c-', linewidth=2, label='RGB')
         if sonar_curve is not None:
             ax.plot(sonar_curve[0], sonar_curve[1], 'm-', linewidth=2, label='Sonar')
-        if fusion_curve is not None:
-            ax.plot(fusion_curve[0], fusion_curve[1], 'y-', linewidth=3, label='Fusion')
 
         ax.set_xlabel('Overlap Threshold', fontsize=self.font_size)
         ax.set_ylabel('Success Rate', fontsize=self.font_size)
@@ -328,16 +322,16 @@ class TrackingVisualizer:
         self,
         rgb_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         sonar_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-        fusion_curve: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         save_name: Optional[str] = None
     ) -> Figure:
         """
-        Plot precision curves for all modalities.
+        Plot precision curves for RGB and Sonar modalities.
+
+        ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed (dual-view fusion).
 
         Args:
             rgb_curve: (thresholds, precisions) for RGB (optional)
             sonar_curve: (thresholds, precisions) for Sonar (optional)
-            fusion_curve: (thresholds, precisions) for Fusion (optional)
             save_name: Filename to save
 
         Returns:
@@ -350,8 +344,6 @@ class TrackingVisualizer:
             ax.plot(rgb_curve[0], rgb_curve[1], 'c-', linewidth=2, label='RGB')
         if sonar_curve is not None:
             ax.plot(sonar_curve[0], sonar_curve[1], 'm-', linewidth=2, label='Sonar')
-        if fusion_curve is not None:
-            ax.plot(fusion_curve[0], fusion_curve[1], 'y-', linewidth=3, label='Fusion')
 
         ax.set_xlabel('Location Error Threshold (pixels)', fontsize=self.font_size)
         ax.set_ylabel('Precision', fontsize=self.font_size)
@@ -632,7 +624,6 @@ class TrackingVisualizer:
             predictions: Dictionary of predictions with keys:
                 - 'rgb_pred': RGB predictions
                 - 'sonar_pred': Sonar predictions
-                - 'fusion_pred': Fusion predictions
                 - 'rgb_gt': RGB ground truth (optional)
                 - 'sonar_gt': Sonar ground truth (optional)
             save_frames: Whether to save individual frames
@@ -648,7 +639,6 @@ class TrackingVisualizer:
             # Get predictions for this frame
             rgb_pred = predictions.get('rgb_pred', [None] * num_frames)[i]
             sonar_pred = predictions.get('sonar_pred', [None] * num_frames)[i]
-            fusion_pred = predictions.get('fusion_pred', [None] * num_frames)[i]
             rgb_gt = predictions.get('rgb_gt', [None] * num_frames)[i]
             sonar_gt = predictions.get('sonar_gt', [None] * num_frames)[i]
 
@@ -658,7 +648,6 @@ class TrackingVisualizer:
                 sonar_frames[i],
                 rgb_pred=rgb_pred,
                 sonar_pred=sonar_pred,
-                fusion_pred=fusion_pred,
                 rgb_gt=rgb_gt,
                 sonar_gt=sonar_gt,
                 frame_id=i,

@@ -5,10 +5,14 @@ This module implements a comprehensive loss manager for multi-modal tracking,
 handling multiple task-specific losses with dynamic weighting strategies.
 
 Loss Components:
-- RGB Branch: classification + bbox regression (GIoU/CIoU) + confidence (objectness)
-- Sonar Branch: classification + bbox regression (GIoU/CIoU) + confidence (objectness)
-- Fusion Branch: classification + bbox regression (GIoU/CIoU) + confidence (objectness)
+- RGB Branch: bbox regression (GIoU/CIoU) + confidence (objectness)
+- Sonar Branch: bbox regression (GIoU/CIoU) + confidence (objectness)
+- Auxiliary Heads: pre-fusion bbox regression (feature degradation prevention)
 - Cross-Modal Consistency: component + representation (InfoNCE)
+- Cross-View Consistency: dual-view fusion alignment
+
+ARCHITECTURE UPDATE (Audit 2025112313):
+Fusion branch removed (dual-view fusion architecture).
 
 CONTINUOUS FLOW DESIGN (Audit 2025112306):
 Confidence losses train the model to predict object presence/absence (has_object flag),
@@ -42,11 +46,12 @@ class LossManager(nn.Module):
 
     Example:
         >>> loss_weights = {
-        ...     'rgb_cls': 1.0, 'rgb_box': 1.0,
-        ...     'sonar_cls': 1.0, 'sonar_box': 1.0,
-        ...     'fusion_cls': 1.5, 'fusion_box': 1.5,
+        ...     'rgb_box': 1.0, 'rgb_conf': 1.0,
+        ...     'sonar_box': 1.0, 'sonar_conf': 1.0,
+        ...     'aux_rgb': 0.5, 'aux_sonar': 0.5,
         ...     'geometric_consistency': 0.5,
-        ...     'representation_consistency': 0.3
+        ...     'representation_consistency': 0.3,
+        ...     'view_consistency': 0.3
         ... }
         >>> manager = LossManager(loss_weights)
         >>> total_loss, loss_dict = manager.compute_losses(predictions, targets)
@@ -63,19 +68,18 @@ class LossManager(nn.Module):
         super().__init__()
 
         # Default loss weights
+        # ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed, auxiliary heads added
         # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 5): Added confidence loss weights
         self.loss_weights = loss_weights or {
-            'rgb_cls': 1.0,
             'rgb_box': 1.0,
             'rgb_conf': 1.0,  # Objectness confidence for RGB
-            'sonar_cls': 1.0,
             'sonar_box': 1.0,
             'sonar_conf': 1.0,  # Objectness confidence for Sonar
-            'fusion_cls': 1.0,
-            'fusion_box': 1.0,
-            'fusion_conf': 1.0,  # Objectness confidence for Fusion
+            'aux_rgb': 0.5,  # Auxiliary head for RGB (pre-fusion)
+            'aux_sonar': 0.5,  # Auxiliary head for Sonar (pre-fusion)
             'geometric_consistency': 0.5,
-            'representation_consistency': 0.3
+            'representation_consistency': 0.3,
+            'view_consistency': 0.3  # Cross-view consistency (dual-view fusion)
         }
 
         self.weight_schedule = weight_schedule
@@ -105,7 +109,7 @@ class LossManager(nn.Module):
         Raises:
             ValueError: If batch size cannot be determined
         """
-        for key in ['rgb_box', 'rgb_boxes', 'sonar_box', 'sonar_boxes', 'fusion_box']:
+        for key in ['rgb_box', 'rgb_boxes', 'sonar_box', 'sonar_boxes']:
             if key in predictions and predictions[key] is not None:
                 return predictions[key].shape[0]
 
@@ -173,19 +177,14 @@ class LossManager(nn.Module):
         Args:
             predictions: Dictionary containing all model predictions
                 - 'losses': Pre-computed loss dictionary from model (optional, Priority 1)
-                - 'rgb_box': RGB bounding box predictions
-                - 'sonar_box': Sonar bounding box predictions
-                - 'fusion_box': Fusion bounding box predictions
-                - 'rgb_cls': RGB classification scores (optional)
-                - 'sonar_cls': Sonar classification scores (optional)
-                - 'fusion_cls': Fusion classification scores (optional)
+                - 'rgb_boxes': RGB bounding box predictions
+                - 'sonar_boxes': Sonar bounding box predictions
+                - 'rgb_confidence': RGB objectness scores (optional)
+                - 'sonar_confidence': Sonar objectness scores (optional)
                 - 'consistency': Consistency losses (optional)
             targets: Dictionary containing ground truth
                 - 'rgb_box': RGB target boxes
                 - 'sonar_box': Sonar target boxes
-                - 'fusion_box': Fusion target boxes (optional, fallback to rgb_box)
-                - 'rgb_cls': RGB classification targets (optional)
-                - 'sonar_cls': Sonar classification targets (optional)
             epoch: Current training epoch (for weight scheduling)
 
         Returns:
@@ -238,14 +237,8 @@ class LossManager(nn.Module):
             )
             loss_dict['rgb_box'] = rgb_box_loss
 
-        if 'rgb_cls' in predictions and 'rgb_cls' in targets:
-            # CRITICAL (Audit 2025111903 Phase 4): Pass RGB validity mask to loss computation
-            rgb_cls_loss = self._compute_classification_loss(
-                predictions['rgb_cls'],
-                targets['rgb_cls'],
-                validity_mask=is_valid_rgb
-            )
-            loss_dict['rgb_cls'] = rgb_cls_loss
+        # ARCHITECTURE UPDATE (Audit 2025112313): Classification loss removed
+        # Single-class tracking does not require classification loss
 
         # ============================================
         # 2. Sonar Branch Losses
@@ -261,17 +254,11 @@ class LossManager(nn.Module):
             )
             loss_dict['sonar_box'] = sonar_box_loss
 
-        if 'sonar_cls' in predictions and 'sonar_cls' in targets:
-            # CRITICAL (Audit 2025111903 Phase 4): Pass Sonar validity mask to loss computation
-            sonar_cls_loss = self._compute_classification_loss(
-                predictions['sonar_cls'],
-                targets['sonar_cls'],
-                validity_mask=is_valid_sonar
-            )
-            loss_dict['sonar_cls'] = sonar_cls_loss
+        # ARCHITECTURE UPDATE (Audit 2025112313): Classification loss removed
+        # Single-class tracking does not require classification loss
 
         # ============================================
-        # 3. Fusion Branch Losses
+        # 3. Consistency Losses
         # ============================================
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion box loss computation REMOVED. Fusion box head no longer exists.
@@ -304,10 +291,6 @@ class LossManager(nn.Module):
         # Sonar confidence loss
         if 'sonar_conf_loss' in predictions and predictions['sonar_conf_loss'] is not None:
             loss_dict['sonar_conf'] = predictions['sonar_conf_loss']
-
-        # Fusion confidence loss
-        if 'fusion_conf_loss' in predictions and predictions['fusion_conf_loss'] is not None:
-            loss_dict['fusion_conf'] = predictions['fusion_conf_loss']
 
         # ============================================
         # 5. Combine All Losses
@@ -368,12 +351,17 @@ class LossManager(nn.Module):
         weights = self._get_current_weights()
 
         # Define loss name mapping from model internal names to config keys
+        # ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed, auxiliary + view consistency added
         loss_name_map = {
             'rgb_box_loss': 'rgb_box',
             'sonar_box_loss': 'sonar_box',
-            'fusion_box_loss': 'fusion_box',
+            'rgb_conf_loss': 'rgb_conf',
+            'sonar_conf_loss': 'sonar_conf',
+            'aux_rgb_loss': 'aux_rgb',
+            'aux_sonar_loss': 'aux_sonar',
             'geometric_consistency': 'geometric_consistency',
             'representation_consistency': 'representation_consistency',
+            'view_consistency': 'view_consistency',
         }
 
         # Process individual losses with name mapping
@@ -737,9 +725,9 @@ def build_loss_manager(config: Optional[Dict[str, Any]] = None) -> LossManager:
 
     Example:
         >>> config = {
-        ...     'loss_weights': {'rgb_cls': 1.0, 'rgb_box': 1.0},
+        ...     'loss_weights': {'rgb_box': 1.0, 'sonar_box': 1.0, 'aux_rgb': 0.5},
         ...     'weight_schedule': 'linear',
-        ...     'schedule_config': {'max_epoch': 60, 'target_weights': {'fusion_box': 1.5}}
+        ...     'schedule_config': {'max_epoch': 60, 'target_weights': {'aux_rgb': 1.0}}
         ... }
         >>> manager = build_loss_manager(config)
     """

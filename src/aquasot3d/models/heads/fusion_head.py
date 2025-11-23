@@ -1,6 +1,15 @@
 """
 Fusion Head for Multi-Modal Feature Integration
 
+DEPRECATED (Audit 2025112313): This module is deprecated and no longer used.
+The dual-view fusion architecture (G2-DCMA) now outputs rgb_view_fused and
+sonar_view_fused features directly, which are consumed by RGB and Sonar BoxHeads.
+This file is retained only for backward compatibility with old checkpoints.
+
+DO NOT USE THIS MODULE IN NEW CODE.
+
+---
+
 This module implements a fusion head that combines RGB and Sonar features with
 uncertainty-aware weighting. It predicts quality scores and adaptively weights
 modality-specific predictions based on estimated uncertainties.

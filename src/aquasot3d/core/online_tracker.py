@@ -156,9 +156,11 @@ class OnlineTracker:
             )
 
         # Extract predictions (CXCYWH normalized)
+        # ARCHITECTURE UPDATE (Audit 2025112313): fusion_boxes removed (dual-view fusion)
+        # RGB and Sonar boxes now use dual-view fused features. Use RGB as primary output.
         bbox_rgb = outputs['rgb_boxes'][0].cpu().numpy()
         bbox_sonar = outputs['sonar_boxes'][0].cpu().numpy()
-        bbox_fusion = outputs['fusion_boxes'][0].cpu().numpy()
+        bbox_fusion = bbox_rgb  # Use RGB as primary output (dual-view fused features)
 
         # Extract quality scores for each modality
         quality_score_rgb = None

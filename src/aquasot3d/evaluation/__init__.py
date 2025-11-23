@@ -17,7 +17,6 @@ from aquasot3d.evaluation.metrics import (
     compute_precision_at_threshold,
     compute_sequence_metrics,
     aggregate_metrics,
-    compute_multi_modal_metrics,
     format_metrics_report
 )
 
@@ -40,7 +39,6 @@ __all__ = [
     'compute_precision_at_threshold',
     'compute_sequence_metrics',
     'aggregate_metrics',
-    'compute_multi_modal_metrics',
     'format_metrics_report',
 
     # Evaluator

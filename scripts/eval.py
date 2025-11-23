@@ -82,15 +82,14 @@ def build_model(cfg):
         return cfg_dict
 
     box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
-    fusion_head_cfg = clean_head_config(cfg.model.heads.get('fusion_box', {}))
+    # ARCHITECTURE UPDATE (Audit 2025112313): fusion_head removed (dual-view fusion architecture)
 
     # Build model
     model = AquaSOT3DTracker(
         rgb_backbone_config=rgb_backbone_cfg,
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
-        box_head_config=box_head_cfg,
-        fusion_head_config=fusion_head_cfg
+        box_head_config=box_head_cfg
     )
 
     logger.info(f"Model built successfully")
@@ -378,7 +377,8 @@ def main():
     logger.info("Evaluation Results")
     logger.info("="*70)
     
-    for modality in ['rgb', 'sonar', 'fusion']:
+    # ARCHITECTURE UPDATE (Audit 2025112313): fusion removed (dual-view fusion architecture)
+    for modality in ['rgb', 'sonar']:
         if modality in results['overall']:
             metrics = results['overall'][modality]
             logger.info(f"\n{modality.upper()} Metrics:")

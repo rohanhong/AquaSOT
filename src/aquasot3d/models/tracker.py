@@ -32,7 +32,6 @@ from aquasot3d.models.backbones import BackboneFactory, MultiModalBackbone
 from aquasot3d.models.fusion import build_g2_dcma, build_g2_dcma_lite, build_conditional_g2_dcma
 from aquasot3d.models.heads import (
     build_box_head,
-    build_fusion_head,
 )
 
 
@@ -55,7 +54,6 @@ class AquaSOT3DTracker(BaseModule):
         sonar_backbone_config: Configuration for Sonar backbone (must include template_size=256, search_size=512)
         fusion_config: Configuration for G2-DCMA fusion module
         box_head_config: Configuration for 2D box prediction heads
-        fusion_head_config: Configuration for multi-modal fusion head
 
     Example:
         >>> config = {
@@ -73,7 +71,6 @@ class AquaSOT3DTracker(BaseModule):
         sonar_backbone_config: Dict[str, Any],
         fusion_config: Dict[str, Any],
         box_head_config: Optional[Dict[str, Any]] = None,
-        fusion_head_config: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         super().__init__()
@@ -179,8 +176,6 @@ class AquaSOT3DTracker(BaseModule):
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion box head REMOVED. RGB and Sonar BoxHeads now use dual-view fused features.
         # This simplifies architecture and strengthens G2-DCMA supervision through dual gradients.
-        self.fusion_box_head = None
-        logger.info("Fusion box head disabled (Dual-View Fusion architecture)")
 
         # 4.3 Auxiliary Heads for Feature Degradation Prevention
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
@@ -210,23 +205,6 @@ class AquaSOT3DTracker(BaseModule):
             logger.info("Initialized auxiliary heads for feature degradation prevention")
         else:
             logger.info("Auxiliary heads disabled (single-modal training)")
-
-        # 4.2 Multi-Modal Fusion Head (learnable uncertainty estimation)
-        # FusionHead provides uncertainty-aware feature fusion with confidence scores
-        # Only build fusion_head if both modalities are available (multi-modal training)
-        self.fusion_head = None
-        if self.backbone.rgb_backbone is not None and self.backbone.sonar_encoder is not None:
-            if fusion_head_config is None:
-                fusion_head_config = {}
-
-            self.fusion_head = build_fusion_head(
-                rgb_feat_dim=self.rgb_feat_dim,
-                sonar_feat_dim=self.sonar_feat_dim,
-                **fusion_head_config
-            )
-            logger.info("Initialized fusion_head for uncertainty-aware multi-modal fusion")
-        else:
-            logger.info("Fusion head disabled (single-modal training)")
 
         # =====================================================
         # 6. Template Update State Management
@@ -592,7 +570,7 @@ class AquaSOT3DTracker(BaseModule):
             sonar_template: Sonar template frame, shape (B, 1, 256, 256)
             sonar_search: Sonar search frame, shape (B, 1, 512, 512)
             gt_boxes: Optional ground truth boxes for loss computation
-                Expected format: {'rgb': (B, 4), 'sonar': (B, 4), 'fusion': (B, 4)}
+                Expected format: {'rgb': (B, 4), 'sonar': (B, 4)}
             is_rgb_valid: Optional [B] boolean tensor, True if RGB has valid target
             is_sonar_valid: Optional [B] boolean tensor, True if Sonar has valid target
             has_object_rgb: Optional [B] float32 tensor, 1.0 if RGB has object, 0.0 if no object
@@ -609,8 +587,8 @@ class AquaSOT3DTracker(BaseModule):
             Dictionary containing:
                 - 'rgb_boxes': RGB box predictions (B, 4) [PRIMARY OUTPUT - uses rgb_view_fused]
                 - 'sonar_boxes': Sonar box predictions (B, 4) [PRIMARY OUTPUT - uses sonar_view_fused]
-                - 'pred_confidence_rgb': RGB objectness scores (B,) [if confidence head enabled]
-                - 'pred_confidence_sonar': Sonar objectness scores (B,)
+                - 'rgb_confidence': RGB objectness scores (B,) [if confidence head enabled]
+                - 'sonar_confidence': Sonar objectness scores (B,)
                 - Various losses [if return_losses=True]
                 - Intermediate features [if return_intermediate=True]
 
@@ -755,12 +733,12 @@ class AquaSOT3DTracker(BaseModule):
             outputs['rgb_boxes'] = box_outputs['rgb_boxes']
             outputs['rgb_quality'] = box_outputs.get('rgb_quality', None)
             # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Add confidence predictions
-            outputs['pred_confidence_rgb'] = box_outputs.get('rgb_confidence', None)
+            outputs['rgb_confidence'] = box_outputs.get('rgb_confidence', None)
         if 'sonar_boxes' in box_outputs:
             outputs['sonar_boxes'] = box_outputs['sonar_boxes']
             outputs['sonar_quality'] = box_outputs.get('sonar_quality', None)
             # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Add confidence predictions
-            outputs['pred_confidence_sonar'] = box_outputs.get('sonar_confidence', None)
+            outputs['sonar_confidence'] = box_outputs.get('sonar_confidence', None)
 
         # Add losses if requested
         if return_losses:

@@ -114,7 +114,8 @@ def export_onnx(model, output_path, opset_version=11, simplify=False, template_s
         opset_version=opset_version,
         do_constant_folding=True,
         input_names=['rgb_template', 'rgb_search', 'sonar_template', 'sonar_search'],
-        output_names=['rgb_box', 'sonar_box', 'fusion_box'],
+        # ARCHITECTURE UPDATE (Audit 2025112313): fusion_box removed (dual-view fusion)
+        output_names=['rgb_box', 'sonar_box'],
         dynamic_axes={
             'rgb_template': {0: 'batch_size'},
             'rgb_search': {0: 'batch_size'},

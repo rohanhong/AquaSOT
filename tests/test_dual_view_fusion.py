@@ -92,8 +92,8 @@ def test_tracker_no_fusion_head():
 
     tracker = build_tracker('AquaSOT3DTracker', **config)
 
-    # Verify fusion_box_head is None
-    assert tracker.fusion_box_head is None, "fusion_box_head should be None"
+    # Verify fusion_box_head does not exist (completely removed)
+    assert not hasattr(tracker, 'fusion_box_head'), "fusion_box_head should not exist"
 
     # Verify RGB and Sonar box heads exist
     assert tracker.rgb_box_head is not None, "rgb_box_head should exist"

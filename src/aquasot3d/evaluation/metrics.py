@@ -4,7 +4,9 @@ Tracking Metrics for AquaSOT-3D
 This module implements standard tracking evaluation metrics following the
 RGBS50 benchmark protocol, including Success (AUC), Precision, and Center Error.
 
-Metrics are computed separately for RGB, Sonar, and Fusion predictions.
+Metrics are computed separately for RGB and Sonar predictions.
+
+ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed (dual-view fusion architecture).
 
 Author: AquaSOT-3D Team
 Date: 2025-11-10
@@ -391,16 +393,18 @@ def compute_success_at_threshold(
 def compute_sequence_metrics(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    modality: str = 'fusion',
+    modality: str = 'rgb',
     additional_metrics: Optional[List[str]] = None
 ) -> Dict[str, float]:
     """
     Compute all standard tracking metrics for a sequence.
 
+    ARCHITECTURE UPDATE (Audit 2025112313): Default modality changed to 'rgb'.
+
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
-        modality: Modality name ('rgb', 'sonar', or 'fusion')
+        modality: Modality name ('rgb' or 'sonar')
         additional_metrics: Optional list of additional metrics to compute.
             Supported values:
                 - 'precision_N': Precision at N pixels (e.g., 'precision_10', 'precision_5')
@@ -411,7 +415,7 @@ def compute_sequence_metrics(
 
     Example:
         >>> metrics = compute_sequence_metrics(
-        ...     pred_boxes, gt_boxes, 'fusion',
+        ...     pred_boxes, gt_boxes, 'rgb',
         ...     additional_metrics=['precision_10', 'precision_5', 'success_0.7']
         ... )
         >>> print(f"AUC: {metrics['success_auc']:.4f}")
@@ -470,21 +474,23 @@ def compute_sequence_metrics(
 
 def aggregate_metrics(
     sequence_metrics: List[Dict[str, float]],
-    modality: str = 'fusion'
+    modality: str = 'rgb'
 ) -> Dict[str, float]:
     """
     Aggregate metrics across multiple sequences.
 
+    ARCHITECTURE UPDATE (Audit 2025112313): Default modality changed to 'rgb'.
+
     Args:
         sequence_metrics: List of per-sequence metrics dictionaries
-        modality: Modality name
+        modality: Modality name ('rgb' or 'sonar')
 
     Returns:
         Aggregated metrics dictionary
 
     Example:
         >>> seq_metrics = [compute_sequence_metrics(pred1, gt1), ...]
-        >>> overall = aggregate_metrics(seq_metrics, 'fusion')
+        >>> overall = aggregate_metrics(seq_metrics, 'rgb')
     """
     if len(sequence_metrics) == 0:
         return {'modality': modality, 'num_sequences': 0}
@@ -528,127 +534,6 @@ def aggregate_metrics(
     return aggregated
 
 
-def compute_multi_modal_metrics(
-    rgb_pred: List[np.ndarray],
-    sonar_pred: List[np.ndarray],
-    fusion_pred: List[np.ndarray],
-    rgb_gt: List[np.ndarray],
-    sonar_gt: List[np.ndarray],
-    aggregation_strategy: str = 'mean',
-    additional_metrics: Optional[List[str]] = None
-) -> Dict[str, Dict[str, float]]:
-    """
-    Compute metrics for all three modalities (RGB, Sonar, Fusion).
-
-    Enhanced with detailed fusion→RGB and fusion→Sonar breakdowns to avoid
-    hiding systematic biases between modalities.
-
-    Args:
-        rgb_pred: RGB predictions
-        sonar_pred: Sonar predictions
-        fusion_pred: Fusion predictions
-        rgb_gt: RGB ground truth
-        sonar_gt: Sonar ground truth
-        aggregation_strategy: How to aggregate fusion metrics
-            - 'mean': Simple average (default, preserves backward compatibility)
-            - 'weighted': Weighted by IoU (prefer more reliable GT)
-            - 'max': Take best per-metric (optimistic)
-            - 'min': Take worst per-metric (conservative)
-        additional_metrics: Optional list of additional metrics to compute
-            (e.g., ['precision_10', 'precision_5', 'success_0.7'])
-
-    Returns:
-        Dictionary with metrics for each modality, including detailed fusion breakdown
-
-    Example:
-        >>> metrics = compute_multi_modal_metrics(
-        ...     rgb_pred, sonar_pred, fusion_pred,
-        ...     rgb_gt, sonar_gt,
-        ...     aggregation_strategy='weighted',
-        ...     additional_metrics=['precision_10', 'success_0.7']
-        ... )
-        >>> print(f"Fusion (aggregated) AUC: {metrics['fusion']['success_auc']:.4f}")
-        >>> print(f"Fusion→RGB AUC: {metrics['fusion_vs_rgb']['success_auc']:.4f}")
-        >>> print(f"Fusion→Sonar AUC: {metrics['fusion_vs_sonar']['success_auc']:.4f}")
-    """
-    metrics = {}
-
-    # RGB metrics
-    metrics['rgb'] = compute_sequence_metrics(rgb_pred, rgb_gt, 'rgb', additional_metrics)
-
-    # Sonar metrics
-    metrics['sonar'] = compute_sequence_metrics(sonar_pred, sonar_gt, 'sonar', additional_metrics)
-
-    # Fusion metrics: separate evaluation against each GT for transparency
-    fusion_rgb_metrics = compute_sequence_metrics(fusion_pred, rgb_gt, 'fusion_vs_rgb', additional_metrics)
-    fusion_sonar_metrics = compute_sequence_metrics(fusion_pred, sonar_gt, 'fusion_vs_sonar', additional_metrics)
-
-    # Store detailed breakdowns
-    metrics['fusion_vs_rgb'] = fusion_rgb_metrics
-    metrics['fusion_vs_sonar'] = fusion_sonar_metrics
-
-    # Aggregate fusion metrics using specified strategy
-    metrics['fusion'] = {
-        'modality': 'fusion',
-        'num_frames': fusion_rgb_metrics['num_frames'],
-        'num_valid_predictions': fusion_rgb_metrics['num_valid_predictions'],
-        'aggregation_strategy': aggregation_strategy
-    }
-
-    # Collect all metric keys (standard + additional)
-    metric_keys = ['success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5']
-
-    # Add additional metrics if present in fusion results
-    if additional_metrics:
-        for metric_name in additional_metrics:
-            if metric_name in fusion_rgb_metrics and metric_name not in metric_keys:
-                metric_keys.append(metric_name)
-
-    if aggregation_strategy == 'mean':
-        # Simple average (backward compatible)
-        for key in metric_keys:
-            metrics['fusion'][key] = (fusion_rgb_metrics[key] + fusion_sonar_metrics[key]) / 2.0
-
-    elif aggregation_strategy == 'weighted':
-        # Weight by mean IoU (prefer more reliable GT)
-        rgb_weight = fusion_rgb_metrics['mean_iou']
-        sonar_weight = fusion_sonar_metrics['mean_iou']
-        total_weight = rgb_weight + sonar_weight + 1e-7
-
-        for key in metric_keys:
-            metrics['fusion'][key] = (
-                fusion_rgb_metrics[key] * rgb_weight +
-                fusion_sonar_metrics[key] * sonar_weight
-            ) / total_weight
-
-        metrics['fusion']['rgb_weight'] = rgb_weight / total_weight
-        metrics['fusion']['sonar_weight'] = sonar_weight / total_weight
-
-    elif aggregation_strategy == 'max':
-        # Optimistic: take best per metric
-        for key in metric_keys:
-            if key == 'avg_center_error':  # Lower is better
-                metrics['fusion'][key] = min(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
-            else:  # Higher is better
-                metrics['fusion'][key] = max(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
-
-    elif aggregation_strategy == 'min':
-        # Conservative: take worst per metric
-        for key in metric_keys:
-            if key == 'avg_center_error':  # Lower is better
-                metrics['fusion'][key] = max(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
-            else:  # Higher is better
-                metrics['fusion'][key] = min(fusion_rgb_metrics[key], fusion_sonar_metrics[key])
-
-    else:
-        raise ValueError(
-            f"Unknown aggregation_strategy: {aggregation_strategy}. "
-            f"Choose from: 'mean', 'weighted', 'max', 'min'"
-        )
-
-    return metrics
-
-
 def format_metrics_report(
     metrics: Dict[str, Dict[str, float]],
     sequence_name: Optional[str] = None
@@ -676,7 +561,8 @@ def format_metrics_report(
 
     report.append("=" * 60)
 
-    for modality in ['rgb', 'sonar', 'fusion']:
+    # ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed
+    for modality in ['rgb', 'sonar']:
         if modality not in metrics:
             continue
 
@@ -698,7 +584,7 @@ def compute_scenario_metrics(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
     scenario_labels: List[str],
-    modality: str = 'fusion',
+    modality: str = 'rgb',
     additional_metrics: Optional[List[str]] = None
 ) -> Dict[str, Dict[str, float]]:
     """
@@ -708,6 +594,8 @@ def compute_scenario_metrics(
     Enables per-scenario evaluation to diagnose single-modality performance
     and zero-modality handling.
 
+    ARCHITECTURE UPDATE (Audit 2025112313): Default modality changed to 'rgb'.
+
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
@@ -716,7 +604,7 @@ def compute_scenario_metrics(
             - 'single_rgb': Only RGB valid
             - 'single_sonar': Only Sonar valid
             - 'zero': Neither modality valid
-        modality: Modality name ('rgb', 'sonar', or 'fusion')
+        modality: Modality name ('rgb' or 'sonar')
         additional_metrics: Optional list of additional metrics to compute
 
     Returns:
@@ -731,7 +619,7 @@ def compute_scenario_metrics(
 
     Example:
         >>> scenario_labels = ['dual', 'dual', 'single_rgb', 'zero']
-        >>> metrics = compute_scenario_metrics(pred_boxes, gt_boxes, scenario_labels, 'fusion')
+        >>> metrics = compute_scenario_metrics(pred_boxes, gt_boxes, scenario_labels, 'rgb')
         >>> print(f"Dual-modality AUC: {metrics['dual']['success_auc']:.4f}")
         >>> print(f"Single-RGB AUC: {metrics['single_rgb']['success_auc']:.4f}")
     """
@@ -786,7 +674,7 @@ def compute_scenario_metrics(
 
 def aggregate_scenario_metrics(
     sequence_scenario_metrics: List[Dict[str, Dict[str, float]]],
-    modality: str = 'fusion'
+    modality: str = 'rgb'
 ) -> Dict[str, Dict[str, float]]:
     """
     Aggregate per-scenario metrics across multiple sequences.
@@ -794,16 +682,18 @@ def aggregate_scenario_metrics(
     CRITICAL FIX (Audit 2025112101 Phase 4.2):
     Enables dataset-level analysis of per-scenario performance.
 
+    ARCHITECTURE UPDATE (Audit 2025112313): Default modality changed to 'rgb'.
+
     Args:
         sequence_scenario_metrics: List of per-sequence scenario metrics
-        modality: Modality name
+        modality: Modality name ('rgb' or 'sonar')
 
     Returns:
         Aggregated metrics for each scenario
 
     Example:
         >>> seq_metrics = [compute_scenario_metrics(pred1, gt1, labels1), ...]
-        >>> aggregated = aggregate_scenario_metrics(seq_metrics, 'fusion')
+        >>> aggregated = aggregate_scenario_metrics(seq_metrics, 'rgb')
         >>> print(f"Avg Dual AUC: {aggregated['dual']['success_auc_mean']:.4f}")
     """
     aggregated = {}

@@ -51,9 +51,10 @@ evaluation:
     - success_0.7
 
   # Per-modality evaluation
+  # ARCHITECTURE UPDATE (Audit 2025112313): fusion removed (dual-view fusion architecture)
   evaluate_rgb: true
   evaluate_sonar: true
-  evaluate_fusion: true
+  evaluate_fusion: false  # Deprecated: RGB/Sonar now use dual-view fused features
 
   # Visualization
   visualization:

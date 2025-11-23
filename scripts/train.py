@@ -126,15 +126,14 @@ def build_model(cfg):
         return cfg_dict
 
     box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
-    fusion_head_cfg = clean_head_config(cfg.model.heads.get('fusion_box', {}))
+    # ARCHITECTURE UPDATE (Audit 2025112313): fusion_head removed (dual-view fusion architecture)
 
     # Build model
     model = AquaSOT3DTracker(
         rgb_backbone_config=rgb_backbone_cfg,
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
-        box_head_config=box_head_cfg,
-        fusion_head_config=fusion_head_cfg
+        box_head_config=box_head_cfg
     )
 
     logger.info(f"Model built successfully")

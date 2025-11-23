@@ -164,15 +164,13 @@ training:
   loss_weights:
     # Box regression (dual-view fused features)
     rgb_box: 1.0
-    rgb_cls: 0.5
     rgb_conf: 1.0  # Objectness confidence (has_object prediction)
     sonar_box: 1.0
-    sonar_cls: 0.5
     sonar_conf: 1.0  # Objectness confidence (has_object prediction)
 
     # Auxiliary losses (feature degradation prevention, training only)
-    aux_rgb_loss: 0.3  # Lightweight auxiliary head on pre-fusion RGB features
-    aux_sonar_loss: 0.3  # Lightweight auxiliary head on pre-fusion Sonar features
+    aux_rgb: 0.3  # Lightweight auxiliary head on pre-fusion RGB features
+    aux_sonar: 0.3  # Lightweight auxiliary head on pre-fusion Sonar features
 
     # Cross-modal consistency losses
     geometric_consistency: 0.5         # Fusion layer: scale vs radial encoding alignment

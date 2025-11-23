@@ -881,25 +881,35 @@ class FusionBoxHead(BoxHead):
     """
     Fusion 2D Box Prediction Head.
 
-    Specialized version of BoxHead for fused multi-modal features.
-    This head produces the primary tracking output.
+    DEPRECATED (Audit 2025112313): This class is deprecated and no longer used.
+    The dual-view fusion architecture uses RGB and Sonar BoxHeads directly on
+    rgb_view_fused and sonar_view_fused features. This class is retained only
+    for backward compatibility with old checkpoints.
+
+    DO NOT USE THIS CLASS IN NEW CODE.
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.logger.info("Initialized Fusion BoxHead (primary output)")
+        self.logger.warning(
+            "FusionBoxHead is DEPRECATED (Audit 2025112313). "
+            "Use RGBBoxHead/SonarBoxHead with dual-view fusion instead."
+        )
 
 
 def build_box_head(
-    head_type: str = 'fusion',
+    head_type: str = 'rgb',
     in_channels: int = 768,
     **kwargs
 ) -> BoxHead:
     """
     Factory function to build box prediction head.
 
+    ARCHITECTURE UPDATE (Audit 2025112313): Default changed from 'fusion' to 'rgb'.
+    The 'fusion' head type is deprecated.
+
     Args:
-        head_type: Type of head ('rgb', 'sonar', 'fusion', or 'base')
+        head_type: Type of head ('rgb', 'sonar', or 'base')
         in_channels: Input feature dimension
         **kwargs: Additional arguments for BoxHead
 
@@ -907,13 +917,19 @@ def build_box_head(
         BoxHead instance
 
     Example:
-        >>> head = build_box_head('fusion', in_channels=768, hidden_dim=256)
+        >>> head = build_box_head('rgb', in_channels=768, hidden_dim=256)
     """
     if head_type == 'rgb':
         return RGBBoxHead(in_channels=in_channels, **kwargs)
     elif head_type == 'sonar':
         return SonarBoxHead(in_channels=in_channels, **kwargs)
     elif head_type == 'fusion':
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "FusionBoxHead is DEPRECATED (Audit 2025112313). "
+            "Use 'rgb' or 'sonar' head types instead."
+        )
         return FusionBoxHead(in_channels=in_channels, **kwargs)
     else:
         return BoxHead(in_channels=in_channels, **kwargs)

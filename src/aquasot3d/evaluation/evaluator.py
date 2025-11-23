@@ -22,7 +22,6 @@ from collections import defaultdict
 from aquasot3d.evaluation.metrics import (
     compute_sequence_metrics,
     aggregate_metrics,
-    compute_multi_modal_metrics,
     format_metrics_report
 )
 
@@ -114,7 +113,6 @@ class TrackingEvaluator:
         sequence_predictions = defaultdict(lambda: {
             'rgb_pred': [],
             'sonar_pred': [],
-            'fusion_pred': [],
             'rgb_gt': [],
             'sonar_gt': []
         })
@@ -154,7 +152,7 @@ class TrackingEvaluator:
                 batch_results = self.track_sequence(batch)
 
                 # Accumulate predictions for this sequence
-                for key in ['rgb_pred', 'sonar_pred', 'fusion_pred', 'rgb_gt', 'sonar_gt']:
+                for key in ['rgb_pred', 'sonar_pred', 'rgb_gt', 'sonar_gt']:
                     if key in batch_results:
                         sequence_predictions[sequence_name][key].extend(batch_results[key])
 
@@ -170,13 +168,11 @@ class TrackingEvaluator:
             diagnostics = {
                 'num_frames': {
                     'rgb': len(predictions.get('rgb_pred', [])),
-                    'sonar': len(predictions.get('sonar_pred', [])),
-                    'fusion': len(predictions.get('fusion_pred', []))
+                    'sonar': len(predictions.get('sonar_pred', []))
                 },
                 'modality_availability': {
                     'has_rgb': len(predictions.get('rgb_pred', [])) > 0,
-                    'has_sonar': len(predictions.get('sonar_pred', [])) > 0,
-                    'has_fusion': len(predictions.get('fusion_pred', [])) > 0
+                    'has_sonar': len(predictions.get('sonar_pred', [])) > 0
                 },
                 'quality_trends': self._compute_quality_diagnostics(predictions)
             }
@@ -429,7 +425,6 @@ class TrackingEvaluator:
         predictions = {
             'rgb_pred': [],
             'sonar_pred': [],
-            'fusion_pred': [],
             'rgb_gt': [],
             'sonar_gt': [],
             # CRITICAL FIX (Audit 2025111413 Finding 3): Collect quality trends
@@ -506,30 +501,8 @@ class TrackingEvaluator:
                 for i in range(len(sonar_boxes_np))
             ]
 
-        if 'fusion_boxes' in outputs:
-            # CRITICAL FIX (Audit 2025111920): Keep cxcywh format for denormalization
-            # Fusion uses RGB coordinate space for metadata
-            from aquasot3d.utils import BBoxCXCYWH
-
-            fusion_boxes = outputs['fusion_boxes'].cpu()
-            fusion_boxes_cxcywh = BBoxCXCYWH(fusion_boxes)
-            fusion_boxes_np = fusion_boxes_cxcywh.numpy()  # Keep as cxcywh
-
-            predictions['fusion_pred'] = [
-                self._denormalize_bbox(
-                    fusion_boxes_np[i],  # cxcywh normalized [0,1]
-                    self.search_size,
-                    scale_x=rgb_metadata_list[i].get('scale_x') if i < len(rgb_metadata_list) else None,
-                    scale_y=rgb_metadata_list[i].get('scale_y') if i < len(rgb_metadata_list) else None,
-                    pad_x=rgb_metadata_list[i].get('pad_x', 0) if i < len(rgb_metadata_list) else 0,
-                    pad_y=rgb_metadata_list[i].get('pad_y', 0) if i < len(rgb_metadata_list) else 0,
-                    original_size=(
-                        rgb_metadata_list[i].get('original_height'),
-                        rgb_metadata_list[i].get('original_width')
-                    ) if i < len(rgb_metadata_list) else None
-                )
-                for i in range(len(fusion_boxes_np))
-            ]
+        # ARCHITECTURE UPDATE (Audit 2025112313): fusion_boxes completely removed
+        # RGB and Sonar boxes now use dual-view fused features (no separate fusion head)
 
         # Get ground truth boxes
         # CRITICAL FIX (Audit 2025111409 Finding 1): Use *_pixels keys if available (training),
@@ -639,51 +612,49 @@ class TrackingEvaluator:
         # Import scenario metric functions
         from aquasot3d.evaluation.metrics import compute_scenario_metrics
 
-        # Compute standard metrics for each modality (pass additional_metrics)
-        metrics = compute_multi_modal_metrics(
+        # ARCHITECTURE UPDATE (Audit 2025112313): fusion completely removed
+        # Compute standard metrics for RGB and Sonar only
+        from aquasot3d.evaluation.metrics import compute_sequence_metrics
+
+        metrics = {}
+        metrics['rgb'] = compute_sequence_metrics(
             predictions.get('rgb_pred', []),
-            predictions.get('sonar_pred', []),
-            predictions.get('fusion_pred', []),
             predictions.get('rgb_gt', []),
+            'rgb',
+            additional_metrics=self.additional_metrics
+        )
+        metrics['sonar'] = compute_sequence_metrics(
+            predictions.get('sonar_pred', []),
             predictions.get('sonar_gt', []),
+            'sonar',
             additional_metrics=self.additional_metrics
         )
 
         # CRITICAL FIX (Audit 2025112101 Phase 4.2):
         # Compute per-scenario metrics if scenario labels available
         if 'scenario_labels' in predictions and len(predictions['scenario_labels']) > 0:
-            # Compute per-scenario metrics for fusion (primary output)
-            fusion_scenario_metrics = compute_scenario_metrics(
-                predictions.get('fusion_pred', []),
-                predictions.get('rgb_gt', []),  # Use RGB GT as reference for fusion
+            # Compute per-scenario metrics for RGB (primary output in new architecture)
+            from aquasot3d.evaluation.metrics import compute_scenario_metrics
+            rgb_scenario_metrics = compute_scenario_metrics(
+                predictions.get('rgb_pred', []),
+                predictions.get('rgb_gt', []),
                 predictions.get('scenario_labels', []),
-                modality='fusion',
+                modality='rgb',
                 additional_metrics=self.additional_metrics
             )
 
             # Add scenario metrics to the results
-            metrics['fusion_scenarios'] = fusion_scenario_metrics
+            metrics['rgb_scenarios'] = rgb_scenario_metrics
 
-            # Optionally compute per-scenario metrics for RGB and Sonar
-            if len(predictions.get('rgb_pred', [])) > 0:
-                rgb_scenario_metrics = compute_scenario_metrics(
-                    predictions.get('rgb_pred', []),
-                    predictions.get('rgb_gt', []),
-                    predictions.get('scenario_labels', []),
-                    modality='rgb',
-                    additional_metrics=self.additional_metrics
-                )
-                metrics['rgb_scenarios'] = rgb_scenario_metrics
-
-            if len(predictions.get('sonar_pred', [])) > 0:
-                sonar_scenario_metrics = compute_scenario_metrics(
-                    predictions.get('sonar_pred', []),
-                    predictions.get('sonar_gt', []),
-                    predictions.get('scenario_labels', []),
-                    modality='sonar',
-                    additional_metrics=self.additional_metrics
-                )
-                metrics['sonar_scenarios'] = sonar_scenario_metrics
+            # Compute per-scenario metrics for Sonar
+            sonar_scenario_metrics = compute_scenario_metrics(
+                predictions.get('sonar_pred', []),
+                predictions.get('sonar_gt', []),
+                predictions.get('scenario_labels', []),
+                modality='sonar',
+                additional_metrics=self.additional_metrics
+            )
+            metrics['sonar_scenarios'] = sonar_scenario_metrics
 
         return metrics
 
