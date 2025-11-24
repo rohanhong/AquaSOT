@@ -51,24 +51,52 @@ def parse_args():
 
 
 def load_model(checkpoint_path, device='cpu'):
-    """Load model from checkpoint"""
+    """
+    Load model from checkpoint.
+
+    CRITICAL FIX (Audit 2025112403 Finding 4): Updated to match current tracker interface
+    Tracker now expects rgb_backbone_config/sonar_backbone_config dicts, not type strings
+    """
     logger.info(f"Loading model from: {checkpoint_path}")
-    
+
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
+
     # Build model
     if 'config' in checkpoint:
         cfg = checkpoint['config']
+
+        # CRITICAL FIX (Audit 2025112403 Finding 4): Use config dict format
+        # Convert config namespace to dict if needed
+        if hasattr(cfg, '__dict__'):
+            cfg_dict = cfg.__dict__ if hasattr(cfg, '__dict__') else cfg
+        else:
+            cfg_dict = cfg
+
+        # Extract backbone configs (full dict, not just type string)
+        rgb_backbone_config = cfg_dict.get('model', {}).get('backbone', {}).get('rgb', {})
+        sonar_backbone_config = cfg_dict.get('model', {}).get('backbone', {}).get('sonar', {})
+        fusion_config = cfg_dict.get('model', {}).get('fusion', {})
+        # Note: singular 'box_head', not plural 'heads'
+        box_head_config = cfg_dict.get('model', {}).get('box_head',
+                                                         cfg_dict.get('model', {}).get('heads', {}))
+
         model = AquaSOT3DTracker(
-            rgb_backbone_type=cfg.model.backbone.rgb.type,
-            sonar_encoder_type=cfg.model.backbone.sonar.type,
-            fusion_config=cfg.model.fusion,
-            head_configs=cfg.model.heads
+            rgb_backbone_config=rgb_backbone_config,
+            sonar_backbone_config=sonar_backbone_config,
+            fusion_config=fusion_config,
+            box_head_config=box_head_config
         )
     else:
-        logger.warning("Config not in checkpoint, using default")
-        model = AquaSOT3DTracker()
-    
+        logger.warning("Config not in checkpoint, using default configuration")
+        # CRITICAL FIX (Audit 2025112403 Finding 4): Use correct head type from configs
+        # Use minimal default config matching configs/default.yaml
+        model = AquaSOT3DTracker(
+            rgb_backbone_config={'type': 'vit_rgb', 'pretrained': False},
+            sonar_backbone_config={'type': 'vit_sonar', 'pretrained': False},
+            fusion_config={'type': 'conditional_g2_dcma'},
+            box_head_config={'type': 'BoxHead', 'use_confidence_head': True}
+        )
+
     # Load weights
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -76,16 +104,73 @@ def load_model(checkpoint_path, device='cpu'):
         model.load_state_dict(checkpoint['state_dict'])
     else:
         model.load_state_dict(checkpoint)
-    
+
     model = model.to(device)
     model.eval()
-    
+
     logger.info("Model loaded successfully")
     return model
 
 
+class ONNXExportWrapper(torch.nn.Module):
+    """
+    Wrapper for AquaSOT3DTracker to convert dict output to tuple for ONNX export.
+
+    CRITICAL FIX (Audit 2025112403 Finding 4):
+    torch.onnx.export requires tuple outputs to match output_names,
+    but tracker.forward returns dict. This wrapper handles the conversion.
+
+    ENHANCED FIX (Audit 2025112403 Follow-up):
+    Ensures proper eval mode and device/dtype matching for fallback tensors.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        # Ensure wrapper is in eval mode
+        self.eval()
+
+    def forward(self, rgb_template, rgb_search, sonar_template, sonar_search):
+        """
+        Forward pass that returns tuple instead of dict for ONNX export.
+
+        Returns:
+            tuple: (rgb_boxes, sonar_boxes, rgb_confidence, sonar_confidence)
+        """
+        # Call model (returns dict)
+        outputs = self.model(
+            rgb_template, rgb_search, sonar_template, sonar_search,
+            return_losses=False  # No losses needed for inference export
+        )
+
+        # Get batch size and device/dtype from input
+        batch_size = rgb_template.size(0)
+        device = rgb_template.device
+        dtype = rgb_template.dtype
+
+        # Extract required outputs in fixed order with proper device/dtype matching
+        rgb_boxes = outputs.get('rgb_boxes',
+                               torch.zeros(batch_size, 4, device=device, dtype=dtype))
+        sonar_boxes = outputs.get('sonar_boxes',
+                                 torch.zeros(batch_size, 4, device=device, dtype=dtype))
+
+        # Use confidence if available, otherwise use quality, otherwise zeros
+        rgb_confidence = outputs.get('rgb_confidence',
+                                     outputs.get('rgb_quality',
+                                                torch.zeros(batch_size, device=device, dtype=dtype)))
+        sonar_confidence = outputs.get('sonar_confidence',
+                                       outputs.get('sonar_quality',
+                                                  torch.zeros(batch_size, device=device, dtype=dtype)))
+
+        # Return as tuple (required by ONNX export with output_names)
+        return rgb_boxes, sonar_boxes, rgb_confidence, sonar_confidence
+
+
 def export_onnx(model, output_path, opset_version=11, simplify=False, template_size=256, search_size=512):
     """Export model to ONNX format
+
+    CRITICAL FIX (Audit 2025112403 Finding 4):
+    Wraps model to convert dict output to tuple for ONNX export compatibility.
 
     Args:
         model: PyTorch model to export
@@ -98,29 +183,37 @@ def export_onnx(model, output_path, opset_version=11, simplify=False, template_s
     logger.info(f"Exporting to ONNX (opset {opset_version})")
     logger.info(f"Using template_size={template_size}, search_size={search_size}")
 
+    # Wrap model to convert dict output to tuple
+    export_model = ONNXExportWrapper(model)
+
     # Dummy inputs with configurable sizes
     batch_size = 1
     rgb_template = torch.randn(batch_size, 3, template_size, template_size)
     rgb_search = torch.randn(batch_size, 3, search_size, search_size)
     sonar_template = torch.randn(batch_size, 1, template_size, template_size)
     sonar_search = torch.randn(batch_size, 1, search_size, search_size)
-    
-    # Export
+
+    # Export with wrapper (returns tuple)
     torch.onnx.export(
-        model,
+        export_model,
         (rgb_template, rgb_search, sonar_template, sonar_search),
         output_path,
         export_params=True,
         opset_version=opset_version,
         do_constant_folding=True,
         input_names=['rgb_template', 'rgb_search', 'sonar_template', 'sonar_search'],
-        # ARCHITECTURE UPDATE (Audit 2025112313): fusion_box removed (dual-view fusion)
-        output_names=['rgb_box', 'sonar_box'],
+        # CRITICAL FIX (Audit 2025112403 Finding 4): Match actual model outputs
+        # Wrapper returns tuple: (rgb_boxes, sonar_boxes, rgb_confidence, sonar_confidence)
+        output_names=['rgb_boxes', 'sonar_boxes', 'rgb_confidence', 'sonar_confidence'],
         dynamic_axes={
             'rgb_template': {0: 'batch_size'},
             'rgb_search': {0: 'batch_size'},
             'sonar_template': {0: 'batch_size'},
-            'sonar_search': {0: 'batch_size'}
+            'sonar_search': {0: 'batch_size'},
+            'rgb_boxes': {0: 'batch_size'},
+            'sonar_boxes': {0: 'batch_size'},
+            'rgb_confidence': {0: 'batch_size'},
+            'sonar_confidence': {0: 'batch_size'}
         }
     )
     

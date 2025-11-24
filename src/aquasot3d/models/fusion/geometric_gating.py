@@ -18,7 +18,7 @@ Reference:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, Union, List
 
 from aquasot3d.core.base_module import BaseModule
 from aquasot3d.core.registry import FUSION_REGISTRY
@@ -65,15 +65,27 @@ class RadialProfileExtractor(BaseModule):
     def extract_radial_bins(
         self,
         feature_map: torch.Tensor,
-        sensor_position: str = "bottom_center"
+        sensor_position: str = "bottom_center",
+        letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> torch.Tensor:
         """
         Extract radial binned activations from sonar feature map.
+
+        CRITICAL FIX (Audit 2025112403 Finding 3): Letterbox-aware origin computation
+        Letterboxing moves the physical sensor origin. Without compensation, radial bins
+        treat padding as "near range", corrupting geometry-based gating.
+
+        ENHANCED FIX (Audit 2025112403 Follow-up): Per-sample metadata support
+        Now accepts list of dicts for heterogeneous batches with different letterbox params.
 
         Args:
             feature_map: Sonar features [B, C, H, W]
             sensor_position: Position of sonar sensor origin
                            ("bottom_center" for upward-facing FLS)
+            letterbox_metadata: Either:
+                              - Single dict: used for all samples (backward compatible)
+                              - List of dicts: per-sample metadata for heterogeneous batches
+                              Each dict contains 'scale', 'pad_top', 'original_height'
 
         Returns:
             radial_profile: Radial activation distribution [B, num_bins]
@@ -81,30 +93,53 @@ class RadialProfileExtractor(BaseModule):
         B, C, H, W = feature_map.shape
         device = feature_map.device
 
-        # Sensor position in feature map coordinates
-        if sensor_position == "bottom_center":
-            cx, cy = W // 2, H - 1
-        elif sensor_position == "center":
-            cx, cy = W // 2, H // 2
+        # Normalize metadata to list form for unified processing
+        if letterbox_metadata is None:
+            metadata_list = [None] * B
+        elif isinstance(letterbox_metadata, dict):
+            # Single dict: use for all samples (backward compatible)
+            metadata_list = [letterbox_metadata] * B
+        elif isinstance(letterbox_metadata, list):
+            # Per-sample metadata
+            if len(letterbox_metadata) != B:
+                raise ValueError(f"letterbox_metadata list length {len(letterbox_metadata)} must match batch size {B}")
+            metadata_list = letterbox_metadata
         else:
-            raise ValueError(f"Unknown sensor_position: {sensor_position}")
+            raise TypeError(f"letterbox_metadata must be dict, list, or None, got {type(letterbox_metadata)}")
 
-        # Create coordinate grid
+        # Compute per-sample sensor origins
+        sensor_origins = []  # List of (cx, cy) tuples
+        for meta in metadata_list:
+            if meta is not None and 'scale' in meta:
+                scale = meta.get('scale', 1.0)
+                pad_top = meta.get('pad_top', 0)
+                original_height = meta.get('original_height', H)
+
+                if sensor_position == "bottom_center":
+                    # Physical origin at bottom-center: (W/2, original_height-1)
+                    # After letterbox: (W/2, pad_top + (original_height-1) * scale)
+                    cx = W // 2
+                    cy = pad_top + (original_height - 1) * scale
+                elif sensor_position == "center":
+                    cx = W // 2
+                    cy = pad_top + (original_height // 2) * scale
+                else:
+                    raise ValueError(f"Unknown sensor_position: {sensor_position}")
+            else:
+                # Fallback: no letterbox compensation (backward compatibility)
+                if sensor_position == "bottom_center":
+                    cx, cy = W // 2, H - 1
+                elif sensor_position == "center":
+                    cx, cy = W // 2, H // 2
+                else:
+                    raise ValueError(f"Unknown sensor_position: {sensor_position}")
+
+            sensor_origins.append((cx, cy))
+
+        # Create coordinate grid (shared across batch)
         y_coords = torch.arange(H, device=device, dtype=torch.float32)
         x_coords = torch.arange(W, device=device, dtype=torch.float32)
         y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
-
-        # CRITICAL FIX: Sonar rectangular coordinates are (bearing_angle, range)
-        # - x-axis: X-direction angle (bearing, horizontal FOV)
-        # - y-axis: Z-direction distance (range from sensor)
-        # Cannot mix angle and distance with Euclidean formula!
-        # Correct radial distance is simply the y-axis coordinate (range axis)
-        r = cy - y_grid  # [H, W], range from sensor (bottom=0, top=max_range)
-
-        # Normalize to bin indices [0, num_bins)
-        r_max = r.max()
-        r_normalized = (r / (r_max + 1e-6)) * (self.num_bins - 1)
-        r_bins = r_normalized.long().clamp(0, self.num_bins - 1)  # [H, W]
 
         # Check if channel weights need adjustment
         if self.learnable_weights and self.channel_weights.shape[0] != C:
@@ -122,9 +157,24 @@ class RadialProfileExtractor(BaseModule):
         else:
             adjusted_weights = self.channel_weights if self.learnable_weights else None
 
-        # Aggregate feature activations per bin using vectorized operations
+        # Aggregate feature activations per bin using per-sample origins
         radial_profiles = []
         for b in range(B):
+            # Get per-sample sensor origin
+            cx, cy = sensor_origins[b]
+
+            # CRITICAL FIX: Sonar rectangular coordinates are (bearing_angle, range)
+            # - x-axis: X-direction angle (bearing, horizontal FOV)
+            # - y-axis: Z-direction distance (range from sensor)
+            # Cannot mix angle and distance with Euclidean formula!
+            # Correct radial distance is simply the y-axis coordinate (range axis)
+            r = cy - y_grid  # [H, W], range from sensor (bottom=0, top=max_range)
+
+            # Normalize to bin indices [0, num_bins)
+            r_max = r.max()
+            r_normalized = (r / (r_max + 1e-6)) * (self.num_bins - 1)
+            r_bins = r_normalized.long().clamp(0, self.num_bins - 1)  # [H, W]
+
             # Weighted channel aggregation
             if self.learnable_weights:
                 feat = (feature_map[b] * adjusted_weights.view(C, 1, 1)).sum(dim=0)  # [H, W]
@@ -152,19 +202,28 @@ class RadialProfileExtractor(BaseModule):
     def forward(
         self,
         sonar_features: torch.Tensor,
-        sensor_position: str = "bottom_center"
+        sensor_position: str = "bottom_center",
+        letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> torch.Tensor:
         """
         Extract and encode radial profile.
 
+        CRITICAL FIX (Audit 2025112403 Finding 3): Added letterbox_metadata parameter
+        ENHANCED FIX (Audit 2025112403 Follow-up): Per-sample metadata support
+
         Args:
             sonar_features: Sonar feature maps [B, C, H, W]
             sensor_position: Sensor origin position
+            letterbox_metadata: Either single dict or list of dicts for per-sample metadata
 
         Returns:
             radial_encoding: Encoded radial profile [B, 64]
         """
-        radial_profile = self.extract_radial_bins(sonar_features, sensor_position)
+        radial_profile = self.extract_radial_bins(
+            sonar_features,
+            sensor_position,
+            letterbox_metadata
+        )
         radial_encoding = self.profile_encoder(radial_profile)
         return radial_encoding
 
@@ -418,15 +477,25 @@ class GeometryGatedAttention(BaseModule):
         self,
         rgb_features: torch.Tensor,
         sonar_features: torch.Tensor,
-        rgb_pyramid: Optional[list] = None
+        rgb_pyramid: Optional[list] = None,
+        sonar_letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Apply geometry-gated cross-attention.
+
+        CRITICAL FIX (Audit 2025112403 Finding 3): Added sonar_letterbox_metadata parameter
+        to enable letterbox-aware radial binning that respects physical sensor geometry.
+
+        ENHANCED FIX (Audit 2025112403 Follow-up): Per-sample metadata support
+        Now accepts list of dicts for heterogeneous batches with different letterbox params.
 
         Args:
             rgb_features: RGB feature maps [B, C, H_rgb, W_rgb]
             sonar_features: Sonar feature maps [B, C, H_sonar, W_sonar]
             rgb_pyramid: Optional multi-scale RGB features
+            sonar_letterbox_metadata: Either:
+                                     - Single dict: used for all samples
+                                     - List of dicts: per-sample metadata for heterogeneous batches
 
         Returns:
             dict containing:
@@ -464,7 +533,12 @@ class GeometryGatedAttention(BaseModule):
             sonar_flat = sonar_features.flatten(2).permute(0, 2, 1)
 
         # Extract geometric encodings (using original features)
-        radial_encoding = self.radial_extractor(sonar_features)  # [B, 64]
+        # CRITICAL FIX (Audit 2025112403 Finding 3): Pass letterbox metadata for radial binning
+        radial_encoding = self.radial_extractor(
+            sonar_features,
+            sensor_position="bottom_center",
+            letterbox_metadata=sonar_letterbox_metadata
+        )  # [B, 64]
         scale_encoding = self.scale_extractor(rgb_features, rgb_pyramid)  # [B, 64]
 
         # Compute gating weights

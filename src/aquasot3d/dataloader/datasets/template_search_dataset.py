@@ -109,6 +109,15 @@ class TemplateSearchDataset(Dataset):
         self.sonar_mean = torch.tensor(normalization_config.get('sonar_mean', [0.5])).view(1, 1, 1)
         self.sonar_std = torch.tensor(normalization_config.get('sonar_std', [0.5])).view(1, 1, 1)
 
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Single-modality support
+        # Read modalities configuration from base dataset to enable single-modality training
+        # (ablations, fail-safe routing, sonar-only pretraining)
+        if hasattr(base_dataset, 'modalities'):
+            self.modalities = base_dataset.modalities
+        else:
+            # Default: both modalities (backward compatibility)
+            self.modalities = ['rgb', 'sonar']
+
         # Multi-sequence support (PRESERVED from FrameSequenceDataset)
         self.is_multi_sequence = isinstance(
             base_dataset, MultiSequenceRGBSonarDataset
@@ -191,39 +200,62 @@ class TemplateSearchDataset(Dataset):
             # If needed, can add template augmentation with different policy
 
         # 3. Process template (crop around target bbox)
-        rgb_template = self._crop_template(
-            template_sample['rgb_img'],
-            template_sample['rgb_bbox'],
-            self.template_size
-        )
-        sonar_template = self._crop_template(
-            template_sample['sonar_img'],
-            template_sample['sonar_bbox'],
-            self.template_size
-        )
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Conditional processing for single-modality
+        if 'rgb' in self.modalities and template_sample['rgb_img'] is not None:
+            rgb_template = self._crop_template(
+                template_sample['rgb_img'],
+                template_sample['rgb_bbox'],
+                self.template_size
+            )
+        else:
+            rgb_template = None
+
+        if 'sonar' in self.modalities and template_sample['sonar_img'] is not None:
+            sonar_template = self._crop_template(
+                template_sample['sonar_img'],
+                template_sample['sonar_bbox'],
+                self.template_size
+            )
+        else:
+            sonar_template = None
 
         # 4. Process search (letterbox resize to search_size)
         # CRITICAL FIX (Template-Search Migration 2025112104):
         # base_dataset returns raw images, TemplateSearchDataset must resize them
-        rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array (after augmentation)
-        sonar_search_raw = search_sample['sonar_img']  # Raw [H, W] numpy array (after augmentation)
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Conditional processing for single-modality
+        if 'rgb' in self.modalities and search_sample['rgb_img'] is not None:
+            rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array (after augmentation)
+            # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
+            # Note: bbox may have been transformed by augmentation (e.g., horizontal flip)
+            rgb_bbox_original = search_sample['rgb_bbox'].copy()  # XYWH format
+            # Apply letterbox resize to search size (preserve aspect ratio)
+            # CRITICAL FIX (Audit 2025112401 Finding 1): Capture metadata for bbox transform
+            rgb_search, rgb_letterbox_meta = self._letterbox(rgb_search_raw, self.search_size)
+        else:
+            rgb_search_raw = None
+            rgb_bbox_original = None
+            rgb_search = None
+            rgb_letterbox_meta = {'scale': 1.0, 'pad_left': 0, 'pad_top': 0}
 
-        # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
-        # Note: bbox may have been transformed by augmentation (e.g., horizontal flip)
-        rgb_bbox_original = search_sample['rgb_bbox'].copy()  # XYWH format
-        sonar_bbox_original = search_sample['sonar_bbox'].copy()  # XYWH format
-
-        # Apply letterbox resize to search size (preserve aspect ratio)
-        # CRITICAL FIX (Audit 2025112401 Finding 1): Capture metadata for bbox transform
-        rgb_search, rgb_letterbox_meta = self._letterbox(rgb_search_raw, self.search_size)
-        sonar_search, sonar_letterbox_meta = self._letterbox(sonar_search_raw, self.search_size)
+        if 'sonar' in self.modalities and search_sample['sonar_img'] is not None:
+            sonar_search_raw = search_sample['sonar_img']  # Raw [H, W] numpy array (after augmentation)
+            # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
+            sonar_bbox_original = search_sample['sonar_bbox'].copy()  # XYWH format
+            # Apply letterbox resize to search size (preserve aspect ratio)
+            sonar_search, sonar_letterbox_meta = self._letterbox(sonar_search_raw, self.search_size)
+        else:
+            sonar_search_raw = None
+            sonar_bbox_original = None
+            sonar_search = None
+            sonar_letterbox_meta = {'scale': 1.0, 'pad_left': 0, 'pad_top': 0}
 
         # Convert to tensors and apply normalization
         # CRITICAL FIX (Audit 2025112401 Finding 4):
         # Apply ImageNet normalization for pretrained ViT compatibility
         # CRITICAL FIX (Audit 2025112402 Finding 3):
         # Use config-loaded normalization parameters instead of hardcoding
-        if isinstance(rgb_search, np.ndarray):
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Conditional normalization for single-modality
+        if rgb_search is not None and isinstance(rgb_search, np.ndarray):
             rgb_search = torch.from_numpy(rgb_search).float()
             if rgb_search.ndim == 3 and rgb_search.shape[2] == 3:  # [H, W, 3]
                 rgb_search = rgb_search.permute(2, 0, 1)  # → [3, H, W]
@@ -231,7 +263,7 @@ class TemplateSearchDataset(Dataset):
             rgb_search = rgb_search / 255.0
             rgb_search = (rgb_search - self.rgb_mean) / self.rgb_std
 
-        if isinstance(sonar_search, np.ndarray):
+        if sonar_search is not None and isinstance(sonar_search, np.ndarray):
             sonar_search = torch.from_numpy(sonar_search).float()
             if sonar_search.ndim == 2:  # [H, W]
                 sonar_search = sonar_search.unsqueeze(0)  # → [1, H, W]
@@ -241,11 +273,27 @@ class TemplateSearchDataset(Dataset):
 
         # 5. Extract and merge metadata with letterbox metadata
         # CRITICAL FIX (Audit 2025112401 Finding 1): Add letterbox metadata
-        rgb_metadata = search_sample.get('rgb_metadata', {})
-        rgb_metadata.update(rgb_letterbox_meta)
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Conditional metadata for single-modality
+        # CRITICAL FIX (Audit 2025112403 Finding 3): Add original_height/width for radial binning
+        if 'rgb' in self.modalities:
+            rgb_metadata = search_sample.get('rgb_metadata', {})
+            rgb_metadata.update(rgb_letterbox_meta)
+            # Add explicit original_height/width fields required by GeometryGatedAttention
+            if 'original_size' in rgb_letterbox_meta:
+                rgb_metadata['original_height'] = rgb_letterbox_meta['original_size'][0]
+                rgb_metadata['original_width'] = rgb_letterbox_meta['original_size'][1]
+        else:
+            rgb_metadata = {}
 
-        sonar_metadata = search_sample.get('sonar_metadata', {})
-        sonar_metadata.update(sonar_letterbox_meta)
+        if 'sonar' in self.modalities:
+            sonar_metadata = search_sample.get('sonar_metadata', {})
+            sonar_metadata.update(sonar_letterbox_meta)
+            # Add explicit original_height/width fields required by GeometryGatedAttention
+            if 'original_size' in sonar_letterbox_meta:
+                sonar_metadata['original_height'] = sonar_letterbox_meta['original_size'][0]
+                sonar_metadata['original_width'] = sonar_letterbox_meta['original_size'][1]
+        else:
+            sonar_metadata = {}
 
         # CRITICAL FIX (Audit 2025112401 Finding 1):
         # Apply letterbox transform to bboxes BEFORE normalization
@@ -280,68 +328,97 @@ class TemplateSearchDataset(Dataset):
         # Convert GT boxes from XYWH pixels to CXCYWH normalized [0, 1]
         # Trainer expects normalized CXCYWH format to match model predictions
         # Use existing bbox_utils functions per code review
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Conditional bbox processing for single-modality
 
-        # Template bbox (in 256x256 template crop) - RGB only for template
-        template_bbox_cxcywh = convert_bbox_format(
-            template_sample['rgb_bbox'].reshape(1, 4),
-            src_format='xywh',
-            dst_format='cxcywh'
-        )
-        template_bbox_normalized = normalize_bbox(
-            template_bbox_cxcywh,
-            image_size=(self.template_size, self.template_size),
-            format='cxcywh'
-        )[0]  # Extract single box from batch
+        # Template bbox (in 256x256 template crop) - Use RGB if available, else Sonar
+        if 'rgb' in self.modalities and template_sample['rgb_bbox'] is not None:
+            template_bbox_cxcywh = convert_bbox_format(
+                template_sample['rgb_bbox'].reshape(1, 4),
+                src_format='xywh',
+                dst_format='cxcywh'
+            )
+            template_bbox_normalized = normalize_bbox(
+                template_bbox_cxcywh,
+                image_size=(self.template_size, self.template_size),
+                format='cxcywh'
+            )[0]  # Extract single box from batch
+        elif 'sonar' in self.modalities and template_sample['sonar_bbox'] is not None:
+            template_bbox_cxcywh = convert_bbox_format(
+                template_sample['sonar_bbox'].reshape(1, 4),
+                src_format='xywh',
+                dst_format='cxcywh'
+            )
+            template_bbox_normalized = normalize_bbox(
+                template_bbox_cxcywh,
+                image_size=(self.template_size, self.template_size),
+                format='cxcywh'
+            )[0]
+        else:
+            # Fallback: zero bbox
+            template_bbox_normalized = np.zeros(4, dtype=np.float32)
 
         # CRITICAL FIX (Audit 2025112312 - Single-Modality Visibility):
         # Process RGB and Sonar search bboxes separately to support
         # single-modality visibility scenarios (e.g., target out of RGB FOV but in Sonar FOV)
 
-        # CRITICAL FIX (Audit 2025112401 Finding 1):
-        # Apply letterbox transform to RGB search bbox
-        rgb_bbox_transformed = apply_letterbox_to_bbox(rgb_bbox_original, rgb_letterbox_meta)
+        # RGB search bbox processing (conditional on RGB modality)
+        if 'rgb' in self.modalities and rgb_bbox_original is not None:
+            # CRITICAL FIX (Audit 2025112401 Finding 1):
+            # Apply letterbox transform to RGB search bbox
+            rgb_bbox_transformed = apply_letterbox_to_bbox(rgb_bbox_original, rgb_letterbox_meta)
 
-        # RGB search bbox (in 512x512 search image, RGB coordinate system)
-        search_bbox_rgb_cxcywh = convert_bbox_format(
-            rgb_bbox_transformed.reshape(1, 4),
-            src_format='xywh',
-            dst_format='cxcywh'
-        )
-        search_bbox_rgb_normalized = normalize_bbox(
-            search_bbox_rgb_cxcywh,
-            image_size=(self.search_size, self.search_size),
-            format='cxcywh'
-        )[0]  # Extract single box from batch
+            # RGB search bbox (in 512x512 search image, RGB coordinate system)
+            search_bbox_rgb_cxcywh = convert_bbox_format(
+                rgb_bbox_transformed.reshape(1, 4),
+                src_format='xywh',
+                dst_format='cxcywh'
+            )
+            search_bbox_rgb_normalized = normalize_bbox(
+                search_bbox_rgb_cxcywh,
+                image_size=(self.search_size, self.search_size),
+                format='cxcywh'
+            )[0]  # Extract single box from batch
+            # CRITICAL FIX (Audit 2025112401 Finding 9):
+            # Keep pixel-space boxes for evaluation (after letterbox transform)
+            search_bbox_rgb_pixels = rgb_bbox_transformed
+        else:
+            search_bbox_rgb_normalized = np.zeros(4, dtype=np.float32)
+            search_bbox_rgb_pixels = np.zeros(4, dtype=np.float32)
 
-        # CRITICAL FIX (Audit 2025112401 Finding 1):
-        # Apply letterbox transform to Sonar search bbox
-        sonar_bbox_transformed = apply_letterbox_to_bbox(sonar_bbox_original, sonar_letterbox_meta)
+        # Sonar search bbox processing (conditional on Sonar modality)
+        if 'sonar' in self.modalities and sonar_bbox_original is not None:
+            # CRITICAL FIX (Audit 2025112401 Finding 1):
+            # Apply letterbox transform to Sonar search bbox
+            sonar_bbox_transformed = apply_letterbox_to_bbox(sonar_bbox_original, sonar_letterbox_meta)
 
-        # Sonar search bbox (in 512x512 search image, Sonar coordinate system)
-        search_bbox_sonar_cxcywh = convert_bbox_format(
-            sonar_bbox_transformed.reshape(1, 4),
-            src_format='xywh',
-            dst_format='cxcywh'
-        )
-        search_bbox_sonar_normalized = normalize_bbox(
-            search_bbox_sonar_cxcywh,
-            image_size=(self.search_size, self.search_size),
-            format='cxcywh'
-        )[0]  # Extract single box from batch
-
-        # CRITICAL FIX (Audit 2025112401 Finding 9):
-        # Keep pixel-space boxes for evaluation (after letterbox transform)
-        search_bbox_rgb_pixels = rgb_bbox_transformed
-        search_bbox_sonar_pixels = sonar_bbox_transformed
+            # Sonar search bbox (in 512x512 search image, Sonar coordinate system)
+            search_bbox_sonar_cxcywh = convert_bbox_format(
+                sonar_bbox_transformed.reshape(1, 4),
+                src_format='xywh',
+                dst_format='cxcywh'
+            )
+            search_bbox_sonar_normalized = normalize_bbox(
+                search_bbox_sonar_cxcywh,
+                image_size=(self.search_size, self.search_size),
+                format='cxcywh'
+            )[0]  # Extract single box from batch
+            # CRITICAL FIX (Audit 2025112401 Finding 9):
+            # Keep pixel-space boxes for evaluation (after letterbox transform)
+            search_bbox_sonar_pixels = sonar_bbox_transformed
+        else:
+            search_bbox_sonar_normalized = np.zeros(4, dtype=np.float32)
+            search_bbox_sonar_pixels = np.zeros(4, dtype=np.float32)
 
         # Extract has_object flags from base_dataset
         has_object_rgb = search_sample.get('has_object_rgb', None)
         has_object_sonar = search_sample.get('has_object_sonar', None)
         has_object = search_sample.get('has_object', None)
 
-        # General validity flag (required by trainer)
-        # Valid if BOTH modalities are valid (conservative approach)
-        is_valid = search_sample['is_rgb_valid'] and search_sample['is_sonar_valid']
+        # CRITICAL FIX (Audit 2025112403 Finding 1): Use base dataset's modality-aware is_valid
+        # base_dataset already computes is_valid correctly based on enabled modalities
+        # (single-modality: rgb_valid OR sonar_valid, dual-modality: rgb_valid AND sonar_valid)
+        # Do not recompute here to avoid breaking single-modality scenarios
+        is_valid = search_sample.get('is_valid', True)
 
         return {
             'rgb_template': rgb_template,

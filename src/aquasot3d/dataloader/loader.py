@@ -188,15 +188,43 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             batched[key] = torch.tensor(validity_list, dtype=torch.float32)
 
     # Collect metadata (keep as lists)
+    # CRITICAL FIX (Audit 2025112403 Finding 2): Align metadata key names
+    # EvaluationSequenceDataset emits 'rgb_search_metadata'/'sonar_search_metadata'
+    # TemplateSearchDataset emits 'rgb_metadata'/'sonar_metadata' (for training)
+    # CRITICAL: Must collect ALL variants to prevent metadata loss
     metadata_keys = [
         'sequence_name', 'frame_id', 'template_frame_id',
         'rgb_boxes', 'sonar_boxes',  # Removed 'is_valid' - now handled above
         'template_rgb_metadata', 'template_sonar_metadata',
+        # Training datasets (TemplateSearchDataset) emit these
+        'rgb_metadata', 'sonar_metadata',
+        # Evaluation datasets emit these
+        'rgb_search_metadata', 'sonar_search_metadata',
         'search_rgb_metadata', 'search_sonar_metadata'
     ]
     for key in metadata_keys:
         if key in batch[0]:
             batched[key] = [sample[key] for sample in batch]
+
+    # CRITICAL FIX (Audit 2025112403 Finding 2): Alias for backward compatibility
+    # Training: rgb_metadata → also expose as rgb_search_metadata and search_rgb_metadata
+    if 'rgb_metadata' in batched:
+        if 'rgb_search_metadata' not in batched:
+            batched['rgb_search_metadata'] = batched['rgb_metadata']
+        if 'search_rgb_metadata' not in batched:
+            batched['search_rgb_metadata'] = batched['rgb_metadata']
+
+    if 'sonar_metadata' in batched:
+        if 'sonar_search_metadata' not in batched:
+            batched['sonar_search_metadata'] = batched['sonar_metadata']
+        if 'search_sonar_metadata' not in batched:
+            batched['search_sonar_metadata'] = batched['sonar_metadata']
+
+    # Evaluation: rgb_search_metadata → also expose as search_rgb_metadata
+    if 'rgb_search_metadata' in batched and 'search_rgb_metadata' not in batched:
+        batched['search_rgb_metadata'] = batched['rgb_search_metadata']
+    if 'sonar_search_metadata' in batched and 'search_sonar_metadata' not in batched:
+        batched['search_sonar_metadata'] = batched['sonar_search_metadata']
 
     return batched
 

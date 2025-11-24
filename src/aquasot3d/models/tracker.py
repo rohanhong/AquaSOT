@@ -331,7 +331,8 @@ class AquaSOT3DTracker(BaseModule):
         sonar_features: torch.Tensor,
         is_rgb_valid: Optional[torch.Tensor] = None,
         is_sonar_valid: Optional[torch.Tensor] = None,
-        return_consistency: bool = True
+        return_consistency: bool = True,
+        metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Fuse RGB and Sonar features using G2-DCMA or ConditionalG2DCMA.
@@ -339,6 +340,9 @@ class AquaSOT3DTracker(BaseModule):
         CRITICAL FIX (Audit 2025112101 Phase 2.2):
         Now accepts is_rgb_valid and is_sonar_valid for conditional fusion.
         When using ConditionalG2DCMA, these flags enable single-modality bypass.
+
+        ENHANCED FIX (Audit 2025112403 Follow-up):
+        Now accepts metadata for per-sample letterbox parameter support.
 
         Args:
             rgb_features: RGB features, shape (B, C_rgb, H, W) or (B, N, C_rgb)
@@ -389,6 +393,45 @@ class AquaSOT3DTracker(BaseModule):
             'sonar_features': sonar_features,
             'return_consistency': return_consistency
         }
+
+        # CRITICAL FIX (Audit 2025112403 Finding 3): Pass letterbox metadata to fusion
+        # ENHANCED FIX (Audit 2025112403 Follow-up): Pass full metadata list for per-sample support
+        # Extract sonar_letterbox_metadata from metadata dict
+        if metadata is not None:
+            # Try all possible metadata keys (training vs evaluation)
+            sonar_metadata_list = (
+                metadata.get('sonar_metadata') or
+                metadata.get('sonar_search_metadata') or
+                metadata.get('search_sonar_metadata')
+            )
+
+            if sonar_metadata_list and len(sonar_metadata_list) > 0:
+                # Check if all samples have consistent letterbox parameters
+                all_consistent = True
+                first_meta = sonar_metadata_list[0]
+
+                if len(sonar_metadata_list) > 1:
+                    for meta in sonar_metadata_list[1:]:
+                        if (meta.get('scale') != first_meta.get('scale') or
+                            meta.get('pad_top') != first_meta.get('pad_top') or
+                            meta.get('original_height') != first_meta.get('original_height')):
+                            all_consistent = False
+                            break
+
+                # ENHANCED FIX: Pass full list for per-sample processing in fusion
+                # Fusion module (GeometryGatedAttention) now handles both single dict and list
+                if all_consistent and first_meta and 'scale' in first_meta:
+                    # Optimization: if all samples consistent, pass single dict (backward compatible)
+                    fusion_kwargs['sonar_letterbox_metadata'] = first_meta
+                elif not all_consistent:
+                    # Pass full list for per-sample processing
+                    fusion_kwargs['sonar_letterbox_metadata'] = sonar_metadata_list
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(
+                        "Batch contains samples with heterogeneous letterbox parameters. "
+                        "Using per-sample metadata for accurate radial binning."
+                    )
 
         # Check if fusion module is ConditionalG2DCMA (has forward signature with is_rgb_valid)
         from aquasot3d.models.fusion import ConditionalG2DCMA
@@ -698,7 +741,8 @@ class AquaSOT3DTracker(BaseModule):
             rgb_features, sonar_features,
             is_rgb_valid=is_rgb_valid,
             is_sonar_valid=is_sonar_valid,
-            return_consistency=return_losses
+            return_consistency=return_losses,
+            metadata=metadata
         )
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
