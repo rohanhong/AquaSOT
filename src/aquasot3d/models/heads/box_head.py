@@ -736,11 +736,50 @@ class BoxHead(BaseHead):
             pred_tensor = pred_bbox_wrapper.tensor()
             target_tensor = target_bbox_wrapper.tensor()
 
-            # L1 loss (using validated tensors in cxcywh format)
-            l1_loss = self.l1_loss_fn(pred_tensor, target_tensor)
+            # CRITICAL FIX (Audit 2025112502 Finding 1): Apply validity masking to L1 and IoU losses
+            # Following mainstream SOT practices (OSTrack, MixFormer, SiamRPN++):
+            # Invalid samples (occlusion, 0000 annotations) should NOT contribute to bbox regression gradient
 
-            # IoU loss (using validated tensors in cxcywh format)
-            iou_loss = self.iou_loss_fn(pred_tensor, target_tensor)
+            # Compute per-sample L1 loss for masking
+            l1_loss_per_sample = F.l1_loss(pred_tensor, target_tensor, reduction='none').mean(dim=-1)  # [B]
+
+            # CRITICAL FIX (Audit 2025112502 Revision): Respect iou_loss_type configuration
+            # Previous implementation always used GIoU, ignoring CIoU configuration
+            # Now correctly uses the configured IoU variant for per-sample loss computation
+            pred_xyxy = box_cxcywh_to_xyxy(pred_tensor)
+            target_xyxy = box_cxcywh_to_xyxy(target_tensor)
+
+            if self.iou_loss_type == 'ciou':
+                # Use Complete IoU
+                ciou_per_sample = compute_ciou(pred_xyxy, target_xyxy)  # [B], range [-1, 1]
+                iou_loss_per_sample = 1.0 - ciou_per_sample  # [B], loss in [0, 2]
+            elif self.iou_loss_type == 'giou':
+                # Use Generalized IoU (default)
+                giou_per_sample = compute_giou(pred_xyxy, target_xyxy)  # [B], range [-1, 1]
+                iou_loss_per_sample = 1.0 - giou_per_sample  # [B], loss in [0, 2]
+            else:
+                # Fallback: Use GIoU if unknown type
+                giou_per_sample = compute_giou(pred_xyxy, target_xyxy)
+                iou_loss_per_sample = 1.0 - giou_per_sample
+
+            # Apply validity masking: invalid samples contribute 0 loss
+            if validity_mask is not None:
+                # Ensure mask is float32
+                if validity_mask.dtype != torch.float32:
+                    validity_mask = validity_mask.float()
+
+                # Masked loss: only valid samples contribute
+                masked_l1 = l1_loss_per_sample * validity_mask  # [B]
+                masked_iou = iou_loss_per_sample * validity_mask  # [B]
+
+                # Average over valid samples only
+                num_valid = validity_mask.sum().clamp(min=1.0)
+                l1_loss = masked_l1.sum() / num_valid
+                iou_loss = masked_iou.sum() / num_valid
+            else:
+                # No masking: use mean reduction as before
+                l1_loss = l1_loss_per_sample.mean()
+                iou_loss = iou_loss_per_sample.mean()
 
             # Classification loss with IoU-based quality
             if target_labels is not None:

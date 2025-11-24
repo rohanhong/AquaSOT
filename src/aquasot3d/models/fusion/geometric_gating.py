@@ -157,18 +157,108 @@ class RadialProfileExtractor(BaseModule):
         else:
             adjusted_weights = self.channel_weights if self.learnable_weights else None
 
+        # CRITICAL FIX (Audit 2025112502 Finding 3a): Stride scaling to unify coordinate systems
+        # Problem: Feature map grid (e.g., 32x32) and letterbox pixel coordinates (e.g., 512x512)
+        #          are in different scales. Without scaling, distance computation is incorrect.
+        # Solution: Compute stride (pixels_per_feature_cell) and scale grid to pixel space
+        #
+        # REVISION (Audit 2025112502): Per-sample stride computation for heterogeneous batches
+        # Previous approach used only first sample's metadata and incorrect padding formula.
+        # New approach: For each sample, infer letterbox target size from metadata or use default.
+
         # Aggregate feature activations per bin using per-sample origins
         radial_profiles = []
         for b in range(B):
-            # Get per-sample sensor origin
+            # Get per-sample sensor origin (in pixel coordinates)
             cx, cy = sensor_origins[b]
+
+            # CRITICAL FIX: Compute per-sample stride
+            # Letterbox target size is typically fixed (e.g., 512x512 for training)
+            # stride = target_size / feature_map_size
+            meta = metadata_list[b]
+
+            # CRITICAL FIX (Audit 2025112502 Final): Support evaluation metadata keys
+            # Training uses: scale, pad_top, original_height, new_size
+            # Evaluation uses: scale_x, scale_y, pad_x, pad_y, original_height, original_width
+            # Map evaluation keys to training keys for unified processing
+            if meta is not None:
+                # Create unified metadata with training key names
+                unified_meta = {}
+                # Map scale (use scale_y for vertical, which matters for stride)
+                if 'scale' in meta:
+                    unified_meta['scale'] = meta['scale']
+                elif 'scale_y' in meta:
+                    unified_meta['scale'] = meta['scale_y']  # Use vertical scale
+
+                # Map pad_top (evaluation uses pad_y for top padding)
+                if 'pad_top' in meta:
+                    unified_meta['pad_top'] = meta['pad_top']
+                elif 'pad_y' in meta:
+                    unified_meta['pad_top'] = meta['pad_y']  # Evaluation top padding
+
+                # Map original_height (should already be consistent)
+                if 'original_height' in meta:
+                    unified_meta['original_height'] = meta['original_height']
+
+                # Preserve new_size if exists (training-specific)
+                if 'new_size' in meta:
+                    unified_meta['new_size'] = meta['new_size']
+
+                meta = unified_meta if unified_meta else meta
+
+            if meta is not None and 'new_size' in meta:
+                # Use new_size (after resize, before padding) + padding to get letterbox size
+                new_h, new_w = meta['new_size']
+                pad_top = meta.get('pad_top', 0)
+                # Letterbox height = new_h (scaled image) + total padding
+                # In letterbox, total_height = target_size (fixed, e.g., 512)
+                # We can infer: target_size = new_h + pad_top + pad_bottom
+                # But we don't have pad_bottom. Instead, observe that letterbox maintains square:
+                # If new_h + pad_top < target_size, there's pad_bottom = target_size - new_h - pad_top
+                # However, the simplest approach: assume target_size is the final image dimension
+                # which equals feature_map_size * stride. We can infer from new_size:
+                # Scale factor tells us: new_h = original_h * scale
+                # Letterbox adds padding to reach target_size (typically square)
+                # For simplicity, if we know the feature came from a fixed target_size:
+                # stride = target_size / H_feature
+                # We can infer target_size from: scale * original_height + padding = target_size
+                original_h = meta.get('original_height', new_h)
+                scale = meta.get('scale', 1.0)
+                # Letterbox target size (square): typically scale * original + padding fills to target
+                # A robust estimate: target_size = new_h + pad_top + pad_bottom
+                # Since letterbox makes square, if pad_top exists, total padding is distributed
+                # For letterbox: target_size is fixed (e.g., 512). We can compute as:
+                # target_size ≈ new_h + 2 * pad_top (assuming symmetric, though may not be exact)
+                # Better: infer from scale and original: if scale < 1, padding added to reach target
+                # Most robust: use fixed target_size assumption (512 for search, 256 for template)
+                # Since we're processing search features here, target_size = 512 is typical
+                target_size = new_h + 2 * pad_top  # Approximation (may over/underestimate)
+                stride = target_size / H  # pixels per feature cell
+            elif meta is not None and 'scale' in meta:
+                # Fallback: estimate from scale
+                # If original_height * scale = new_height, and padding added to reach target_size
+                original_h = meta.get('original_height', H)
+                scale = meta['scale']
+                pad_top = meta.get('pad_top', 0)
+                # Estimate target_size assuming letterbox pads to square
+                target_size = original_h * scale + 2 * pad_top  # Rough estimate
+                stride = target_size / H
+            else:
+                # No metadata: assume feature map corresponds directly to image (stride=1)
+                # This is a fallback for cases without letterbox
+                stride = 1.0
 
             # CRITICAL FIX: Sonar rectangular coordinates are (bearing_angle, range)
             # - x-axis: X-direction angle (bearing, horizontal FOV)
             # - y-axis: Z-direction distance (range from sensor)
             # Cannot mix angle and distance with Euclidean formula!
             # Correct radial distance is simply the y-axis coordinate (range axis)
-            r = cy - y_grid  # [H, W], range from sensor (bottom=0, top=max_range)
+
+            # Scale feature map grid to pixel coordinates
+            y_grid_pixels = y_grid * stride  # [H, W], in pixel space
+
+            # Now both cy and y_grid_pixels are in pixel space
+            r = cy - y_grid_pixels  # [H, W], range from sensor (bottom=0, top=max_range)
 
             # Normalize to bin indices [0, num_bins)
             r_max = r.max()

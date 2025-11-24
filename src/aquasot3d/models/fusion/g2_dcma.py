@@ -162,13 +162,25 @@ class G2DCMA(BaseModule):
         dropout: float = 0.1,
         consistency_config: Optional[Dict] = None,
         confidence_hidden_dim: int = 128,
-        use_confidence_modulation: bool = True
+        use_confidence_modulation: bool = True,
+        use_geometry_gating: bool = True,
+        use_deformable: bool = True
     ):
+        """
+        CRITICAL FIX (Audit 2025112502 Finding 5): Added ablation switches
+        - use_geometry_gating: Enable/disable geometric gating module
+        - use_deformable: Enable/disable deformable attention
+        """
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.use_multi_scale = use_multi_scale
         self.use_confidence_modulation = use_confidence_modulation
+        # CRITICAL FIX (Audit 2025112502 Finding 5): Store ablation flags
+        self.use_geometry_gating = use_geometry_gating
+        self.use_deformable = use_deformable
+        # CRITICAL FIX (Audit 2025112502 Final): Store dropout for sonar_fusion_layer
+        self.dropout = dropout
 
         self.rgb_confidence_estimator = ModalityConfidenceEstimator(
             in_channels=embed_dim,
@@ -293,38 +305,67 @@ class G2DCMA(BaseModule):
         sonar_confidence = self.sonar_confidence_estimator(sonar_features)
         combined_confidence = (rgb_confidence * sonar_confidence).sqrt()
 
-        # CRITICAL FIX (Audit 2025112403 Finding 3): Pass letterbox metadata for radial binning
-        geometry_output = self.geometry_gating(
-            rgb_features=rgb_features,
-            sonar_features=sonar_features,
-            rgb_pyramid=rgb_pyramid,
-            sonar_letterbox_metadata=sonar_letterbox_metadata
-        )
-        geometry_gated = geometry_output['fused_features']
+        # CRITICAL FIX (Audit 2025112502 Revision): Make ablation switches actually work
+        # use_geometry_gating and use_deformable must control execution, not just be stored
+        if self.use_geometry_gating:
+            # CRITICAL FIX (Audit 2025112403 Finding 3): Pass letterbox metadata for radial binning
+            geometry_output = self.geometry_gating(
+                rgb_features=rgb_features,
+                sonar_features=sonar_features,
+                rgb_pyramid=rgb_pyramid,
+                sonar_letterbox_metadata=sonar_letterbox_metadata
+            )
+            geometry_gated = geometry_output['fused_features']
 
-        if self.use_confidence_modulation:
-            conf_modulation = combined_confidence.view(B, 1, 1, 1)
-            geometry_gated = geometry_gated * conf_modulation
+            if self.use_confidence_modulation:
+                conf_modulation = combined_confidence.view(B, 1, 1, 1)
+                geometry_gated = geometry_gated * conf_modulation
+        else:
+            # Ablation: Skip geometry gating, use simple concatenation
+            # Resize sonar to match RGB if needed
+            if sonar_features.shape[2:] != rgb_features.shape[2:]:
+                sonar_resized = F.interpolate(
+                    sonar_features,
+                    size=rgb_features.shape[2:],
+                    mode='bilinear',
+                    align_corners=False
+                )
+            else:
+                sonar_resized = sonar_features
+            # Simple concatenation as baseline (no geometric gating)
+            geometry_gated = torch.cat([rgb_features, sonar_resized], dim=1)
+            # Project back to embed_dim
+            if not hasattr(self, 'geometry_bypass_proj'):
+                self.geometry_bypass_proj = nn.Conv2d(
+                    geometry_gated.shape[1], self.embed_dim, kernel_size=1
+                ).to(geometry_gated.device)
+            geometry_gated = self.geometry_bypass_proj(geometry_gated)
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Step 2: Bidirectional Deformable Attention for Dual-View Fusion
         # Learn implicit RGB-Sonar correspondence without calibration
 
-        # Direction 1: RGB→Sonar (RGB queries attend to Sonar)
-        rgb_to_sonar_output = self.deformable_attention(
-            query_features=rgb_features,  # RGB queries
-            key_features=sonar_features,  # Sonar keys (learn RGB→Sonar mapping)
-            value_features=geometry_gated  # Geometry-gated values
-        )
-        rgb_attended_sonar = rgb_to_sonar_output['fused_features']  # [B, C, H_rgb, W_rgb]
+        if self.use_deformable:
+            # Direction 1: RGB→Sonar (RGB queries attend to Sonar)
+            rgb_to_sonar_output = self.deformable_attention(
+                query_features=rgb_features,  # RGB queries
+                key_features=sonar_features,  # Sonar keys (learn RGB→Sonar mapping)
+                value_features=geometry_gated  # Geometry-gated values
+            )
+            rgb_attended_sonar = rgb_to_sonar_output['fused_features']  # [B, C, H_rgb, W_rgb]
 
-        # Direction 2: Sonar→RGB (Sonar queries attend to RGB)
-        sonar_to_rgb_output = self.deformable_attention(
-            query_features=sonar_features,  # Sonar queries
-            key_features=rgb_features,      # RGB keys (learn Sonar→RGB mapping)
-            value_features=rgb_features     # RGB values
-        )
-        sonar_attended_rgb = sonar_to_rgb_output['fused_features']  # [B, C, H_sonar, W_sonar]
+            # Direction 2: Sonar→RGB (Sonar queries attend to RGB)
+            sonar_to_rgb_output = self.deformable_attention(
+                query_features=sonar_features,  # Sonar queries
+                key_features=rgb_features,      # RGB keys (learn Sonar→RGB mapping)
+                value_features=rgb_features     # RGB values
+            )
+            sonar_attended_rgb = sonar_to_rgb_output['fused_features']  # [B, C, H_sonar, W_sonar]
+        else:
+            # Ablation: Skip deformable attention, use direct features
+            rgb_attended_sonar = geometry_gated  # Use geometry-gated features directly
+            # For sonar view, use raw sonar features
+            sonar_attended_rgb = sonar_features
 
         # Resize sonar_attended_rgb to match RGB spatial dimensions
         if sonar_attended_rgb.shape[2:] != rgb_features.shape[2:]:
@@ -639,8 +680,16 @@ def build_g2_dcma(config: dict) -> G2DCMA:
     ARCHITECTURE UPDATE (Audit 2025112301):
     Now supports confidence estimation parameters.
 
+    CRITICAL FIX (Audit 2025112502 Finding 5): Added ablation switches
+    - use_geometry_gating: Enable/disable geometric gating module
+    - use_deformable: Enable/disable deformable attention
+    These switches enable paper ablation experiments (Table 3).
+
     Args:
-        config: Configuration dictionary
+        config: Configuration dictionary with optional keys:
+            - use_geometry_gating (bool): Enable geometric gating (default: True)
+            - use_deformable (bool): Use deformable attention (default: True)
+            - use_confidence_modulation (bool): Enable confidence modulation (default: True)
 
     Returns:
         G2DCMA instance with confidence estimation
@@ -658,7 +707,10 @@ def build_g2_dcma(config: dict) -> G2DCMA:
         dropout=config.get('dropout', 0.1),
         consistency_config=consistency_config if consistency_config else None,
         confidence_hidden_dim=config.get('confidence_hidden_dim', 128),
-        use_confidence_modulation=config.get('use_confidence_modulation', True)
+        use_confidence_modulation=config.get('use_confidence_modulation', True),
+        # CRITICAL FIX (Audit 2025112502 Finding 5): Ablation switches
+        use_geometry_gating=config.get('use_geometry_gating', True),
+        use_deformable=config.get('use_deformable', True)
     )
 
 
@@ -847,11 +899,21 @@ class ConditionalG2DCMA(BaseModule):
 
         assert B == B_s, f"Batch size mismatch: RGB={B}, Sonar={B_s}"
 
-        # If no validity information provided, assume all samples are dual-modality
+        # CRITICAL FIX (Audit 2025112502 Revision): Convert float32 validity masks to bool
+        # Trainer/collate_fn produces float32 tensors (0.0/1.0), but bitwise ops require bool
         if is_rgb_valid is None:
             is_rgb_valid = torch.ones(B, dtype=torch.bool, device=rgb_features.device)
+        else:
+            # Convert to bool if float (from Trainer's float32 validity masks)
+            if is_rgb_valid.dtype != torch.bool:
+                is_rgb_valid = is_rgb_valid.bool()
+
         if is_sonar_valid is None:
             is_sonar_valid = torch.ones(B, dtype=torch.bool, device=sonar_features.device)
+        else:
+            # Convert to bool if float (from Trainer's float32 validity masks)
+            if is_sonar_valid.dtype != torch.bool:
+                is_sonar_valid = is_sonar_valid.bool()
 
         # Detect modality availability for each sample
         zero_modality_mask = (~is_rgb_valid) & (~is_sonar_valid)  # [B]

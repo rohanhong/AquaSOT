@@ -172,16 +172,31 @@ class OnlineTracker:
         if 'sonar_quality' in outputs:
             quality_score_sonar = outputs['sonar_quality'][0].item()
 
+        # CRITICAL FIX (Audit 2025112502 Finding 4): Extract confidence (objectness) scores
+        # Confidence represents has_object probability, distinct from quality (IoU-based)
+        # Used for robust template update decisions in occluded/missing target scenarios
+        confidence_rgb = None
+        confidence_sonar = None
+
+        if 'rgb_confidence' in outputs:
+            confidence_rgb = outputs['rgb_confidence'][0].item()
+
+        if 'sonar_confidence' in outputs:
+            confidence_sonar = outputs['sonar_confidence'][0].item()
+
         # Update template based on strategy
         # CRITICAL FIX: Use modality-specific bboxes for independent template updates
         # This ensures MixFormer-style independent RGB/Sonar template updating works correctly
+        # ENHANCED (Audit 2025112502 Finding 4): Pass confidence scores for robust update decisions
         self._update_template(
             rgb_frame=rgb_frame,
             sonar_frame=sonar_frame,
             bbox_rgb=bbox_rgb,
             bbox_sonar=bbox_sonar,
             quality_score_rgb=quality_score_rgb,
-            quality_score_sonar=quality_score_sonar
+            quality_score_sonar=quality_score_sonar,
+            confidence_rgb=confidence_rgb,
+            confidence_sonar=confidence_sonar
         )
 
         return bbox_rgb, bbox_sonar, bbox_fusion
@@ -193,10 +208,14 @@ class OnlineTracker:
         bbox_rgb: np.ndarray,
         bbox_sonar: np.ndarray,
         quality_score_rgb: Optional[float],
-        quality_score_sonar: Optional[float]
+        quality_score_sonar: Optional[float],
+        confidence_rgb: Optional[float] = None,
+        confidence_sonar: Optional[float] = None
     ):
         """
         Update template according to update strategy.
+
+        ENHANCED (Audit 2025112502 Finding 4): Added confidence parameters for robust updates.
 
         For 'mixformer' strategy, RGB and Sonar templates are updated independently
         based on their respective quality scores, allowing robust tracking even when
@@ -242,14 +261,28 @@ class OnlineTracker:
                 )
 
         elif self.update_strategy == 'mixformer':
+            # CRITICAL FIX (Audit 2025112502 Finding 4): Enhanced template update with confidence
+            # Confidence (objectness) prevents updates on false positives or missing targets
+            # Quality (IoU) ensures accurate localization before updating
+            # Both must be high for safe template update
             update_rgb = False
             update_sonar = False
 
+            # RGB template update: require BOTH high quality AND high confidence
             if quality_score_rgb is not None and quality_score_rgb > self.quality_threshold_rgb:
-                update_rgb = True
+                if confidence_rgb is not None and confidence_rgb > 0.7:
+                    update_rgb = True
+                elif confidence_rgb is None:
+                    # Fallback: if confidence not available, use quality alone (backward compatibility)
+                    update_rgb = True
 
+            # Sonar template update: require BOTH high quality AND high confidence
             if quality_score_sonar is not None and quality_score_sonar > self.quality_threshold_sonar:
-                update_sonar = True
+                if confidence_sonar is not None and confidence_sonar > 0.7:
+                    update_sonar = True
+                elif confidence_sonar is None:
+                    # Fallback: if confidence not available, use quality alone (backward compatibility)
+                    update_sonar = True
 
             if update_rgb or update_sonar:
                 new_rgb_template = self.template_buffer.rgb_template

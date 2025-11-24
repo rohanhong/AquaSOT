@@ -430,10 +430,16 @@ class Trainer:
 
             # CRITICAL FIX (Audit 2025111408 Finding 3):
             # Add pixel coordinates for quality estimators
+            # CRITICAL FIX (Audit 2025112502 Finding 6): Support both old and new key names
             if 'rgb_boxes_pixels' in batch:
                 gt_boxes['rgb_pixels'] = batch['rgb_boxes_pixels']
+            elif 'search_bbox_rgb_pixels' in batch:
+                gt_boxes['rgb_pixels'] = batch['search_bbox_rgb_pixels']
+
             if 'sonar_boxes_pixels' in batch:
                 gt_boxes['sonar_pixels'] = batch['sonar_boxes_pixels']
+            elif 'search_bbox_sonar_pixels' in batch:
+                gt_boxes['sonar_pixels'] = batch['search_bbox_sonar_pixels']
 
             # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
             # Fusion GT generation REMOVED. Fusion box head no longer exists.
@@ -745,10 +751,16 @@ class Trainer:
 
                 # CRITICAL FIX (Audit 2025111408 Finding 3):
                 # Add pixel coordinates for quality estimators
+                # CRITICAL FIX (Audit 2025112502 Finding 6): Support both old and new key names
                 if 'rgb_boxes_pixels' in batch:
                     gt_boxes['rgb_pixels'] = batch['rgb_boxes_pixels']
+                elif 'search_bbox_rgb_pixels' in batch:
+                    gt_boxes['rgb_pixels'] = batch['search_bbox_rgb_pixels']
+
                 if 'sonar_boxes_pixels' in batch:
                     gt_boxes['sonar_pixels'] = batch['sonar_boxes_pixels']
+                elif 'search_bbox_sonar_pixels' in batch:
+                    gt_boxes['sonar_pixels'] = batch['search_bbox_sonar_pixels']
 
                 # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
                 # Fusion GT generation REMOVED. Fusion box head no longer exists.

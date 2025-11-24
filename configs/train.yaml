@@ -107,7 +107,11 @@ model:
       output_dim: 768
 
   fusion:
-    type: g2_dcma
+    # CRITICAL FIX (Analysis 2025112502): Switch to conditional_g2_dcma
+    # Dataset has 38.2% RGB-occluded frames (Sonar-only), requires adaptive routing
+    type: conditional_g2_dcma
+    rgb_channels: 768  # RGB backbone output_dim
+    sonar_channels: 768  # Sonar backbone output_dim
     embed_dim: 768
     num_heads: 8
     num_layers: 2
