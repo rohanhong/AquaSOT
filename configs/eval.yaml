@@ -28,8 +28,8 @@ data:
   # Removed: search_sequence_length, use_sequence_grouping, frame_size, sequence_length, frame_stride
   # Template and search sizes inherited from default.yaml
 
-  num_workers: 8  # Laptop: 8 (Workstation: 12)
-  prefetch_factor: 2  # Eval is sequential, less I/O-bound
+  num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
+  prefetch_factor: 4  # Increased prefetch to reduce GPU idle time (even for sequential eval)
 
 
 # ------------------------------------------------------------------------------

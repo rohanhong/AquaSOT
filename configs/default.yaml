@@ -19,10 +19,11 @@ system:
   dist_url: env://
 
   # Mixed precision training
-  # FIXED (Audit 2025112103): BCE assertion failures resolved by adding autocast protection
-  # Re-enabled for 30% faster training with bfloat16 (better numerical stability than float16)
-  use_amp: true
-  amp_dtype: bfloat16  # bfloat16 provides better numerical stability than float16
+  # CRITICAL FIX (Audit 2025112401): Disable AMP for numerical stability
+  # Root cause: G2-DCMA fusion and ViT backbones produce NaN under FP16 AMP
+  # All mainstream fixes (grad clipping, loss weights, GIoU stabilization) failed
+  use_amp: false
+  amp_dtype: bfloat16  # Disabled - use FP32 for numerical stability
 
   # Deterministic mode (slower but reproducible)
   deterministic: false
@@ -46,9 +47,9 @@ data:
   val_split: val
   test_split: test
 
-  num_workers: 8  # Laptop: 8 (Workstation: 16)
+  num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
   pin_memory: true
-  prefetch_factor: 3  # Laptop: 3 (Workstation: 4)
+  prefetch_factor: 4  # Increased prefetch to reduce GPU idle time
   persistent_workers: true
 
   # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
@@ -169,9 +170,9 @@ training:
 
   num_epochs: 60
 
-  batch_size: 2  # Laptop: 2 (Workstation: 8)
-  val_batch_size: 8  # Laptop: 8 (Workstation: 32), 4x training batch (validation has no gradients/optimizer states)
-  gradient_accumulation_steps: 16  # Laptop: 16 (Workstation: 4, effective batch = 32)
+  batch_size: 2  # Optimal for RTX3070 Laptop 8GB (86.8% VRAM @ batch=2)
+  val_batch_size: 8  # 4x training batch (validation has no gradients/optimizer states)
+  gradient_accumulation_steps: 4  # Optimized for frequent updates, effective batch = 2 * 4 = 8
 
   # Optimizer
   optimizer:
@@ -207,7 +208,10 @@ training:
   # Gradient clipping
   grad_clip:
     enabled: true
-    max_norm: 1.0  # Same for both Laptop and Workstation (effective_batch=32 is identical)
+    # CRITICAL FIX (Audit 2025112401): Reduced from 1.0 to 0.1 following SOTFormer best practice
+    # SOTFormer paper: "gradients are clipped (max-norm=0.1) to prevent divergence"
+    # This much tighter clipping is essential for training stability
+    max_norm: 0.1  # Following SOTFormer for transformer tracking stability
     norm_type: 2
 
   # Loss weights
@@ -217,6 +221,7 @@ training:
   # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion): Removed fusion losses
   loss_weights:
     # Box regression losses (dual-view fused features)
+    # Following mainstream trackers (MixFormer, OSTrack): L1=2.0, GIoU=5.0
     rgb_box: 1.0
     rgb_conf: 1.0  # Objectness confidence (has_object prediction)
     sonar_box: 1.0
