@@ -107,8 +107,7 @@ class TrackingAugmentation(BaseAugmentation):
         is_train: bool = True,
         rgb_config: Optional[Dict] = None,
         sonar_config: Optional[Dict] = None,
-        seed: Optional[int] = None,
-        **kwargs  # Accept but ignore legacy logpolar params for backward compatibility
+        seed: Optional[int] = None
     ):
         super().__init__(is_train, seed)
 
@@ -383,8 +382,7 @@ class TemplateSearchAugmentation(BaseAugmentation):
         template_config: Optional[Dict] = None,
         search_config: Optional[Dict] = None,
         enable_flip: bool = True,
-        seed: Optional[int] = None,
-        **kwargs  # Accept but ignore legacy logpolar params
+        seed: Optional[int] = None
     ):
         super().__init__(is_train, seed)
 

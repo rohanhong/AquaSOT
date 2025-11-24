@@ -195,6 +195,32 @@ class EvaluationSequenceDataset(Dataset):
             is_sonar=True
         )
 
+        # CRITICAL FIX (Audit 2025112401 Finding 9):
+        # Apply letterbox transform to GT bboxes to get pixel-space coordinates
+        # in letterboxed image space (consistent with training)
+        def apply_letterbox_to_bbox(bbox_xywh, metadata):
+            """Apply letterbox transform to bbox coordinates."""
+            x, y, w, h = bbox_xywh
+            scale = metadata['scale']
+            pad_left = metadata['pad_left']
+            pad_top = metadata['pad_top']
+
+            x_new = x * scale + pad_left
+            y_new = y * scale + pad_top
+            w_new = w * scale
+            h_new = h * scale
+
+            return np.array([x_new, y_new, w_new, h_new], dtype=np.float32)
+
+        search_bbox_rgb_pixels = apply_letterbox_to_bbox(
+            search_data['rgb_bbox'],
+            rgb_search_metadata
+        )
+        search_bbox_sonar_pixels = apply_letterbox_to_bbox(
+            search_data['sonar_bbox'],
+            sonar_search_metadata
+        )
+
         # Build sample dictionary with complete metadata
         sample = {
             # Sequence metadata (CRITICAL for evaluation)
@@ -213,9 +239,16 @@ class EvaluationSequenceDataset(Dataset):
             'search_bbox_rgb': search_data['rgb_bbox'],
             'search_bbox_sonar': search_data['sonar_bbox'],
 
+            # CRITICAL FIX (Audit 2025112401 Finding 9):
+            # Pixel-space boxes in letterboxed coordinates for evaluation
+            'search_bbox_rgb_pixels': search_bbox_rgb_pixels,
+            'search_bbox_sonar_pixels': search_bbox_sonar_pixels,
+
             # Aliases for trainer/evaluator compatibility
             'rgb_boxes': search_data['rgb_bbox'],
             'sonar_boxes': search_data['sonar_bbox'],
+            'rgb_boxes_pixels': search_bbox_rgb_pixels,
+            'sonar_boxes_pixels': search_bbox_sonar_pixels,
 
             # Validity flags
             'is_valid': search_data['is_valid'],
@@ -299,37 +332,89 @@ class EvaluationSequenceDataset(Dataset):
         # Store original dimensions
         original_height, original_width = img.shape[:2]
 
-        # Unified resize strategy for both RGB and Sonar
-        # Note: Sonar now uses rectangular coordinates (682×376), no special handling needed
+        # CRITICAL FIX (Audit 2025112401 Finding 5):
+        # Use letterbox resize (same as training) instead of plain resize
+        # to preserve aspect ratio and maintain consistency
         import cv2
-        img_resized = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
 
-        # Compute per-axis scaling factors
-        scale_x = target_size / original_width
-        scale_y = target_size / original_height
+        # Letterbox preprocessing (from template_search_dataset.py)
+        h, w = img.shape[:2]
+        is_single_channel = img.ndim == 3 and img.shape[2] == 1
+
+        # Compute scale factor to fit within target_size
+        scale = min(target_size / w, target_size / h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+
+        # Resize with preserved aspect ratio
+        if is_single_channel:
+            img_to_resize = img.squeeze(-1)
+        else:
+            img_to_resize = img
+
+        img_resized = cv2.resize(img_to_resize, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # Compute padding
+        pad_w = target_size - new_w
+        pad_h = target_size - new_h
+        top = pad_h // 2
+        bottom = pad_h - top
+        left = pad_w // 2
+        right = pad_w - left
+
+        # Pad with gray (114 for RGB, 127 for grayscale)
+        if img_resized.ndim == 2:
+            pad_value = 127
+        else:
+            pad_value = (114, 114, 114)
+
+        img_letterboxed = cv2.copyMakeBorder(
+            img_resized,
+            top, bottom, left, right,
+            cv2.BORDER_CONSTANT,
+            value=pad_value
+        )
+
+        # Store metadata (consistent with training)
         metadata = {
-            'original_height': original_height,
-            'original_width': original_width,
-            'scale_x': scale_x,
-            'scale_y': scale_y,
-            'pad_x': 0,
-            'pad_y': 0,
+            'scale': scale,
+            'pad_left': left,
+            'pad_top': top,
+            'original_size': (h, w),
+            'new_size': (new_h, new_w),
+            # Legacy keys for backward compatibility
+            'original_height': h,
+            'original_width': w,
+            'scale_x': scale,
+            'scale_y': scale,
+            'pad_x': left,
+            'pad_y': top,
         }
 
         # Convert to tensor and normalize
-        # Handle different channel formats
-        if img_resized.ndim == 2:
+        if img_letterboxed.ndim == 2:
             # Grayscale (H, W) -> (1, H, W)
-            img_tensor = torch.from_numpy(img_resized).unsqueeze(0).float()
-        elif img_resized.ndim == 3:
+            img_tensor = torch.from_numpy(img_letterboxed).unsqueeze(0).float()
+        elif img_letterboxed.ndim == 3:
             # Color (H, W, C) -> (C, H, W)
-            img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float()
+            img_tensor = torch.from_numpy(img_letterboxed).permute(2, 0, 1).float()
         else:
-            raise ValueError(f"Unexpected image shape: {img_resized.shape}")
+            raise ValueError(f"Unexpected image shape: {img_letterboxed.shape}")
 
-        # Normalize to [0, 1] if in [0, 255] range
-        if img_tensor.max() > 1.0:
-            img_tensor = img_tensor / 255.0
+        # CRITICAL FIX (Audit 2025112401 Finding 4):
+        # Apply ImageNet normalization (same as training)
+        img_tensor = img_tensor / 255.0
+
+        if is_sonar:
+            # Sonar normalization (single channel)
+            sonar_mean = torch.tensor([0.5]).view(1, 1, 1)
+            sonar_std = torch.tensor([0.5]).view(1, 1, 1)
+            img_tensor = (img_tensor - sonar_mean) / sonar_std
+        else:
+            # RGB ImageNet normalization
+            rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            img_tensor = (img_tensor - rgb_mean) / rgb_std
 
         return img_tensor, metadata
 

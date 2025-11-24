@@ -306,9 +306,33 @@ class MultiModalBackbone(nn.Module):
     ):
         super().__init__()
 
-        # Validate that both configs are provided
+        # CRITICAL FIX (Audit 2025112401 Finding 7):
+        # Explicitly validate that both modalities are configured
+        # Single-modality training is NOT supported in this architecture
         if not rgb_config or not sonar_config:
-            raise ValueError("Both RGB and Sonar configurations are required for MultiModalBackbone")
+            raise ValueError(
+                "Both RGB and Sonar configurations are required for MultiModalBackbone. "
+                "Single-modality training is not supported. "
+                "Please provide valid configs for both modalities."
+            )
+
+        # Check for null/disabled types
+        rgb_type = rgb_config.get('type', None)
+        sonar_type = sonar_config.get('type', None)
+
+        if rgb_type is None or rgb_type == 'null':
+            raise ValueError(
+                "RGB backbone type cannot be 'null' or None. "
+                "AquaSOT-3D requires both RGB and Sonar modalities for training. "
+                "If you want single-modality ablation, please use separate single-modal configs."
+            )
+
+        if sonar_type is None or sonar_type == 'null':
+            raise ValueError(
+                "Sonar backbone type cannot be 'null' or None. "
+                "AquaSOT-3D requires both RGB and Sonar modalities for training. "
+                "If you want single-modality ablation, please use separate single-modal configs."
+            )
 
         # Create backbones
         self.rgb_backbone = BackboneFactory.create_from_config(rgb_config)

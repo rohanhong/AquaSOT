@@ -7,7 +7,6 @@ center estimation (X, Y, Z) without requiring extrinsic calibration.
 
 Key Features:
 - Geometry-Gated Deformable Cross-Modal Attention (G²-DCMA)
-- Differentiable Log-Polar preprocessing for sonar data
 - Template-search paradigm for single-object tracking
 - Weak 3D center estimation with cyclic consistency
 - Calibration-free multi-modal fusion

@@ -482,6 +482,11 @@ class Trainer:
             has_object_sonar = batch.get('has_object_sonar', None)
             has_object = batch.get('has_object', None)
 
+            # CRITICAL FIX (Audit 2025112401 Finding 2):
+            # Extract validity masks to prevent occluded frames from contributing to loss
+            is_valid_rgb = batch.get('is_valid_rgb', None)
+            is_valid_sonar = batch.get('is_valid_sonar', None)
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():
@@ -493,6 +498,8 @@ class Trainer:
                         gt_boxes=gt_boxes,
                         return_losses=True,
                         metadata=metadata,
+                        is_rgb_valid=is_valid_rgb,
+                        is_sonar_valid=is_valid_sonar,
                         has_object_rgb=has_object_rgb,
                         has_object_sonar=has_object_sonar,
                         has_object=has_object
@@ -512,6 +519,8 @@ class Trainer:
                     gt_boxes=gt_boxes,
                     return_losses=True,
                     metadata=metadata,
+                    is_rgb_valid=is_valid_rgb,
+                    is_sonar_valid=is_valid_sonar,
                     has_object_rgb=has_object_rgb,
                     has_object_sonar=has_object_sonar,
                     has_object=has_object
@@ -769,6 +778,11 @@ class Trainer:
                 has_object_sonar = batch.get('has_object_sonar', None)
                 has_object = batch.get('has_object', None)
 
+                # CRITICAL FIX (Audit 2025112401 Finding 2):
+                # Extract validity masks to prevent occluded frames from contributing to loss
+                is_valid_rgb = batch.get('is_valid_rgb', None)
+                is_valid_sonar = batch.get('is_valid_sonar', None)
+
                 # Forward pass
                 if self.use_amp:
                     with autocast():
@@ -780,6 +794,8 @@ class Trainer:
                             gt_boxes=gt_boxes if gt_boxes else None,
                             return_losses=True if gt_boxes else False,
                             metadata=metadata,
+                            is_rgb_valid=is_valid_rgb,
+                            is_sonar_valid=is_valid_sonar,
                             has_object_rgb=has_object_rgb,
                             has_object_sonar=has_object_sonar,
                             has_object=has_object
@@ -799,6 +815,8 @@ class Trainer:
                         gt_boxes=gt_boxes if gt_boxes else None,
                         return_losses=True if gt_boxes else False,
                         metadata=metadata,
+                        is_rgb_valid=is_valid_rgb,
+                        is_sonar_valid=is_valid_sonar,
                         has_object_rgb=has_object_rgb,
                         has_object_sonar=has_object_sonar,
                         has_object=has_object

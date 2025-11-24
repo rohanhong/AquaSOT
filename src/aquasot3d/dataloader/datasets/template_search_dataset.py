@@ -86,16 +86,11 @@ class TemplateSearchDataset(Dataset):
         self.quality_threshold_sonar = quality_threshold_sonar
         self.context_factor = context_factor
 
-        # Augmentation Order Optimization (Audit 2025-11-20):
-        # Augmentation should be applied in base_dataset (before letterbox)
-        if augmentation is not None:
-            import warnings
-            warnings.warn(
-                "Passing augmentation to TemplateSearchDataset is deprecated. "
-                "Please pass augmentation to base_dataset instead for better quality.",
-                DeprecationWarning
-            )
-        self.augmentation = None  # Not used
+        # CRITICAL FIX (Audit 2025112401 Finding 3):
+        # Enable augmentation pipeline to improve robustness
+        # Apply augmentation in __getitem__ before letterbox transform
+        # to ensure bbox-aware transforms work with original image coordinates
+        self.augmentation = augmentation
 
         # Multi-sequence support (PRESERVED from FrameSequenceDataset)
         self.is_multi_sequence = isinstance(
@@ -169,6 +164,15 @@ class TemplateSearchDataset(Dataset):
         template_idx = self._sample_template_index(index)
         template_sample = self.base_dataset[template_idx]
 
+        # CRITICAL FIX (Audit 2025112401 Finding 3):
+        # Apply augmentation BEFORE letterbox to ensure bbox-aware transforms
+        # work with original image coordinates
+        if self.augmentation is not None:
+            # Apply to search sample (current frame)
+            search_sample = self.augmentation(search_sample)
+            # Note: Template is typically not augmented to preserve reference appearance
+            # If needed, can add template augmentation with different policy
+
         # 3. Process template (crop around target bbox)
         rgb_template = self._crop_template(
             template_sample['rgb_img'],
@@ -184,29 +188,80 @@ class TemplateSearchDataset(Dataset):
         # 4. Process search (letterbox resize to search_size)
         # CRITICAL FIX (Template-Search Migration 2025112104):
         # base_dataset returns raw images, TemplateSearchDataset must resize them
-        rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array
-        sonar_search_raw = search_sample['sonar_img']  # Raw [H, W] numpy array
+        rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array (after augmentation)
+        sonar_search_raw = search_sample['sonar_img']  # Raw [H, W] numpy array (after augmentation)
+
+        # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
+        # Note: bbox may have been transformed by augmentation (e.g., horizontal flip)
+        rgb_bbox_original = search_sample['rgb_bbox'].copy()  # XYWH format
+        sonar_bbox_original = search_sample['sonar_bbox'].copy()  # XYWH format
 
         # Apply letterbox resize to search size (preserve aspect ratio)
-        rgb_search = self._letterbox(rgb_search_raw, self.search_size)
-        sonar_search = self._letterbox(sonar_search_raw, self.search_size)
+        # CRITICAL FIX (Audit 2025112401 Finding 1): Capture metadata for bbox transform
+        rgb_search, rgb_letterbox_meta = self._letterbox(rgb_search_raw, self.search_size)
+        sonar_search, sonar_letterbox_meta = self._letterbox(sonar_search_raw, self.search_size)
 
-        # Convert to tensors and normalize
+        # Convert to tensors and apply normalization
+        # CRITICAL FIX (Audit 2025112401 Finding 4):
+        # Apply ImageNet normalization for pretrained ViT compatibility
         if isinstance(rgb_search, np.ndarray):
             rgb_search = torch.from_numpy(rgb_search).float()
             if rgb_search.ndim == 3 and rgb_search.shape[2] == 3:  # [H, W, 3]
                 rgb_search = rgb_search.permute(2, 0, 1)  # → [3, H, W]
+            # Convert to [0, 1] then apply ImageNet normalization
             rgb_search = rgb_search / 255.0
+            # ImageNet mean and std (from torchvision/timm standard)
+            rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            rgb_search = (rgb_search - rgb_mean) / rgb_std
 
         if isinstance(sonar_search, np.ndarray):
             sonar_search = torch.from_numpy(sonar_search).float()
             if sonar_search.ndim == 2:  # [H, W]
                 sonar_search = sonar_search.unsqueeze(0)  # → [1, H, W]
+            # Convert to [0, 1] then apply sonar normalization
             sonar_search = sonar_search / 255.0
+            # Sonar normalization (single channel)
+            sonar_mean = torch.tensor([0.5]).view(1, 1, 1)
+            sonar_std = torch.tensor([0.5]).view(1, 1, 1)
+            sonar_search = (sonar_search - sonar_mean) / sonar_std
 
-        # 5. Extract metadata (if available)
+        # 5. Extract and merge metadata with letterbox metadata
+        # CRITICAL FIX (Audit 2025112401 Finding 1): Add letterbox metadata
         rgb_metadata = search_sample.get('rgb_metadata', {})
+        rgb_metadata.update(rgb_letterbox_meta)
+
         sonar_metadata = search_sample.get('sonar_metadata', {})
+        sonar_metadata.update(sonar_letterbox_meta)
+
+        # CRITICAL FIX (Audit 2025112401 Finding 1):
+        # Apply letterbox transform to bboxes BEFORE normalization
+        # This ensures bbox coordinates align with the letterboxed image
+
+        # Helper function to apply letterbox transform to XYWH bbox
+        def apply_letterbox_to_bbox(bbox_xywh, metadata):
+            """
+            Apply letterbox transform to bbox coordinates.
+
+            Args:
+                bbox_xywh: [x, y, w, h] in original image coordinates
+                metadata: Dict with 'scale', 'pad_left', 'pad_top'
+
+            Returns:
+                bbox_xywh_transformed: [x, y, w, h] in letterboxed image coordinates
+            """
+            x, y, w, h = bbox_xywh
+            scale = metadata['scale']
+            pad_left = metadata['pad_left']
+            pad_top = metadata['pad_top']
+
+            # Apply scale then offset
+            x_new = x * scale + pad_left
+            y_new = y * scale + pad_top
+            w_new = w * scale
+            h_new = h * scale
+
+            return np.array([x_new, y_new, w_new, h_new], dtype=np.float32)
 
         # CRITICAL FIX (Template-Search Migration 2025112105):
         # Convert GT boxes from XYWH pixels to CXCYWH normalized [0, 1]
@@ -229,9 +284,13 @@ class TemplateSearchDataset(Dataset):
         # Process RGB and Sonar search bboxes separately to support
         # single-modality visibility scenarios (e.g., target out of RGB FOV but in Sonar FOV)
 
+        # CRITICAL FIX (Audit 2025112401 Finding 1):
+        # Apply letterbox transform to RGB search bbox
+        rgb_bbox_transformed = apply_letterbox_to_bbox(rgb_bbox_original, rgb_letterbox_meta)
+
         # RGB search bbox (in 512x512 search image, RGB coordinate system)
         search_bbox_rgb_cxcywh = convert_bbox_format(
-            search_sample['rgb_bbox'].reshape(1, 4),
+            rgb_bbox_transformed.reshape(1, 4),
             src_format='xywh',
             dst_format='cxcywh'
         )
@@ -241,9 +300,13 @@ class TemplateSearchDataset(Dataset):
             format='cxcywh'
         )[0]  # Extract single box from batch
 
+        # CRITICAL FIX (Audit 2025112401 Finding 1):
+        # Apply letterbox transform to Sonar search bbox
+        sonar_bbox_transformed = apply_letterbox_to_bbox(sonar_bbox_original, sonar_letterbox_meta)
+
         # Sonar search bbox (in 512x512 search image, Sonar coordinate system)
         search_bbox_sonar_cxcywh = convert_bbox_format(
-            search_sample['sonar_bbox'].reshape(1, 4),
+            sonar_bbox_transformed.reshape(1, 4),
             src_format='xywh',
             dst_format='cxcywh'
         )
@@ -252,6 +315,11 @@ class TemplateSearchDataset(Dataset):
             image_size=(self.search_size, self.search_size),
             format='cxcywh'
         )[0]  # Extract single box from batch
+
+        # CRITICAL FIX (Audit 2025112401 Finding 9):
+        # Keep pixel-space boxes for evaluation (after letterbox transform)
+        search_bbox_rgb_pixels = rgb_bbox_transformed
+        search_bbox_sonar_pixels = sonar_bbox_transformed
 
         # Extract has_object flags from base_dataset
         has_object_rgb = search_sample.get('has_object_rgb', None)
@@ -270,6 +338,9 @@ class TemplateSearchDataset(Dataset):
             'template_bbox': template_bbox_normalized,  # Normalized CXCYWH [0,1] (RGB)
             'search_bbox_rgb': search_bbox_rgb_normalized,      # RGB GT in RGB coordinate system
             'search_bbox_sonar': search_bbox_sonar_normalized,  # Sonar GT in Sonar coordinate system
+            # CRITICAL FIX (Audit 2025112401 Finding 9): Add pixel boxes for evaluation
+            'search_bbox_rgb_pixels': search_bbox_rgb_pixels,    # RGB GT in pixels (letterboxed space)
+            'search_bbox_sonar_pixels': search_bbox_sonar_pixels,  # Sonar GT in pixels (letterboxed space)
             'is_valid': is_valid,                       # General validity flag
             'is_valid_rgb': search_sample['is_rgb_valid'],
             'is_valid_sonar': search_sample['is_sonar_valid'],
@@ -288,6 +359,9 @@ class TemplateSearchDataset(Dataset):
         """
         Sample template frame index based on policy.
 
+        CRITICAL FIX (Audit 2025112401 Finding 6):
+        Now checks validity flags to avoid selecting occluded templates (0,0,0,0).
+
         Policies:
             - 'first_frame': Always use first frame of sequence
             - 'recent': Sample recent frame within gap_range
@@ -301,16 +375,65 @@ class TemplateSearchDataset(Dataset):
             search_idx: Search frame index
 
         Returns:
-            Template frame index (0-based)
+            Template frame index (0-based), guaranteed to be valid if possible
         """
+        def is_frame_valid(idx):
+            """Check if frame has valid (non-occluded) annotations."""
+            try:
+                sample = self.base_dataset[idx]
+                # A frame is valid if EITHER modality is valid
+                # (allows template from one modality when the other is occluded)
+                return sample.get('is_rgb_valid', True) or sample.get('is_sonar_valid', True)
+            except:
+                return False
+
+        def find_nearest_valid_frame(target_idx, start_idx, end_idx):
+            """
+            Find nearest valid frame to target_idx within [start_idx, end_idx].
+
+            Search strategy:
+                1. Check target_idx first
+                2. Search backwards from target_idx to start_idx
+                3. If no valid frame found, return target_idx (fallback)
+
+            Returns:
+                Index of nearest valid frame, or target_idx if none found
+            """
+            # Check target first
+            if is_frame_valid(target_idx):
+                return target_idx
+
+            # Search backwards from target to start
+            for offset in range(1, target_idx - start_idx + 1):
+                candidate_idx = target_idx - offset
+                if candidate_idx < start_idx:
+                    break
+                if is_frame_valid(candidate_idx):
+                    return candidate_idx
+
+            # No valid frame found - log warning and use target anyway
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"No valid template frame found in range [{start_idx}, {target_idx}]. "
+                f"Using frame {target_idx} which may be occluded (0,0,0,0)."
+            )
+            return target_idx
+
+        # Determine sequence boundaries
+        if self.is_multi_sequence:
+            seq_name = self.base_dataset.get_frame_sequence(search_idx)
+            seq_info = self.sequence_ranges[seq_name]
+            seq_start = seq_info['start']
+            seq_end = seq_info['end'] - 1  # Exclusive to inclusive
+        else:
+            seq_start = 0
+            seq_end = len(self.base_dataset) - 1
+
         if self.update_policy == 'first_frame':
-            # Use first frame of sequence as template
-            if self.is_multi_sequence:
-                seq_name = self.base_dataset.get_frame_sequence(search_idx)
-                seq_info = self.sequence_ranges[seq_name]
-                return seq_info['start']  # First frame of sequence
-            else:
-                return 0  # First frame globally
+            # Use first valid frame of sequence as template
+            template_idx = find_nearest_valid_frame(seq_start, seq_start, search_idx)
+            return template_idx
 
         elif self.update_policy in ('recent', 'mixformer'):
             # Sample from [search_idx - gap_max, search_idx - gap_min]
@@ -319,13 +442,11 @@ class TemplateSearchDataset(Dataset):
             template_idx = search_idx - gap
 
             # Clamp to sequence boundaries
-            if self.is_multi_sequence:
-                seq_name = self.base_dataset.get_frame_sequence(search_idx)
-                seq_info = self.sequence_ranges[seq_name]
-                template_idx = max(template_idx, seq_info['start'])
-            else:
-                template_idx = max(template_idx, 0)
+            template_idx = max(template_idx, seq_start)
+            template_idx = min(template_idx, search_idx - 1)  # Template must be before search
 
+            # Find nearest valid frame
+            template_idx = find_nearest_valid_frame(template_idx, seq_start, search_idx - 1)
             return template_idx
 
         elif self.update_policy == 'keyframe':
@@ -336,7 +457,12 @@ class TemplateSearchDataset(Dataset):
                 "Keyframe policy not implemented yet, using first_frame fallback.",
                 UserWarning
             )
-            return self._sample_template_index.__func__(self, search_idx)  # Recursive call with first_frame
+            # Recursively call with first_frame policy
+            original_policy = self.update_policy
+            self.update_policy = 'first_frame'
+            result = self._sample_template_index(search_idx)
+            self.update_policy = original_policy
+            return result
 
         else:
             raise ValueError(f"Unknown template update policy: {self.update_policy}")
@@ -404,19 +530,33 @@ class TemplateSearchDataset(Dataset):
             crop_letterboxed = crop  # Already correct size
         else:
             # Apply letterbox preprocessing (resize + pad to preserve aspect ratio)
-            crop_letterboxed = self._letterbox(crop, crop_size)
+            # CRITICAL FIX (Audit 2025112401 Finding 1): _letterbox now returns metadata
+            crop_letterboxed, _ = self._letterbox(crop, crop_size)
 
-        # Convert to tensor [C, H, W]
+        # Convert to tensor [C, H, W] and apply normalization
+        # CRITICAL FIX (Audit 2025112401 Finding 4):
+        # Apply ImageNet normalization for pretrained ViT compatibility
         if crop_letterboxed.ndim == 2:  # Grayscale (sonar)
             crop_tensor = torch.from_numpy(crop_letterboxed).unsqueeze(0).float() / 255.0
+            # Sonar normalization
+            sonar_mean = torch.tensor([0.5]).view(1, 1, 1)
+            sonar_std = torch.tensor([0.5]).view(1, 1, 1)
+            crop_tensor = (crop_tensor - sonar_mean) / sonar_std
         else:  # RGB
             crop_tensor = torch.from_numpy(crop_letterboxed).permute(2, 0, 1).float() / 255.0
+            # ImageNet normalization
+            rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            crop_tensor = (crop_tensor - rgb_mean) / rgb_std
 
         return crop_tensor
 
-    def _letterbox(self, img: np.ndarray, target_size: int) -> np.ndarray:
+    def _letterbox(self, img: np.ndarray, target_size: int) -> Tuple[np.ndarray, Dict]:
         """
         Letterbox preprocessing: resize to fit within target_size and pad to square.
+
+        CRITICAL FIX (Audit 2025112401 Finding 1):
+        Now returns transformation metadata for bbox coordinate transformation.
 
         CRITICAL: Preserves aspect ratio to avoid distortion.
         Following YOLOv5/OSTrack letterbox implementation.
@@ -426,7 +566,14 @@ class TemplateSearchDataset(Dataset):
             target_size: Target square size (e.g., 256)
 
         Returns:
-            Letterboxed image [target_size, target_size, C] or [target_size, target_size]
+            Tuple of (letterboxed_image, metadata):
+                - letterboxed_image: [target_size, target_size, C] or [target_size, target_size]
+                - metadata: Dict with keys:
+                    - 'scale': float, resize scale factor
+                    - 'pad_left': int, left padding in pixels
+                    - 'pad_top': int, top padding in pixels
+                    - 'original_size': Tuple[int, int], (h, w) before transform
+                    - 'new_size': Tuple[int, int], (new_h, new_w) after resize
         """
         h, w = img.shape[:2]
 
@@ -469,7 +616,17 @@ class TemplateSearchDataset(Dataset):
             value=pad_value
         )
 
-        return img_letterboxed
+        # CRITICAL FIX (Audit 2025112401 Finding 1):
+        # Return transformation metadata for bbox coordinate transformation
+        metadata = {
+            'scale': scale,
+            'pad_left': left,
+            'pad_top': top,
+            'original_size': (h, w),
+            'new_size': (new_h, new_w)
+        }
+
+        return img_letterboxed, metadata
 
 
 def template_search_collate_fn(batch: List[Dict]) -> Dict:
@@ -485,6 +642,8 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             'template_bbox': [4] CXCYWH normalized [0,1],
             'search_bbox_rgb': [4] CXCYWH normalized [0,1] - RGB GT,
             'search_bbox_sonar': [4] CXCYWH normalized [0,1] - Sonar GT,
+            'search_bbox_rgb_pixels': [4] XYWH pixels (letterboxed space),
+            'search_bbox_sonar_pixels': [4] XYWH pixels (letterboxed space),
             'is_valid': bool,
             'is_valid_rgb': bool,
             'is_valid_sonar': bool,
@@ -508,6 +667,8 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             'template_bbox': [B, 4],
             'search_bbox_rgb': [B, 4],
             'search_bbox_sonar': [B, 4],
+            'search_bbox_rgb_pixels': [B, 4],
+            'search_bbox_sonar_pixels': [B, 4],
             'is_valid_rgb': [B],
             'is_valid_sonar': [B],
             'has_object_rgb': [B],
@@ -534,7 +695,7 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
             else b['template_bbox']
             for b in batch
         ]),
-        # Separate RGB and Sonar GT boxes
+        # Separate RGB and Sonar GT boxes (normalized)
         'search_bbox_rgb': torch.stack([
             torch.from_numpy(b['search_bbox_rgb']) if isinstance(b['search_bbox_rgb'], np.ndarray)
             else b['search_bbox_rgb']
@@ -543,6 +704,18 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
         'search_bbox_sonar': torch.stack([
             torch.from_numpy(b['search_bbox_sonar']) if isinstance(b['search_bbox_sonar'], np.ndarray)
             else b['search_bbox_sonar']
+            for b in batch
+        ]),
+        # CRITICAL FIX (Audit 2025112401 Finding 9):
+        # Pass pixel-space boxes for evaluation
+        'search_bbox_rgb_pixels': torch.stack([
+            torch.from_numpy(b['search_bbox_rgb_pixels']) if isinstance(b['search_bbox_rgb_pixels'], np.ndarray)
+            else b['search_bbox_rgb_pixels']
+            for b in batch
+        ]),
+        'search_bbox_sonar_pixels': torch.stack([
+            torch.from_numpy(b['search_bbox_sonar_pixels']) if isinstance(b['search_bbox_sonar_pixels'], np.ndarray)
+            else b['search_bbox_sonar_pixels']
             for b in batch
         ]),
         'is_valid': torch.tensor([b['is_valid'] for b in batch], dtype=torch.bool),

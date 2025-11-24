@@ -160,11 +160,20 @@ def collate_fn_template_search(batch: List[Dict]) -> Dict:
             batched[key] = None
 
     # Stack bounding boxes
-    bbox_keys = ['template_bbox_rgb', 'template_bbox_sonar', 'search_bbox_rgb', 'search_bbox_sonar']
+    # CRITICAL FIX (Audit 2025112401 Finding 9): Include pixel-space boxes
+    bbox_keys = [
+        'template_bbox_rgb', 'template_bbox_sonar',
+        'search_bbox_rgb', 'search_bbox_sonar',
+        'search_bbox_rgb_pixels', 'search_bbox_sonar_pixels',
+        'rgb_boxes_pixels', 'sonar_boxes_pixels'
+    ]
     for key in bbox_keys:
         if key in batch[0] and batch[0][key] is not None:
             bboxes = [sample[key] for sample in batch if sample.get(key) is not None]
             if len(bboxes) > 0:
+                # Handle both tensor and numpy array inputs
+                if isinstance(bboxes[0], np.ndarray):
+                    bboxes = [torch.from_numpy(bbox) for bbox in bboxes]
                 batched[key] = torch.stack(bboxes, dim=0)  # [B, 4]
             else:
                 batched[key] = None

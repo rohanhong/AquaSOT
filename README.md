@@ -16,8 +16,8 @@ AquaSOT-3D is a unified end-to-end multi-modal single-object tracking system tha
 - [System Architecture](#system-architecture)
 - [Algorithm Overview](#algorithm-overview)
   - [1. Geometry-Gated Deformable Cross-Modal Attention (G²-DCMA)](#1-geometry-gated-deformable-cross-modal-attention-g-dcma)
-  - [2. Differentiable Log-Polar Preprocessing](#2-differentiable-log-polar-preprocessing)
-  - [3. Confidence-Aware Adaptive Fusion](#3-confidence-aware-adaptive-fusion)
+  
+  - [2. Confidence-Aware Adaptive Fusion](#2-confidence-aware-adaptive-fusion)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Dataset](#dataset)
@@ -37,7 +37,6 @@ AquaSOT-3D is a unified end-to-end multi-modal single-object tracking system tha
 
 - **Calibration-Free Multi-Modal Fusion**: Fuses RGB and Sonar data without requiring extrinsic calibration parameters
 - **Novel G²-DCMA Module**: Geometry-Gated Deformable Cross-Modal Attention with geometric regularization for spatially misaligned modalities
-- **Differentiable Log-Polar Transform**: Handles sonar fan-shaped field of view with learnable parameters for end-to-end optimization
 - **Template-Search Paradigm**: OSTrack-inspired one-stream architecture with per-frame template updates
 - **Confidence-Aware Weighting**: Learnable confidence estimation for adaptive multi-modal fusion
 - **Multi-Scale Prediction**: Separate prediction heads for RGB, Sonar, and fused modalities
@@ -58,8 +57,8 @@ AquaSOT-3D employs a template-search paradigm inspired by OSTrack, processing pa
 │         │                                   │                        │
 │         ↓                                   ↓                        │
 │  ┌─────────────┐                 ┌──────────────────┐              │
-│  │ ViT/ConvNeXt│                 │ Log-Polar Transform│             │
-│  │  Backbone   │                 │ (Learnable α, β)  │             │
+│  │ ViT/ConvNeXt│                 │   ViT Backbone   │             │
+│  │  Backbone   │                 │  (Sonar Encoder) │             │
 │  └──────┬──────┘                 └──────────┬─────────┘             │
 │         │                                   │                        │
 │         │    RGB Features                   │  Sonar Features        │
@@ -115,7 +114,7 @@ The core innovation of AquaSOT-3D is the G²-DCMA module, designed to handle the
 
 #### (a) Geometric Gating
 Constructs geometric priors from:
-- **Radial activations (r)** from Sonar log-polar representation
+- **Radial activations (r)** from Sonar feature maps
 - **Scale pyramids (s)** from RGB feature maps
 
 Attention weights are modulated by a learned gating function:
@@ -148,30 +147,7 @@ Enforces feature consistency at two levels:
 
 **Result**: The model learns "who talks to whom" across modalities through geometry-aware gating and deformable alignment, achieving calibration-free correspondence.
 
-### 2. Differentiable Log-Polar Preprocessing
-
-Forward-looking sonar images exhibit a fan-shaped field of view with non-uniform spatial resolution. Traditional Cartesian processing is suboptimal.
-
-**Log-Polar Transform**:
-```
-ρ = α · log(r + 1)  # Radial coordinate (log-scaled)
-θ = β · angle       # Angular coordinate (scaled)
-```
-
-Where:
-- `r` is the Euclidean distance from the sonar origin
-- `angle` is the angular position within the sonar fan
-- `α, β` are **learnable parameters** optimized end-to-end
-
-**Advantages**:
-- Encodes radial distance and angular information naturally
-- Learnable scales adapt to specific sensor characteristics
-- Differentiable for end-to-end gradient flow
-- No manual calibration required
-
-The log-polar representation is processed by a lightweight ViT encoder before fusion.
-
-### 3. Confidence-Aware Adaptive Fusion
+### 2. Confidence-Aware Adaptive Fusion
 
 Not all frames provide equally reliable information. AquaSOT-3D estimates per-frame quality and adapts fusion weights:
 
@@ -451,7 +427,7 @@ Train RGB and Sonar branches independently to initialize backbone networks:
 # RGB-only pretraining (40 epochs)
 python scripts/train.py --config configs/train/pretrain_rgb_only.yaml
 
-# Sonar-only pretraining (40 epochs, with log-polar preprocessing)
+# Sonar-only pretraining (40 epochs)
 python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 ```
 
