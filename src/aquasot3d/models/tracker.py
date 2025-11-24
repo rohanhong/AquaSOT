@@ -476,13 +476,13 @@ class AquaSOT3DTracker(BaseModule):
             if 'conf_loss' in rgb_box_outputs:
                 outputs['rgb_conf_loss'] = rgb_box_outputs['conf_loss']
 
-            # Legacy loss handling (if compute_loss was used separately)
-            if gt_boxes is not None and 'rgb' in gt_boxes and 'total_loss' not in rgb_box_outputs:
-                rgb_loss = self.rgb_box_head.compute_loss(
-                    rgb_box_outputs,
-                    gt_boxes['rgb']
-                )
-                outputs['rgb_box_loss'] = rgb_loss
+            # CRITICAL FIX (Audit 2025112407): Extract bbox regression losses
+            # BoxHead returns 'l1_loss' and 'iou_loss', we need to combine them
+            # into 'rgb_box_loss' for the loss manager
+            if gt_boxes is not None and 'rgb' in gt_boxes:
+                if 'l1_loss' in rgb_box_outputs and 'iou_loss' in rgb_box_outputs:
+                    # Combine L1 and GIoU losses into bbox regression loss
+                    outputs['rgb_box_loss'] = rgb_box_outputs['l1_loss'] + rgb_box_outputs['iou_loss']
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Sonar box prediction now uses Sonar-view fused features instead of original features
@@ -515,13 +515,13 @@ class AquaSOT3DTracker(BaseModule):
             if 'conf_loss' in sonar_box_outputs:
                 outputs['sonar_conf_loss'] = sonar_box_outputs['conf_loss']
 
-            # Legacy loss handling
-            if gt_boxes is not None and 'sonar' in gt_boxes and 'total_loss' not in sonar_box_outputs:
-                sonar_loss = self.sonar_box_head.compute_loss(
-                    sonar_box_outputs,
-                    gt_boxes['sonar']
-                )
-                outputs['sonar_box_loss'] = sonar_loss
+            # CRITICAL FIX (Audit 2025112407): Extract bbox regression losses
+            # BoxHead returns 'l1_loss' and 'iou_loss', we need to combine them
+            # into 'sonar_box_loss' for the loss manager
+            if gt_boxes is not None and 'sonar' in gt_boxes:
+                if 'l1_loss' in sonar_box_outputs and 'iou_loss' in sonar_box_outputs:
+                    # Combine L1 and GIoU losses into bbox regression loss
+                    outputs['sonar_box_loss'] = sonar_box_outputs['l1_loss'] + sonar_box_outputs['iou_loss']
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion box prediction REMOVED. Primary tracking output now comes from:

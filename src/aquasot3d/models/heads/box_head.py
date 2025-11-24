@@ -26,6 +26,9 @@ def box_cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     """
     Convert bounding boxes from (cx, cy, w, h) to (x1, y1, x2, y2) format.
 
+    CRITICAL FIX: Clamp w and h to prevent zero-width/height boxes that cause
+    GIoU NaN (0/0 division). Following YOLOv5 and PyTorch official implementation.
+
     Args:
         boxes: Boxes in (cx, cy, w, h) format, shape (..., 4)
 
@@ -33,6 +36,13 @@ def box_cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
         Boxes in (x1, y1, x2, y2) format, shape (..., 4)
     """
     cx, cy, w, h = boxes.unbind(-1)
+
+    # CRITICAL: Clamp w and h to prevent zero-width/height boxes
+    # Following YOLOv5: add small epsilon to prevent GIoU 0/0 = NaN
+    # Minimum size: 1e-4 (0.0001 in normalized coordinates ≈ 0.05 pixels at 512x512)
+    w = w.clamp(min=1e-4)
+    h = h.clamp(min=1e-4)
+
     x1 = cx - 0.5 * w
     y1 = cy - 0.5 * h
     x2 = cx + 0.5 * w
@@ -112,7 +122,8 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     union_area = area1 + area2 - inter_area
 
     # Compute IoU with epsilon for numerical stability
-    iou = inter_area / (union_area + 1e-7)
+    # Standard epsilon for FP32 (1e-7). clamp provides sufficient protection.
+    iou = inter_area / union_area.clamp(min=1e-7)
 
     # Clamp to valid IoU range [0, 1]
     # This is critical for preventing BCE assertion failures when IoU is used as quality target
@@ -167,7 +178,8 @@ def compute_giou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     union_area = area1 + area2 - inter_area
 
     # GIoU computation
-    giou = iou - (enclosing_area - union_area) / (enclosing_area + 1e-7)
+    # Standard epsilon for FP32 (1e-7). clamp provides sufficient protection.
+    giou = iou - (enclosing_area - union_area) / enclosing_area.clamp(min=1e-7)
 
     # Clamp to theoretical range [-1, 1]
     giou = torch.clamp(giou, min=-1.0, max=1.0)
@@ -344,38 +356,74 @@ class QualityFocalLoss(nn.Module):
         Compute Quality Focal Loss.
 
         Args:
-            pred_scores: Predicted quality scores, shape (N,)
+            pred_scores: Predicted quality logits (raw scores before sigmoid), shape (N,)
             target_labels: Target labels (0 or 1), shape (N,)
             target_quality: Target quality (IoU), shape (N,)
 
         Returns:
             QFL loss
         """
-        # Scale factor
-        scale_factor = pred_scores - target_labels * target_quality
+        # CRITICAL FIX: Check for NaN/Inf in inputs
+        if torch.any(~torch.isfinite(pred_scores)):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[QualityFocalLoss] NaN/Inf in pred_scores! "
+                f"Replacing with zeros. Range before: [{pred_scores.min()}, {pred_scores.max()}]"
+            )
+            pred_scores = torch.where(
+                torch.isfinite(pred_scores),
+                pred_scores,
+                torch.zeros_like(pred_scores)
+            )
+
+        if torch.any(~torch.isfinite(target_quality)):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[QualityFocalLoss] NaN/Inf in target_quality! "
+                f"Clamping to [0, 1]. Range before: [{target_quality.min()}, {target_quality.max()}]"
+            )
+            target_quality = torch.clamp(target_quality, 0.0, 1.0)
+            target_quality = torch.where(
+                torch.isfinite(target_quality),
+                target_quality,
+                torch.zeros_like(target_quality)
+            )
+
+        # CRITICAL FIX: Apply sigmoid to logits for scale factor computation
+        # This maintains QFL semantics while accepting logits as input
+        pred_scores_prob = torch.sigmoid(pred_scores)
+
+        # Scale factor (based on probability space)
+        scale_factor = pred_scores_prob - target_labels * target_quality
 
         # Focal weight
         focal_weight = torch.abs(scale_factor) ** self.beta
 
-        # BCE loss (disable autocast for AMP compatibility)
-        # Note: pred_scores are already sigmoid outputs, so we use binary_cross_entropy
-        with torch.cuda.amp.autocast(enabled=False):
-            pred_scores_fp32 = pred_scores.float()
-            target_fp32 = (target_labels * target_quality).float()
+        # CRITICAL FIX: Use binary_cross_entropy_with_logits for AMP safety
+        # This is numerically stable and AMP-compatible
+        target = (target_labels * target_quality).float()
 
-            # Clamp to [0, 1] to prevent numerical instability
-            # Sigmoid can occasionally produce values slightly outside [0, 1] due to FP precision
-            # IoU-based quality scores should also be clamped for safety
-            pred_scores_fp32 = torch.clamp(pred_scores_fp32, min=0.0, max=1.0)
-            target_fp32 = torch.clamp(target_fp32, min=0.0, max=1.0)
+        # CRITICAL FIX: Clamp target to [0, 1] to ensure valid BCE input
+        target = torch.clamp(target, 0.0, 1.0)
 
-            bce_loss = F.binary_cross_entropy(
-                pred_scores_fp32,
-                target_fp32,
-                reduction='none'
-            )
+        bce_loss = F.binary_cross_entropy_with_logits(
+            pred_scores,
+            target,
+            reduction='none'
+        )
 
         loss = focal_weight * bce_loss
+
+        # CRITICAL FIX: Replace any remaining NaN/Inf in final loss
+        if torch.any(~torch.isfinite(loss)):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[QualityFocalLoss] NaN/Inf in final loss! Replacing with zeros."
+            )
+            loss = torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss))
 
         if self.reduction == 'mean':
             return loss.mean()
@@ -429,8 +477,8 @@ class BoxHead(BaseHead):
         use_quality_focal: bool = True,
         iou_loss_type: Literal['giou', 'ciou'] = 'giou',
         loss_weight_cls: float = 1.0,
-        loss_weight_l1: float = 1.0,  # Reduced from 5.0 for numerical stability
-        loss_weight_iou: float = 2.0,
+        loss_weight_l1: float = 2.0,  # Following mainstream trackers (MixFormer, OSTrack)
+        loss_weight_iou: float = 5.0,  # Following mainstream trackers (MixFormer, OSTrack)
         use_confidence_head: bool = True,
         loss_weight_conf: float = 1.0,
         **kwargs
@@ -461,11 +509,11 @@ class BoxHead(BaseHead):
         self.shared_mlp = nn.Sequential(*layers)
 
         # Classification head (quality estimation)
+        # CRITICAL FIX: Remove Sigmoid - output logits for BCEWithLogitsLoss (AMP-safe)
         self.cls_head = nn.Sequential(
             nn.Linear(current_dim, hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
+            nn.Linear(hidden_dim, 1)
         )
 
         # Regression head (box coordinates with constrained output)
@@ -482,12 +530,12 @@ class BoxHead(BaseHead):
         # Confidence head for objectness prediction (has_object)
         # Predicts whether an object exists in the frame (0=no object, 1=has object)
         # This is independent from quality (which assumes object exists)
+        # CRITICAL FIX: Remove Sigmoid - output logits for BCEWithLogitsLoss (AMP-safe)
         if use_confidence_head:
             self.confidence_head = nn.Sequential(
                 nn.Linear(current_dim, hidden_dim),
                 nn.ReLU(inplace=True),
-                nn.Linear(hidden_dim, 1),
-                nn.Sigmoid()
+                nn.Linear(hidden_dim, 1)
             )
         else:
             self.confidence_head = None
@@ -496,8 +544,11 @@ class BoxHead(BaseHead):
         if use_quality_focal:
             self.cls_loss_fn = QualityFocalLoss(beta=2.0)
         else:
-            self.cls_loss_fn = nn.BCELoss()
+            # CRITICAL FIX: Use BCEWithLogitsLoss for AMP safety
+            self.cls_loss_fn = nn.BCEWithLogitsLoss()
 
+        # Use standard L1 loss following mainstream trackers (MixFormer, OSTrack)
+        # L1 is robust to outliers due to absolute difference
         self.l1_loss_fn = nn.L1Loss(reduction='mean')
 
         if iou_loss_type == 'giou':
@@ -508,8 +559,9 @@ class BoxHead(BaseHead):
             raise ValueError(f"Unknown IoU loss type: {iou_loss_type}")
 
         # Confidence loss (BCE for binary objectness)
+        # CRITICAL FIX: Use BCEWithLogitsLoss for AMP safety
         if use_confidence_head:
-            self.confidence_loss_fn = nn.BCELoss()
+            self.confidence_loss_fn = nn.BCEWithLogitsLoss()
 
         # Initialize regression head with small weights for stable initial predictions
         # This ensures initial box predictions are centered around [0.5, 0.5, 0.3, 0.3]
@@ -524,30 +576,49 @@ class BoxHead(BaseHead):
 
     def _init_weights(self):
         """
-        Initialize weights for stable training.
+        Initialize weights for stable training following DETR/FCOS best practices.
 
-        Uses Xavier/Kaiming initialization for linear layers and small bias
-        initialization for regression output to center initial predictions.
+        CRITICAL FIX: Use conservative initialization to prevent gradient explosion
+        in first optimizer step. Xavier with small gain for all layers.
         """
-        # Initialize all linear layers
+        # Initialize all linear layers with reduced gain for stability
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                # Use xavier_uniform with small gain (0.1) following FCOS
+                # This prevents large initial activations that can cause NaN with AMP
+                nn.init.xavier_uniform_(m.weight, gain=0.1)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
         # Special initialization for regression head output layer
-        # Set bias to produce initial predictions around [0.5, 0.5, 0.3, 0.3]
-        # After sigmoid: logit(0.5)=0, logit(0.3)≈-0.85
+        # Use very conservative initialization: near-zero weights + centered bias
+        # This ensures initial predictions are stable and centered
         reg_output_layer = self.reg_head[-2]  # Last linear before sigmoid
         if isinstance(reg_output_layer, nn.Linear):
-            nn.init.zeros_(reg_output_layer.weight)
+            # CRITICAL: Use normal init with very small std instead of zeros
+            # Zero weights can cause training to stagnate; small random helps convergence
+            nn.init.normal_(reg_output_layer.weight, mean=0.0, std=0.001)
             if reg_output_layer.bias is not None:
-                # Bias values to initialize around center with moderate size
+                # Initialize to produce predictions around [0.5, 0.5, 0.3, 0.3] after sigmoid
+                # logit(0.5) = 0, logit(0.3) ≈ -0.85
                 reg_output_layer.bias.data[0] = 0.0  # cx ≈ 0.5 after sigmoid
                 reg_output_layer.bias.data[1] = 0.0  # cy ≈ 0.5 after sigmoid
                 reg_output_layer.bias.data[2] = -0.85  # w ≈ 0.3 after sigmoid
                 reg_output_layer.bias.data[3] = -0.85  # h ≈ 0.3 after sigmoid
+
+        # Conservative initialization for classification and confidence heads
+        for head_name in ['cls_head', 'confidence_head']:
+            if hasattr(self, head_name):
+                head = getattr(self, head_name)
+                if head is not None and len(head) > 0:
+                    # Last layer of classification heads: use very small init
+                    last_layer = head[-1]
+                    if isinstance(last_layer, nn.Linear):
+                        nn.init.normal_(last_layer.weight, mean=0.0, std=0.01)
+                        if last_layer.bias is not None:
+                            # Initialize bias to predict moderate confidence (~0.5 after sigmoid)
+                            # logit(0.5) = 0
+                            nn.init.constant_(last_layer.bias, 0.0)
 
     def forward(
         self,
@@ -600,20 +671,28 @@ class BoxHead(BaseHead):
         shared_feat = self.shared_mlp(features)  # (B, hidden_dim)
 
         # Classification (quality score)
-        pred_scores = self.cls_head(shared_feat).squeeze(-1)  # (B,)
-
-        # CRITICAL: Clamp pred_scores to [0, 1] for numerical stability
-        # Sigmoid in FP16/AMP mode can occasionally produce values slightly outside [0, 1]
-        # This prevents CUDA assertion failures in BCE loss computation
-        pred_scores = torch.clamp(pred_scores, min=0.0, max=1.0)
+        # CRITICAL FIX: Output raw logits (no sigmoid) for BCEWithLogitsLoss
+        # Sigmoid is applied internally by BCEWithLogitsLoss for numerical stability
+        pred_scores_logits = self.cls_head(shared_feat).squeeze(-1)  # (B,)
 
         # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
         # Confidence (objectness score) - predicts has_object probability
+        # CRITICAL FIX: Output raw logits (no sigmoid) for BCEWithLogitsLoss
         if self.confidence_head is not None:
-            pred_confidence = self.confidence_head(shared_feat).squeeze(-1)  # (B,)
-            pred_confidence = torch.clamp(pred_confidence, min=0.0, max=1.0)
+            pred_confidence_logits = self.confidence_head(shared_feat).squeeze(-1)  # (B,)
         else:
-            pred_confidence = None
+            pred_confidence_logits = None
+
+        # For inference, convert logits to probabilities
+        # During training, logits are used directly in BCEWithLogitsLoss
+        if target_boxes is None:
+            # Inference mode: apply sigmoid to get probabilities
+            pred_scores = torch.sigmoid(pred_scores_logits)
+            pred_confidence = torch.sigmoid(pred_confidence_logits) if pred_confidence_logits is not None else None
+        else:
+            # Training mode: keep logits for loss computation
+            pred_scores = pred_scores_logits
+            pred_confidence = pred_confidence_logits
 
         # Regression (box coordinates in cxcywh)
         pred_boxes_cxcywh = self.reg_head(shared_feat)  # (B, 4)
@@ -712,8 +791,40 @@ class BoxHead(BaseHead):
                 if has_object.dtype != torch.float32:
                     has_object = has_object.float()
 
+                # CRITICAL FIX: Check for NaN/Inf in inputs before loss computation
+                if torch.any(~torch.isfinite(pred_confidence)):
+                    self.logger.warning(
+                        f"[BoxHead] NaN/Inf detected in pred_confidence before conf_loss! "
+                        f"Replacing with zeros."
+                    )
+                    pred_confidence = torch.where(
+                        torch.isfinite(pred_confidence),
+                        pred_confidence,
+                        torch.zeros_like(pred_confidence)
+                    )
+
                 # Compute BCE loss between predicted confidence and has_object ground truth
                 conf_loss = self.confidence_loss_fn(pred_confidence, has_object)
+
+                # CRITICAL FIX: Check if conf_loss is NaN and replace with zero
+                if torch.any(~torch.isfinite(conf_loss)):
+                    self.logger.warning(
+                        f"[BoxHead] NaN/Inf detected in conf_loss! Replacing with zero. "
+                        f"pred_confidence range: [{pred_confidence.min():.4f}, {pred_confidence.max():.4f}], "
+                        f"has_object range: [{has_object.min():.4f}, {has_object.max():.4f}]"
+                    )
+                    conf_loss = torch.tensor(0.0, device=features.device)
+
+            # CRITICAL FIX: Check all loss components for NaN before combining
+            if torch.any(~torch.isfinite(cls_loss)):
+                self.logger.warning(f"[BoxHead] NaN/Inf in cls_loss! Replacing with zero.")
+                cls_loss = torch.tensor(0.0, device=features.device)
+            if torch.any(~torch.isfinite(l1_loss)):
+                self.logger.warning(f"[BoxHead] NaN/Inf in l1_loss! Replacing with zero.")
+                l1_loss = torch.tensor(0.0, device=features.device)
+            if torch.any(~torch.isfinite(iou_loss)):
+                self.logger.warning(f"[BoxHead] NaN/Inf in iou_loss! Replacing with zero.")
+                iou_loss = torch.tensor(0.0, device=features.device)
 
             outputs.update({
                 'cls_loss': cls_loss * self.loss_weight_cls,

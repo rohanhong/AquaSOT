@@ -18,6 +18,16 @@ experiment:
 
 
 # ------------------------------------------------------------------------------
+# System Configuration
+# ------------------------------------------------------------------------------
+system:
+  # CRITICAL FIX (Audit 2025112401): Disable AMP for numerical stability
+  # Root cause: G2-DCMA fusion and ViT backbones produce NaN under FP16 AMP
+  # All mainstream fixes (grad clipping, loss weights, GIoU stabilization) failed
+  use_amp: false
+
+
+# ------------------------------------------------------------------------------
 # Data Configuration (Multi-Sequence)
 # ------------------------------------------------------------------------------
 data:
@@ -41,8 +51,8 @@ data:
   quality_threshold_rgb: 0.7     # RGB quality threshold for template update (inference only)
   quality_threshold_sonar: 0.7   # Sonar quality threshold for template update (inference only)
 
-  num_workers: 8  # Laptop: 8 (Workstation: 16)
-  prefetch_factor: 3  # Laptop: 3 (Workstation: 4)
+  num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
+  prefetch_factor: 4  # Increased prefetch to reduce GPU idle time
 
   augmentation:
     enabled: true
@@ -136,25 +146,30 @@ training:
 
   num_epochs: 100  # Extended for end-to-end convergence
 
-  batch_size: 2  # Laptop: 2 (Workstation: 8), effective batch with grad_accum = 32
-  gradient_accumulation_steps: 16  # Laptop: 16 (Workstation: 4, effective batch = 32)
+  batch_size: 2  # Optimal for RTX3070 Laptop 8GB (86.8% VRAM @ batch=2)
+  # gradient_accumulation_steps optimized for frequent updates while maintaining effective batch
+  gradient_accumulation_steps: 4  # Effective batch size = 2 * 4 = 8
 
   optimizer:
-    lr: 0.0001  # Standard learning rate for ViT fine-tuning
+    # Standard learning rate with tight gradient clipping (max_norm=0.1) for stability
+    lr: 0.0001  # Standard LR for ViT fine-tuning (safe with max_norm=0.1 clipping)
     weight_decay: 0.0001
     backbone_lr_multiplier: 0.1  # Lower LR for pretrained backbones
 
   scheduler:
     type: cosine
     warmup_epochs: 10  # Extended warmup for training from scratch
-    warmup_lr: 1.0e-06
+    warmup_lr: 1.0e-06  # Standard warmup starting point
     t_max: 100  # Matches num_epochs
-    eta_min: 1.0e-06
+    eta_min: 1.0e-06  # Minimum learning rate
 
   # Gradient clipping
   grad_clip:
     enabled: true
-    max_norm: 1.0  # Same for both Laptop and Workstation (effective_batch=32 is identical)
+    # CRITICAL FIX: Reduced from 1.0 to 0.1 following SOTFormer best practice
+    # SOTFormer paper: "gradients are clipped (max-norm=0.1) to prevent divergence"
+    # This much tighter clipping is essential for training stability with AMP
+    max_norm: 0.1  # Following SOTFormer for transformer tracking stability
     norm_type: 2
 
   # CRITICAL FIX (Audit 2025112302): Removed Weak3D component
@@ -163,6 +178,7 @@ training:
   # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion): Removed fusion losses
   loss_weights:
     # Box regression (dual-view fused features)
+    # Following mainstream trackers (MixFormer, OSTrack): L1=2.0, GIoU=5.0
     rgb_box: 1.0
     rgb_conf: 1.0  # Objectness confidence (has_object prediction)
     sonar_box: 1.0

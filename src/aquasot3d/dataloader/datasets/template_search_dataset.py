@@ -393,9 +393,13 @@ class TemplateSearchDataset(Dataset):
         # Handle empty crops (degenerate bbox)
         if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
             # Return black template
-            if image_np.ndim == 2:  # Grayscale
+            # CRITICAL FIX: Check channel dimension, not ndim
+            # Sonar images are (H, W, 1) with ndim=3, not ndim=2
+            if image_np.ndim == 2 or (image_np.ndim == 3 and image_np.shape[2] == 1):
+                # Grayscale/single-channel (sonar)
                 crop = np.zeros((crop_size, crop_size), dtype=np.uint8)
             else:
+                # RGB (3-channel)
                 crop = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
             crop_letterboxed = crop  # Already correct size
         else:
@@ -426,13 +430,23 @@ class TemplateSearchDataset(Dataset):
         """
         h, w = img.shape[:2]
 
+        # CRITICAL FIX: Track if input is single-channel (H, W, 1)
+        # cv2.resize removes the last dimension for (H, W, 1) inputs
+        is_single_channel = img.ndim == 3 and img.shape[2] == 1
+
         # Compute scale factor to fit within target_size
         scale = min(target_size / w, target_size / h)
         new_w = int(w * scale)
         new_h = int(h * scale)
 
         # Resize with preserved aspect ratio
-        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        # CRITICAL FIX: Squeeze (H, W, 1) to (H, W) before resize to avoid issues
+        if is_single_channel:
+            img_to_resize = img.squeeze(-1)
+        else:
+            img_to_resize = img
+
+        img_resized = cv2.resize(img_to_resize, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
         # Compute padding
         pad_w = target_size - new_w
@@ -442,8 +456,8 @@ class TemplateSearchDataset(Dataset):
         left = pad_w // 2
         right = pad_w - left
 
-        # Pad with gray (114 for RGB, 127 for grayscale)
-        if img.ndim == 2:  # Grayscale
+        # Pad with gray (114 for RGB, 127 for grayscale/single-channel)
+        if img_resized.ndim == 2:  # Grayscale or squeezed single-channel
             pad_value = 127
         else:  # RGB
             pad_value = (114, 114, 114)
