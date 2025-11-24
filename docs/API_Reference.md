@@ -21,11 +21,11 @@
 
 ## Overview
 
-AquaSOT-3D provides a comprehensive API for end-to-end RGB+Sonar single-object tracking with weak 3D estimation. The system is built on a modular architecture with clear separation of concerns:
+AquaSOT-3D provides a comprehensive API for end-to-end RGB+Sonar single-object tracking. The system is built on a modular architecture with clear separation of concerns:
 
 - **Core Infrastructure**: Registry system, base classes, configuration management
 - **Data Pipeline**: Multi-modal data loading, transformations, and augmentation
-- **Model Components**: Backbones, fusion modules, temporal heads, prediction heads
+- **Model Components**: Backbones, fusion modules, prediction heads
 - **Training Infrastructure**: Loss management, optimization, scheduling, checkpointing
 - **Evaluation Tools**: Metrics computation, evaluation pipelines, visualization
 
@@ -39,12 +39,8 @@ AquaSOT-3D provides a comprehensive API for end-to-end RGB+Sonar single-object t
 
 ### Coordinate System Convention
 
-All 3D operations use the Fusion Frame coordinate system:
-- **X-axis**: Points right (positive direction)
-- **Y-axis**: Points down (positive direction)
-- **Z-axis**: Points forward (positive direction, depth/range)
-
-Bounding boxes follow the format: `[x, y, w, h]` (top-left corner, width, height)
+Bounding boxes follow the format: `[x, y, w, h]` (top-left corner, width, height) in pixel coordinates.
+Normalized bounding boxes use the format: `[cx, cy, w, h]` (center-x, center-y, width, height) in [0, 1] range.
 
 ---
 
@@ -63,28 +59,24 @@ Input: RGB + Sonar Image Pairs
          |
          v
     [Backbone Feature Extraction]
-    - RGB Branch: ViT/ConvNeXt
-    - Sonar Branch: Log-Polar + Encoder
+    - RGB Branch: ViT (Vision Transformer)
+    - Sonar Branch: ViT (with single-channel adapter)
          |
          v
     [G²-DCMA Fusion Module]
-    - Geometry-gated attention
-    - Deformable cross-modal alignment
-    - Dual consistency constraints
-         |
-         v
-    [Temporal Modeling]
-    - Vision-Mamba (linear complexity)
-    - Temporal feature aggregation
+    - Geometry-gated cross-modal attention
+    - Deformable attention for spatial alignment
+    - Dual-view fusion (RGB-view + Sonar-view)
+    - Geometric & representation consistency
          |
          v
     [Prediction Heads]
-    - Box Head: 2D bounding boxes (RGB, Sonar, Fusion)
-    - Fusion Head: Quality-weighted fusion
-    - Weak3D Head: (X, Y, Z) estimation
+    - RGB Box Head: Uses RGB-view fused features
+    - Sonar Box Head: Uses Sonar-view fused features
+    - Auxiliary Heads: Pre-fusion feature supervision (training only)
          |
          v
-Output: Tracking boxes + Weak 3D center
+Output: Per-modality 2D tracking boxes (RGB, Sonar)
 ```
 
 ### Module Dependencies
@@ -450,55 +442,6 @@ template_idx, search_idx = sampler.sample_pair()
 
 **Module: `aquasot3d.dataloader.transforms`**
 
-**Class: `LogPolarTransform`**
-
-Differentiable log-polar coordinate transformation for sonar images.
-
-```python
-from aquasot3d.dataloader.transforms import LogPolarTransform
-
-transform = LogPolarTransform(
-    output_size=(256, 256),
-    max_range=10.0,
-    fov_angle=90.0,
-    sensor_position=(128, 256),
-    learnable_scales=True
-)
-
-# Apply transform
-sonar_cartesian = torch.randn(1, 1, 512, 256)  # Fan-shaped
-sonar_logpolar = transform(sonar_cartesian)    # (1, 1, 256, 256)
-```
-
-**Constructor Parameters:**
-
-- `output_size: Tuple[int, int]` - Output image size (H, W)
-- `max_range: float` - Maximum range in meters
-- `fov_angle: float = 90.0` - Field of view angle in degrees
-- `sensor_position: Tuple[float, float] = None` - Sensor position (x, y), auto-computed if None
-- `learnable_scales: bool = True` - Enable learnable scale parameters (alpha, beta)
-- `interpolation: str = 'bilinear'` - Interpolation mode
-
-**Methods:**
-
-- `forward(x: Tensor) -> Tensor` - Apply log-polar transform
-  - Input: `(B, C, H_in, W_in)` - Cartesian sonar image
-  - Output: `(B, C, H_out, W_out)` - Log-polar representation
-
-**Learnable Parameters:**
-
-- `alpha: Tensor` - Radial scale parameter (learnable)
-- `beta: Tensor` - Angular scale parameter (learnable)
-
-**Dynamic Size Handling:**
-
-The transform automatically adapts to different input sizes by:
-1. Scaling sensor position proportionally
-2. Adjusting max range based on image height
-3. Preserving FOV angle and intrinsic properties
-
----
-
 **Class: `RGBTransforms`**
 
 Standard transformations for RGB images.
@@ -694,34 +637,33 @@ features = backbone(rgb_input)  # (2, 1024, H/32, W/32)
 
 ---
 
-**Class: `SonarEncoder`**
+**Class: `ViTSonarBackbone`**
 
-Specialized encoder for sonar data with log-polar preprocessing.
+ViT-based backbone for sonar data (uses preprocessed rectangular sonar images).
 
 ```python
-from aquasot3d.models.backbones import SonarEncoder
+from aquasot3d.models.backbones import build_backbone
 
-encoder = SonarEncoder(
-    in_channels=1,
-    output_dim=384,
-    use_logpolar=True,
-    logpolar_size=(256, 256),
-    encoder_type='convnext_tiny',
-    pretrained=False
-)
+backbone = build_backbone({
+    'type': 'vit_sonar',
+    'model_name': 'vit_base_patch16_224',
+    'pretrained': True,
+    'in_channels': 1,
+    'img_size': 512,
+    'output_dim': 768
+})
 
-sonar_input = torch.randn(2, 1, 512, 256)  # Fan-shaped
-features = encoder(sonar_input)  # (2, 384, H', W')
+sonar_input = torch.randn(2, 1, 512, 512)  # Preprocessed rectangular sonar
+features = backbone(sonar_input)  # (2, 768, H', W')
 ```
 
 **Constructor Parameters:**
 
-- `in_channels: int = 1` - Input channels (1 for sonar)
-- `output_dim: int = 384` - Output feature dimension
-- `use_logpolar: bool = True` - Enable log-polar preprocessing
-- `logpolar_size: Tuple[int, int] = (256, 256)` - Log-polar output size
-- `encoder_type: str = 'convnext_tiny'` - Encoder architecture
-- `pretrained: bool = False` - Load pretrained weights
+- `model_name: str` - ViT variant (vit_base_patch16_224, etc.)
+- `pretrained: bool = True` - Load ImageNet-pretrained weights
+- `in_channels: int = 1` - Input channels (1 for grayscale sonar)
+- `img_size: int = 512` - Expected input size
+- `output_dim: int = 768` - Output feature dimension
 
 **Forward Pass:**
 
@@ -729,18 +671,18 @@ features = encoder(sonar_input)  # (2, 384, H', W')
 def forward(self, x: Tensor) -> Tensor:
     """
     Args:
-        x: Sonar images (B, 1, H, W) - Can be varying sizes
+        x: Sonar images (B, 1, H, W) - Preprocessed rectangular coordinates
 
     Returns:
         features: (B, output_dim, H', W')
     """
 ```
 
-**Dynamic Size Support:**
+**Single-Channel Adaptation:**
 
-The encoder handles varying sonar image sizes automatically through:
-- Dynamic log-polar transformation
-- Adaptive pooling layers
+Sonar ViT uses a channel adapter to convert single-channel input to 3-channel:
+- Applies 1x1 conv to expand 1ch → 3ch before ViT processing
+- Maintains compatibility with ImageNet-pretrained weights
 
 ---
 
@@ -753,14 +695,17 @@ from aquasot3d.models.backbones import MultiModalBackbone
 
 backbone = MultiModalBackbone(
     rgb_backbone_config={
-        'type': 'vit',
-        'patch_size': 16,
-        'embed_dim': 768
+        'type': 'vit_rgb',
+        'model_name': 'vit_base_patch16_224',
+        'pretrained': True,
+        'output_dim': 768
     },
     sonar_backbone_config={
-        'type': 'sonar_encoder',
-        'output_dim': 384,
-        'use_logpolar': True
+        'type': 'vit_sonar',
+        'model_name': 'vit_base_patch16_224',
+        'pretrained': True,
+        'in_channels': 1,
+        'output_dim': 768
     }
 )
 

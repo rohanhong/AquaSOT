@@ -75,7 +75,8 @@ class TemplateSearchDataset(Dataset):
         quality_threshold_rgb: float = 0.7,
         quality_threshold_sonar: float = 0.7,
         context_factor: float = 2.0,
-        augmentation=None  # Deprecated
+        augmentation=None,  # Deprecated
+        normalization_config: Optional[Dict] = None
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
@@ -91,6 +92,22 @@ class TemplateSearchDataset(Dataset):
         # Apply augmentation in __getitem__ before letterbox transform
         # to ensure bbox-aware transforms work with original image coordinates
         self.augmentation = augmentation
+
+        # CRITICAL FIX (Audit 2025112402 Finding 3):
+        # Load normalization parameters from config instead of hardcoding
+        # Fallback to ImageNet/0.5 defaults if not provided
+        if normalization_config is None:
+            normalization_config = {
+                'rgb_mean': [0.485, 0.456, 0.406],
+                'rgb_std': [0.229, 0.224, 0.225],
+                'sonar_mean': [0.5],
+                'sonar_std': [0.5]
+            }
+
+        self.rgb_mean = torch.tensor(normalization_config.get('rgb_mean', [0.485, 0.456, 0.406])).view(3, 1, 1)
+        self.rgb_std = torch.tensor(normalization_config.get('rgb_std', [0.229, 0.224, 0.225])).view(3, 1, 1)
+        self.sonar_mean = torch.tensor(normalization_config.get('sonar_mean', [0.5])).view(1, 1, 1)
+        self.sonar_std = torch.tensor(normalization_config.get('sonar_std', [0.5])).view(1, 1, 1)
 
         # Multi-sequence support (PRESERVED from FrameSequenceDataset)
         self.is_multi_sequence = isinstance(
@@ -204,27 +221,23 @@ class TemplateSearchDataset(Dataset):
         # Convert to tensors and apply normalization
         # CRITICAL FIX (Audit 2025112401 Finding 4):
         # Apply ImageNet normalization for pretrained ViT compatibility
+        # CRITICAL FIX (Audit 2025112402 Finding 3):
+        # Use config-loaded normalization parameters instead of hardcoding
         if isinstance(rgb_search, np.ndarray):
             rgb_search = torch.from_numpy(rgb_search).float()
             if rgb_search.ndim == 3 and rgb_search.shape[2] == 3:  # [H, W, 3]
                 rgb_search = rgb_search.permute(2, 0, 1)  # → [3, H, W]
-            # Convert to [0, 1] then apply ImageNet normalization
+            # Convert to [0, 1] then apply normalization from config
             rgb_search = rgb_search / 255.0
-            # ImageNet mean and std (from torchvision/timm standard)
-            rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            rgb_search = (rgb_search - rgb_mean) / rgb_std
+            rgb_search = (rgb_search - self.rgb_mean) / self.rgb_std
 
         if isinstance(sonar_search, np.ndarray):
             sonar_search = torch.from_numpy(sonar_search).float()
             if sonar_search.ndim == 2:  # [H, W]
                 sonar_search = sonar_search.unsqueeze(0)  # → [1, H, W]
-            # Convert to [0, 1] then apply sonar normalization
+            # Convert to [0, 1] then apply normalization from config
             sonar_search = sonar_search / 255.0
-            # Sonar normalization (single channel)
-            sonar_mean = torch.tensor([0.5]).view(1, 1, 1)
-            sonar_std = torch.tensor([0.5]).view(1, 1, 1)
-            sonar_search = (sonar_search - sonar_mean) / sonar_std
+            sonar_search = (sonar_search - self.sonar_mean) / self.sonar_std
 
         # 5. Extract and merge metadata with letterbox metadata
         # CRITICAL FIX (Audit 2025112401 Finding 1): Add letterbox metadata
@@ -536,18 +549,14 @@ class TemplateSearchDataset(Dataset):
         # Convert to tensor [C, H, W] and apply normalization
         # CRITICAL FIX (Audit 2025112401 Finding 4):
         # Apply ImageNet normalization for pretrained ViT compatibility
+        # CRITICAL FIX (Audit 2025112402 Finding 3):
+        # Use config-loaded normalization parameters instead of hardcoding
         if crop_letterboxed.ndim == 2:  # Grayscale (sonar)
             crop_tensor = torch.from_numpy(crop_letterboxed).unsqueeze(0).float() / 255.0
-            # Sonar normalization
-            sonar_mean = torch.tensor([0.5]).view(1, 1, 1)
-            sonar_std = torch.tensor([0.5]).view(1, 1, 1)
-            crop_tensor = (crop_tensor - sonar_mean) / sonar_std
+            crop_tensor = (crop_tensor - self.sonar_mean) / self.sonar_std
         else:  # RGB
             crop_tensor = torch.from_numpy(crop_letterboxed).permute(2, 0, 1).float() / 255.0
-            # ImageNet normalization
-            rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            crop_tensor = (crop_tensor - rgb_mean) / rgb_std
+            crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
 
         return crop_tensor
 

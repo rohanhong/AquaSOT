@@ -73,12 +73,28 @@ class EvaluationSequenceDataset(Dataset):
         template_frame: str = 'first',
         enable_update: bool = False,
         update_interval: int = 10,
+        normalization_config: Optional[Dict] = None
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
         self.search_size = search_size
         self.enable_update = enable_update
         self.update_interval = update_interval
+
+        # CRITICAL FIX (Audit 2025112402 Finding 3):
+        # Load normalization parameters from config instead of hardcoding
+        if normalization_config is None:
+            normalization_config = {
+                'rgb_mean': [0.485, 0.456, 0.406],
+                'rgb_std': [0.229, 0.224, 0.225],
+                'sonar_mean': [0.5],
+                'sonar_std': [0.5]
+            }
+
+        self.rgb_mean = torch.tensor(normalization_config.get('rgb_mean', [0.485, 0.456, 0.406])).view(3, 1, 1)
+        self.rgb_std = torch.tensor(normalization_config.get('rgb_std', [0.229, 0.224, 0.225])).view(3, 1, 1)
+        self.sonar_mean = torch.tensor(normalization_config.get('sonar_mean', [0.5])).view(1, 1, 1)
+        self.sonar_std = torch.tensor(normalization_config.get('sonar_std', [0.5])).view(1, 1, 1)
 
         # Get sequence metadata
         seq_info = base_dataset.get_sequence_info()
@@ -403,18 +419,16 @@ class EvaluationSequenceDataset(Dataset):
 
         # CRITICAL FIX (Audit 2025112401 Finding 4):
         # Apply ImageNet normalization (same as training)
+        # CRITICAL FIX (Audit 2025112402 Finding 3):
+        # Use config-loaded normalization parameters instead of hardcoding
         img_tensor = img_tensor / 255.0
 
         if is_sonar:
-            # Sonar normalization (single channel)
-            sonar_mean = torch.tensor([0.5]).view(1, 1, 1)
-            sonar_std = torch.tensor([0.5]).view(1, 1, 1)
-            img_tensor = (img_tensor - sonar_mean) / sonar_std
+            # Sonar normalization from config
+            img_tensor = (img_tensor - self.sonar_mean) / self.sonar_std
         else:
-            # RGB ImageNet normalization
-            rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            img_tensor = (img_tensor - rgb_mean) / rgb_std
+            # RGB normalization from config
+            img_tensor = (img_tensor - self.rgb_mean) / self.rgb_std
 
         return img_tensor, metadata
 

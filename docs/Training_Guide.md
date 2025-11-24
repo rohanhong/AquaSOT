@@ -50,18 +50,69 @@ AquaSOT-3D supports **multi-sequence training** across the full AquaSOT-3D datas
 AquaSOT-3D uses **single-stage end-to-end training** with RGB + Sonar dual-modality:
 
 - **Duration**: 100 epochs (extended for end-to-end convergence)
-- **Backbone**: ViT-Small (vit_small_patch16_224) with ImageNet pretraining (via timm library)
+- **Backbone**: ViT-Base (vit_base_patch16_224) with ImageNet pretraining (via timm library)
 - **Modalities**: RGB + Sonar (both required, no single-modality support)
-- **Temporal Modeling**: Multi-frame sequences (5 consecutive frames) for Vision-Mamba
+- **Training Paradigm**: Template-Search pairs (OSTrack-style, mainstream tracking method)
 
 **Key Features:**
 
 - **No pretraining stages**: Direct end-to-end optimization from scratch
-- **Dual-modality fusion**: G2-DCMA fusion module enabled from the start
-- **Temporal tracking**: `sequence_length=5` enables learning across consecutive frames
-- **Quality-adaptive gating**: RGB and Sonar quality estimators for dynamic modality weighting
+- **Dual-modality fusion**: G²-DCMA fusion module enabled from the start
+- **Template-Search sampling**: Random gap sampling [1, 200] frames for diverse temporal distances
+- **Quality-adaptive fusion**: Geometric and representation consistency constraints
 
 This approach simplifies the training pipeline while enabling the model to jointly learn modality-specific features and cross-modal fusion strategies.
+
+### Data Augmentation Strategy
+
+**IMPORTANT DESIGN CHOICE:** Template and search frames follow different augmentation policies:
+
+- **Template frames**: Clean (no augmentation) for stable target appearance representation
+- **Search frames**: Full augmentation (color jitter, blur, occlusion) for robustness
+
+**Rationale:**
+- Templates serve as reference appearance models and should remain stable
+- Search frames face real-world variations and require robustness training
+- This asymmetric policy is standard in tracking methods (OSTrack, MixFormer, TransT)
+
+**Configuration** (`configs/train.yaml`):
+
+```yaml
+data:
+  augmentation:
+    enabled: true  # Applies to search frames only
+    type: TrackingAugmentation
+
+    rgb:
+      enable_color_jitter: true
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.3
+      hue: 0.2
+      color_jitter_prob: 0.5
+
+      enable_blur: true
+      blur_prob: 0.3
+
+      enable_occlusion: true
+      occlusion_prob: 0.2
+      occlusion_min_size: 0.05
+      occlusion_max_size: 0.3
+
+    sonar:
+      enable_speckle: true
+      speckle_level: 0.1
+      speckle_prob: 0.5
+
+      enable_occlusion: true
+      occlusion_prob: 0.2
+      occlusion_min_size: 0.05
+      occlusion_max_size: 0.3
+```
+
+**To enable template augmentation** (optional, for specific research purposes):
+
+Add `template_augmentation_enabled: true` to config. By default this is `false` to follow mainstream practice.
 
 ### Model Architecture
 

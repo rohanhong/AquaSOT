@@ -15,31 +15,28 @@ AquaSOT-3D supports **multi-sequence evaluation** across the full AquaSOT-3D dat
 
 ### Evaluation Modes
 
-AquaSOT-3D evaluation follows **RGBS50 benchmark protocol** with three evaluation modes:
+AquaSOT-3D evaluation follows **RGBS50 benchmark protocol** with two per-modality tracking outputs:
 
-1. **RGB Tracking**: RGB-only performance assessment
-2. **Sonar Tracking**: Sonar-only performance assessment
-3. **Fusion Tracking**: Multi-modal fusion performance assessment
+1. **RGB Tracking**: RGB box head output (uses RGB-view fused features)
+2. **Sonar Tracking**: Sonar box head output (uses Sonar-view fused features)
+
+Both outputs leverage **dual-view fusion features** from the G²-DCMA module, where:
+- RGB box predictions use RGB-perspective features enhanced with complementary Sonar information
+- Sonar box predictions use Sonar-perspective features enhanced with complementary RGB information
 
 **Metrics**: Success (AUC), Precision@20, Average Center Error, Mean IoU
 
-### Multi-Frame Temporal Evaluation
+### Template-Search Evaluation Protocol
 
-**Important:** Evaluation uses **multi-frame sequences** to properly test Vision-Mamba temporal modeling:
+**Evaluation Strategy**: Frame-by-frame sequential tracking using template-search paradigm:
 
-- `search_sequence_length=5`: Evaluation processes 5 consecutive frames per step
-- `use_sequence_grouping=true`: Maintains temporal continuity during evaluation
-- Vision-Mamba state persists across frames within each sequence
+- **Template**: First valid frame of the sequence (initialization)
+- **Search**: Current frame being tracked
+- **Template Updates** (optional): Can be enabled via `template_update.enabled=true` in config
+  - Update interval: Configurable (default: 10 frames)
+  - Update strategy: Quality-based or periodic
 
-This configuration ensures that temporal components (Vision-Mamba, EMA aggregation) are evaluated correctly, matching the training setup from Stage 3.
-
-**Configuration** (`configs/eval/eval.yaml`):
-
-```yaml
-data:
-  search_sequence_length: 5  # Match training configuration
-  use_sequence_grouping: true  # Ensure proper sequence-based evaluation
-```
+This matches the training paradigm and mainstream tracking methods (OSTrack, MixFormer).
 
 ---
 
