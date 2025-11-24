@@ -158,13 +158,28 @@ class Trainer:
         # Metric fallback tracking
         self._metric_fallback_applied = False
 
-        # CRITICAL FIX (Audit 2025112003): Infer enabled modalities from model architecture
+        # CRITICAL FIX (Audit 2025112404 Finding 2): Correct model hierarchy detection
+        # Model structure is model.backbone.{rgb_backbone,sonar_encoder}, not model.{rgb_backbone,sonar_backbone}
         # Used for conditional validity statistics reporting
         self.enabled_modalities = []
-        if hasattr(model, 'rgb_backbone') and model.rgb_backbone is not None:
-            self.enabled_modalities.append('rgb')
-        if hasattr(model, 'sonar_backbone') and model.sonar_backbone is not None:
-            self.enabled_modalities.append('sonar')
+
+        # Check if model has backbone attribute (standard AquaSOT3DTracker architecture)
+        if hasattr(model, 'backbone'):
+            backbone = model.backbone
+            if hasattr(backbone, 'rgb_backbone') and backbone.rgb_backbone is not None:
+                self.enabled_modalities.append('rgb')
+            if hasattr(backbone, 'sonar_encoder') and backbone.sonar_encoder is not None:
+                self.enabled_modalities.append('sonar')
+        else:
+            # Fallback for non-standard architectures or direct backbone access
+            logger.warning(
+                "Model has no 'backbone' attribute - modality detection may fail. "
+                "Please verify model architecture."
+            )
+            if hasattr(model, 'rgb_backbone') and model.rgb_backbone is not None:
+                self.enabled_modalities.append('rgb')
+            if hasattr(model, 'sonar_encoder') and model.sonar_encoder is not None:
+                self.enabled_modalities.append('sonar')
 
         logger.info(f"Trainer initialized: epochs={max_epochs}, amp={use_amp}, distributed={distributed}")
         logger.info(f"Enabled modalities: {self.enabled_modalities}")

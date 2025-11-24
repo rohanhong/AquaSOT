@@ -159,18 +159,10 @@ def build_dataloaders(cfg):
     """Build training and validation dataloaders with multi-sequence support"""
     logger.info("Building dataloaders")
 
-    # CRITICAL FIX (Audit 2025112003): Infer enabled modalities from model configuration
-    # This ensures single-modality training only loads necessary data
-    enabled_modalities = []
-    if cfg.model.backbone.rgb.get('type') not in [None, 'null']:
-        enabled_modalities.append('rgb')
-    if cfg.model.backbone.sonar.get('type') not in [None, 'null']:
-        enabled_modalities.append('sonar')
-
-    if not enabled_modalities:
-        raise ValueError("At least one modality (RGB or Sonar) must be enabled in model.backbone config")
-
-    logger.info(f"Training with modalities: {enabled_modalities}")
+    # CRITICAL FIX (Audit 2025112404 - Modality Cleanup):
+    # AquaSOT-3D is fundamentally a dual-sensor system
+    # Both RGB and Sonar are always required - no single-sensor operation
+    logger.info("Training with dual-sensor system (RGB + Sonar)")
 
     # Check if using new multi-sequence format or legacy single-sequence format
     use_multi_sequence = (
@@ -189,12 +181,10 @@ def build_dataloaders(cfg):
         logger.info(f"Train sequences: {train_sequences}")
         logger.info(f"Val sequences: {val_sequences}")
 
-        # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to dataset
-        # Create multi-sequence base datasets
+        # Create multi-sequence base datasets (always dual-sensor)
         train_base_dataset = MultiSequenceRGBSonarDataset(
             data_root=data_root,
             sequence_names=train_sequences,
-            modalities=enabled_modalities,
             return_occluded=True,
             sampling_policy='frame_balanced'
         )
@@ -209,11 +199,10 @@ def build_dataloaders(cfg):
             )
 
         if val_sequences:
-            # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to validation dataset
+            # Create validation dataset (always dual-sensor)
             val_base_dataset = MultiSequenceRGBSonarDataset(
                 data_root=data_root,
                 sequence_names=val_sequences,
-                modalities=enabled_modalities,
                 return_occluded=True,
                 sampling_policy='frame_balanced'
             )
@@ -242,19 +231,16 @@ def build_dataloaders(cfg):
         logger.info(f"Train data: {train_data_root}/{train_sequence_name}")
         logger.info(f"Val data: {val_data_root}/{val_sequence_name}")
 
-        # CRITICAL FIX (Audit 2025112003): Pass modalities parameter to legacy mode datasets
-        # Create single-sequence base datasets
+        # Create single-sequence base datasets (always dual-sensor)
         train_base_dataset = RGBSonarDataset(
             data_root=train_data_root,
             sequence_name=train_sequence_name,
-            modalities=enabled_modalities,
             return_occluded=True
         )
 
         val_base_dataset = RGBSonarDataset(
             data_root=val_data_root,
             sequence_name=val_sequence_name,
-            modalities=enabled_modalities,
             return_occluded=True
         )
 
@@ -445,16 +431,12 @@ def main():
     logger.info(f"CheckpointManager created: dir={cfg.paths.checkpoint_dir}, metric={checkpoint_manager.metric_name}")
 
     # Prepare checkpoint metadata (CRITICAL FIX: Audit 2025111704 Finding 4)
-    # Tag checkpoints with stage/modality info for classification and automation
-    modalities = []
-    if cfg.model.backbone.rgb.get('type') not in [None, 'null']:
-        modalities.append('rgb')
-    if cfg.model.backbone.sonar.get('type') not in [None, 'null']:
-        modalities.append('sonar')
-
+    # Tag checkpoints with stage info for classification and automation
+    # CRITICAL FIX (Audit 2025112404 - Modality Cleanup):
+    # Always dual-sensor (RGB + Sonar) - no single-sensor operation
     checkpoint_metadata = {
         'stage': cfg.experiment.get('group', 'unknown'),
-        'modalities': modalities,
+        'modalities': ['rgb', 'sonar'],  # Always both sensors
         'config_path': args.config,
         'experiment_name': cfg.experiment.name,
         'tags': cfg.experiment.get('tags', [])

@@ -43,7 +43,6 @@ def test_has_object_or_logic():
         dataset = RGBSonarDataset(
             data_root=data_root,
             sequence_name='uuv2',
-            modalities=['rgb', 'sonar'],
             return_occluded=True  # Important: return all samples
         )
     except Exception as e:
@@ -81,7 +80,6 @@ def test_separate_gt_boxes():
         base_dataset = RGBSonarDataset(
             data_root=data_root,
             sequence_name='uuv2',
-            modalities=['rgb', 'sonar'],
             return_occluded=True
         )
         ts_dataset = TemplateSearchDataset(
@@ -133,7 +131,6 @@ def test_collate_function_handles_separate_gt():
         base_dataset = RGBSonarDataset(
             data_root=data_root,
             sequence_name='uuv2',
-            modalities=['rgb', 'sonar'],
             return_occluded=True
         )
         ts_dataset = TemplateSearchDataset(
