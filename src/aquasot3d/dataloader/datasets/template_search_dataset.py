@@ -278,18 +278,19 @@ class TemplateSearchDataset(Dataset):
             sonar_metadata['original_height'] = sonar_letterbox_meta['original_size'][0]
             sonar_metadata['original_width'] = sonar_letterbox_meta['original_size'][1]
 
-        # CRITICAL FIX (Audit 2025112404 Finding 4 - CORRECTED):
-        # Removed hard-coded sonar geometry parameters (FOV, range, etc.)
-        # These were fabricated defaults that could silently mis-gate attention.
-        # TODO: Load actual sonar geometry from dataset metadata or config when implementing
-        # GeometryGatedAttention coordinate correction. DO NOT use synthetic values.
+        # CRITICAL FIX (Audit 2025112501 P3 - FINAL DESIGN):
+        # G²-DCMA uses HEURISTIC geometry gating based on letterbox metadata (scale/padding).
+        # External sonar geometry priors (FOV, range) are NOT used - this is the final implementation.
+        # GeometryGatedAttention computes radial bins from letterbox-compensated sensor origins,
+        # which provides sufficient geometric regularization without external calibration.
         #
-        # Required fields for future implementation:
-        #   - fov_degrees: Actual sonar FOV from sensor specs
-        #   - range_min/max: Actual range from sensor configuration
-        #   - is_rectified: Whether using Cartesian or polar coordinates
+        # Design rationale:
+        #   - Letterbox metadata (scale/pad) captures spatial transformations reliably
+        #   - Heuristic radial estimation from feature maps provides geometry-aware gating
+        #   - Avoids dependency on potentially inaccurate external geometry parameters
+        #   - Maintains calibration-free fusion capability (core system requirement)
         #
-        # For now, only pass transform metadata (scale/padding) which is safe.
+        # Only pass transform metadata (scale/padding) and rectification status.
         sonar_metadata['is_rectified'] = getattr(self.base_dataset, 'sonar_is_rectified', True)
 
         # CRITICAL FIX (Audit 2025112401 Finding 1):

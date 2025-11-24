@@ -9,8 +9,8 @@ Main training script that integrates all components:
 - Checkpointing and logging
 
 Usage:
-    python scripts/train.py --config configs/train/train.yaml
-    python scripts/train.py --config configs/train/train.yaml \\
+    python scripts/train.py --config configs/train.yaml
+    python scripts/train.py --config configs/train.yaml \\
         --opts training.lr=0.001 training.batch_size=32
 
 Author: AquaSOT-3D Team
@@ -278,7 +278,8 @@ def build_dataloaders(cfg):
         search_size=search_size,
         template_search_gap=gap_tuple,  # Fixed: correct parameter name
         template_update_policy=template_update_policy,
-        augmentation=train_augmentation
+        augmentation=train_augmentation,
+        normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
     )
 
     logger.info(f"Template-search training: template={template_size}x{template_size}, "
@@ -307,7 +308,8 @@ def build_dataloaders(cfg):
             template_size=template_size,
             search_size=search_size,
             template_search_gap=gap_tuple,  # Fixed: correct parameter name
-            augmentation=None  # No augmentation for validation
+            augmentation=None,  # No augmentation for validation
+            normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
         )
 
         logger.info(f"Val dataset: {len(val_dataset)} samples")

@@ -5,7 +5,7 @@ Evaluation Script for AquaSOT-3D
 Evaluate trained model on test set using Phase 9 evaluation module.
 
 Usage:
-    python scripts/eval.py --config configs/eval/eval.yaml \\
+    python scripts/eval.py --config configs/eval.yaml \\
         --checkpoint outputs/train/checkpoints/best_model.pth
 
 Author: AquaSOT-3D Team
@@ -254,6 +254,7 @@ def main():
                 template_frame='first',
                 enable_update=template_update_enabled,
                 update_interval=template_update_interval,
+                normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
             )
 
             eval_datasets.append(seq_eval_dataset)
@@ -318,6 +319,7 @@ def main():
             template_frame='first',  # Use first frame as template (RGBS50 protocol)
             enable_update=template_update_enabled,
             update_interval=template_update_interval,
+            normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
         )
 
         logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")

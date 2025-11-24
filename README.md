@@ -246,6 +246,55 @@ data/
 
 **Groundtruth Format**: Each line contains `x,y,w,h` (top-left coordinates and size). Use `0,0,0,0` for occluded frames.
 
+### Preprocess Sonar Data
+
+**IMPORTANT**: Before training or evaluation, you **must** preprocess sonar data to convert polar coordinates to Cartesian (rectified) format. The template-search architecture requires geometrically consistent bounding boxes, which are only valid in Cartesian coordinates.
+
+**Preprocess All Sequences** (Recommended):
+
+```bash
+python scripts/preprocess_sonar.py --all
+```
+
+This will generate rectified sonar data for all sequences:
+- `sonar/img_rect/` - Rectified sonar images (Cartesian coordinates)
+- `sonar/groundtruth_rect.txt` - Rectified bounding box annotations
+
+**Preprocess Single Sequence**:
+
+```bash
+# Preprocess specific sequence
+python scripts/preprocess_sonar.py --sequence uuv1
+```
+
+**Preprocess Multiple Sequences**:
+
+```bash
+# Process sequences one by one
+python scripts/preprocess_sonar.py --sequence uuv1
+python scripts/preprocess_sonar.py --sequence uuv2
+python scripts/preprocess_sonar.py --sequence uuv3
+
+# Or use a shell loop
+for seq in uuv1 uuv2 uuv3; do
+    python scripts/preprocess_sonar.py --sequence $seq
+done
+```
+
+**Why Preprocessing is Required**:
+- Raw sonar data is in **polar coordinates** (range-bearing format)
+- Training requires **Cartesian coordinates** for letterbox transforms and bbox operations
+- Using polar data directly will produce geometrically incorrect training
+
+**Verification**: After preprocessing, your dataset structure should include:
+```
+data/uuv1/sonar/
+├── img/                    # Original polar images (preserved)
+├── img_rect/               # Rectified Cartesian images (generated)
+├── groundtruth.txt         # Original polar annotations (preserved)
+└── groundtruth_rect.txt    # Rectified Cartesian annotations (generated)
+```
+
 ### Run Training
 
 **Multi-Sequence Training** (Recommended):
@@ -253,7 +302,7 @@ data/
 Train on all 9 training sequences:
 
 ```bash
-python scripts/train.py --config configs/train/train.yaml
+python scripts/train.py --config configs/train.yaml
 ```
 
 **Single-Sequence Training** (Legacy):
@@ -261,7 +310,7 @@ python scripts/train.py --config configs/train/train.yaml
 Train on UUV2 only (for compatibility or debugging):
 
 ```bash
-python scripts/train.py --config configs/train/train.yaml
+python scripts/train.py --config configs/train.yaml
 ```
 
 **Training Options**:
@@ -296,7 +345,7 @@ Evaluate on all 3 validation sequences:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval.yaml \
+    --config configs/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
@@ -306,7 +355,7 @@ Evaluate on UUV3 only:
 
 ```bash
 python scripts/eval.py \
-    --config configs/eval/eval.yaml \
+    --config configs/eval.yaml \
     --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
 ```
 
