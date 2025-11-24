@@ -336,6 +336,9 @@ class Trainer:
             'invalid_samples': 0
         }
 
+        # CRITICAL FIX (Audit 2025112503 Remaining Issue 2): Get total batches for tail handling
+        total_batches = len(self.train_loader)
+
         # Progress bar
         pbar = tqdm(
             self.train_loader,
@@ -563,7 +566,9 @@ class Trainer:
                 loss.backward()
 
             # Optimizer step (with gradient accumulation)
-            if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+            # CRITICAL FIX (Audit 2025112503 Remaining Issue 2): Step on last batch too
+            # This ensures tail batches are not dropped, and avoids under-scaling
+            if (batch_idx + 1) % self.gradient_accumulation_steps == 0 or batch_idx == total_batches - 1:
                 # Gradient clipping
                 if self.grad_clip_norm is not None:
                     if self.use_amp:

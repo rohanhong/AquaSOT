@@ -321,6 +321,10 @@ class G2DCMA(BaseModule):
                 conf_modulation = combined_confidence.view(B, 1, 1, 1)
                 geometry_gated = geometry_gated * conf_modulation
         else:
+            # CRITICAL FIX (Audit 2025112503 Finding 2): Safe ablation branch
+            # When geometry gating is disabled, construct a placeholder geometry_output
+            # to prevent UnboundLocalError when accessing geometry_output later
+
             # Ablation: Skip geometry gating, use simple concatenation
             # Resize sonar to match RGB if needed
             if sonar_features.shape[2:] != rgb_features.shape[2:]:
@@ -340,6 +344,17 @@ class G2DCMA(BaseModule):
                     geometry_gated.shape[1], self.embed_dim, kernel_size=1
                 ).to(geometry_gated.device)
             geometry_gated = self.geometry_bypass_proj(geometry_gated)
+
+            # CRITICAL FIX (Audit 2025112503 Finding 2): Construct placeholder geometry_output
+            # This prevents crashes when returning geometric_info later
+            geometry_output = {
+                'fused_features': geometry_gated,
+                'gating_weights': torch.zeros(B, device=rgb_features.device),
+                'radial_encoding': torch.zeros(B, 64, device=rgb_features.device),
+                'scale_encoding': torch.zeros(B, 64, device=rgb_features.device),
+                'attention_probs': torch.zeros(B, 1, device=rgb_features.device),
+                '_ablation_mode': 'no_gating'  # Flag for debugging
+            }
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Step 2: Bidirectional Deformable Attention for Dual-View Fusion
@@ -923,6 +938,10 @@ class ConditionalG2DCMA(BaseModule):
 
         # Initialize output tensors
         fused_features = torch.zeros(B, self.embed_dim, H_rgb, W_rgb, device=rgb_features.device, dtype=rgb_features.dtype)
+        # CRITICAL FIX (Audit 2025112503 Finding 1): Initialize dual-view output tensors
+        # RGB and Sonar BoxHeads require separate view-specific features
+        rgb_view_features = torch.zeros(B, self.embed_dim, H_rgb, W_rgb, device=rgb_features.device, dtype=rgb_features.dtype)
+        sonar_view_features = torch.zeros(B, self.embed_dim, H_rgb, W_rgb, device=rgb_features.device, dtype=rgb_features.dtype)
 
         # Routing info for debugging and analysis
         routing_info = {
@@ -938,6 +957,8 @@ class ConditionalG2DCMA(BaseModule):
             'component_consistency': torch.tensor(0.0, device=rgb_features.device),
             'representation_consistency': torch.tensor(0.0, device=rgb_features.device)
         }
+        # CRITICAL FIX (Audit 2025112503 Remaining Issue 1): Initialize view_consistency_loss
+        view_consistency_loss_accum = torch.tensor(0.0, device=rgb_features.device)
 
         # Route 1: Dual-modality → Full G²-DCMA fusion
         if dual_modality_mask.any():
@@ -968,6 +989,11 @@ class ConditionalG2DCMA(BaseModule):
             # Place fused features back to output tensor
             fused_features[dual_idx] = g2_output['fused_features']
 
+            # CRITICAL FIX (Audit 2025112503 Finding 1): Propagate dual-view features
+            # RGB BoxHead needs RGB-view fused features, Sonar BoxHead needs Sonar-view fused features
+            rgb_view_features[dual_idx] = g2_output['rgb_view_fused']
+            sonar_view_features[dual_idx] = g2_output['sonar_view_fused']
+
             # Accumulate consistency losses (weighted by number of dual-modality samples)
             if return_consistency and 'consistency_losses' in g2_output:
                 weight = dual_idx.shape[0] / B
@@ -975,6 +1001,12 @@ class ConditionalG2DCMA(BaseModule):
                 # DualConsistencyLoss returns 'component_loss' and 'infonce_loss'
                 consistency_losses['component_consistency'] = g2_output['consistency_losses'].get('component_loss', torch.tensor(0.0, device=rgb_features.device)) * weight
                 consistency_losses['representation_consistency'] = g2_output['consistency_losses'].get('infonce_loss', torch.tensor(0.0, device=rgb_features.device)) * weight
+
+            # CRITICAL FIX (Audit 2025112503 Remaining Issue 1): Propagate view_consistency_loss
+            # G2DCMA returns view_consistency_loss for cross-view regularization
+            if 'view_consistency_loss' in g2_output:
+                weight = dual_idx.shape[0] / B
+                view_consistency_loss_accum += g2_output['view_consistency_loss'] * weight
 
         # Route 2: Single-RGB → RGB bypass
         if single_rgb_mask.any():
@@ -986,6 +1018,12 @@ class ConditionalG2DCMA(BaseModule):
 
             # Place bypassed features back to output tensor
             fused_features[rgb_idx] = rgb_bypassed
+
+            # CRITICAL FIX (Audit 2025112503 Finding 1): Construct dual-view for single-RGB
+            # RGB-view: use bypassed RGB features
+            # Sonar-view: zero (no sonar information available)
+            rgb_view_features[rgb_idx] = rgb_bypassed
+            sonar_view_features[rgb_idx] = torch.zeros_like(rgb_bypassed)
 
         # Route 3: Single-Sonar → Sonar bypass
         if single_sonar_mask.any():
@@ -1007,6 +1045,12 @@ class ConditionalG2DCMA(BaseModule):
             # Place bypassed features back to output tensor
             fused_features[sonar_idx] = sonar_bypassed
 
+            # CRITICAL FIX (Audit 2025112503 Finding 1): Construct dual-view for single-Sonar
+            # RGB-view: zero (no RGB information available)
+            # Sonar-view: use bypassed Sonar features (already resized to RGB dimensions)
+            rgb_view_features[sonar_idx] = torch.zeros_like(sonar_bypassed)
+            sonar_view_features[sonar_idx] = sonar_bypassed
+
         # Route 4: Zero-modality → Minimal features (already initialized to zeros)
         # No additional processing needed for zero-modality samples
 
@@ -1022,8 +1066,15 @@ class ConditionalG2DCMA(BaseModule):
 
         output = {
             'fused_features': fused_features,
+            # CRITICAL FIX (Audit 2025112503 Finding 1): Add dual-view outputs
+            # These are essential for RGB and Sonar BoxHeads to use their respective view features
+            'rgb_view_fused': rgb_view_features,    # For RGB BoxHead
+            'sonar_view_fused': sonar_view_features,  # For Sonar BoxHead
             'routing_info': routing_info,
-            'consistency_losses': consistency_losses if return_consistency else None
+            'consistency_losses': consistency_losses if return_consistency else None,
+            # CRITICAL FIX (Audit 2025112503 Remaining Issue 1): Propagate view_consistency_loss
+            # This enables training.loss_weights.view_consistency to take effect
+            'view_consistency_loss': view_consistency_loss_accum
         }
 
         return output

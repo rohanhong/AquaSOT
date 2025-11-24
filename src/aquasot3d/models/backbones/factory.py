@@ -302,43 +302,61 @@ class MultiModalBackbone(nn.Module):
     def __init__(
         self,
         rgb_config: Dict[str, Any],
-        sonar_config: Dict[str, Any]
+        sonar_config: Dict[str, Any],
+        allow_single_modality: bool = False
     ):
+        """
+        CRITICAL FIX (Audit 2025112503 Finding 4): Allow single-modality configuration
+        for robustness validation and ablation experiments.
+
+        Args:
+            rgb_config: Configuration for RGB backbone
+            sonar_config: Configuration for Sonar encoder
+            allow_single_modality: If True, allow single-modality configuration (default: False)
+                                   When False, both modalities are required (standard training)
+                                   When True, at least one modality must be configured (ablation experiments)
+        """
         super().__init__()
 
-        # CRITICAL FIX (Audit 2025112401 Finding 7):
-        # Explicitly validate that both modalities are configured
-        # Single-modality training is NOT supported in this architecture
-        if not rgb_config or not sonar_config:
-            raise ValueError(
-                "Both RGB and Sonar configurations are required for MultiModalBackbone. "
-                "Single-modality training is not supported. "
-                "Please provide valid configs for both modalities."
+        # Check which modalities are enabled
+        has_rgb = rgb_config and rgb_config.get('type') not in [None, 'null']
+        has_sonar = sonar_config and sonar_config.get('type') not in [None, 'null']
+
+        # Validation logic
+        if not allow_single_modality:
+            # Standard mode: Require both modalities
+            if not has_rgb or not has_sonar:
+                raise ValueError(
+                    "Both RGB and Sonar configurations are required for MultiModalBackbone. "
+                    "Single-modality training is not supported by default. "
+                    "To enable single-modality for ablation experiments, set allow_single_modality=True."
+                )
+        else:
+            # Ablation mode: Allow single-modality, but at least one must be enabled
+            if not has_rgb and not has_sonar:
+                raise ValueError(
+                    "At least one modality (RGB or Sonar) must be configured. "
+                    "Both cannot be null/None. "
+                    "Please provide valid config for at least one modality."
+                )
+
+        # Create backbones (may be None in single-modality mode)
+        self.rgb_backbone = BackboneFactory.create_from_config(rgb_config) if has_rgb else None
+        self.sonar_encoder = BackboneFactory.create_from_config(sonar_config) if has_sonar else None
+
+        # Log initialization
+        modalities = []
+        if self.rgb_backbone is not None:
+            modalities.append("RGB")
+        if self.sonar_encoder is not None:
+            modalities.append("Sonar")
+
+        logger.info(f"Initialized MultiModalBackbone with {' and '.join(modalities)} encoder(s)")
+        if allow_single_modality and len(modalities) == 1:
+            logger.warning(
+                f"Single-modality mode enabled: only {modalities[0]} encoder is active. "
+                "This configuration is for ablation experiments only."
             )
-
-        # Check for null/disabled types
-        rgb_type = rgb_config.get('type', None)
-        sonar_type = sonar_config.get('type', None)
-
-        if rgb_type is None or rgb_type == 'null':
-            raise ValueError(
-                "RGB backbone type cannot be 'null' or None. "
-                "AquaSOT-3D requires both RGB and Sonar modalities for training. "
-                "If you want single-modality ablation, please use separate single-modal configs."
-            )
-
-        if sonar_type is None or sonar_type == 'null':
-            raise ValueError(
-                "Sonar backbone type cannot be 'null' or None. "
-                "AquaSOT-3D requires both RGB and Sonar modalities for training. "
-                "If you want single-modality ablation, please use separate single-modal configs."
-            )
-
-        # Create backbones
-        self.rgb_backbone = BackboneFactory.create_from_config(rgb_config)
-        self.sonar_encoder = BackboneFactory.create_from_config(sonar_config)
-
-        logger.info("Initialized MultiModalBackbone with RGB and Sonar encoders")
 
     def forward(
         self,
@@ -353,6 +371,9 @@ class MultiModalBackbone(nn.Module):
         ARCHITECTURE CHANGE (Audit 2025112104):
         Migrated from frame-sequence to template-search processing.
 
+        CRITICAL FIX (Audit 2025112503 Finding 4):
+        Support single-modality forward pass when allow_single_modality=True.
+
         Args:
             rgb_template: RGB template (B, 3, template_size, template_size)
             rgb_search: RGB search (B, 3, search_size, search_size)
@@ -360,44 +381,65 @@ class MultiModalBackbone(nn.Module):
             sonar_search: Sonar search (B, 1, search_size, search_size)
 
         Returns:
-            Dictionary containing features from both modalities:
+            Dictionary containing features from available modalities:
             {
                 'rgb': {
-                    'template_features': [B, N_z, D],
-                    'search_features': [B, N_x, D]
+                    'template_features': [B, N_z, D] or None,
+                    'search_features': [B, N_x, D] or None
                 },
                 'sonar': {
-                    'template_features': [B, N_z, D],
-                    'search_features': [B, N_x, D]
+                    'template_features': [B, N_z, D] or None,
+                    'search_features': [B, N_x, D] or None
                 }
             }
             where N_z = (template_size // patch_size)^2, N_x = (search_size // patch_size)^2
         """
-        # Extract RGB template-search features
-        rgb_feat_template, rgb_feat_search = self.rgb_backbone(rgb_template, rgb_search)
+        # CRITICAL FIX (Audit 2025112503 Finding 4): Handle single-modality forward
+        outputs = {'rgb': {}, 'sonar': {}}
 
-        # Extract Sonar template-search features
-        sonar_feat_template, sonar_feat_search = self.sonar_encoder(sonar_template, sonar_search)
-
-        # Package outputs
-        outputs = {
-            'rgb': {
+        # Extract RGB template-search features (if RGB backbone exists)
+        if self.rgb_backbone is not None:
+            rgb_feat_template, rgb_feat_search = self.rgb_backbone(rgb_template, rgb_search)
+            outputs['rgb'] = {
                 'template_features': rgb_feat_template,
                 'search_features': rgb_feat_search,
-            },
-            'sonar': {
+            }
+        else:
+            # RGB backbone disabled - return None
+            outputs['rgb'] = {
+                'template_features': None,
+                'search_features': None,
+            }
+
+        # Extract Sonar template-search features (if Sonar encoder exists)
+        if self.sonar_encoder is not None:
+            sonar_feat_template, sonar_feat_search = self.sonar_encoder(sonar_template, sonar_search)
+            outputs['sonar'] = {
                 'template_features': sonar_feat_template,
                 'search_features': sonar_feat_search,
-            },
-        }
+            }
+        else:
+            # Sonar encoder disabled - return None
+            outputs['sonar'] = {
+                'template_features': None,
+                'search_features': None,
+            }
 
         return outputs
 
     def get_feature_dims(self) -> Dict[str, int]:
-        """Get feature dimensions for both modalities."""
+        """
+        Get feature dimensions for both modalities.
+
+        CRITICAL FIX (Audit 2025112503 Finding 4):
+        Handle None backbones in single-modality mode.
+
+        Returns:
+            Dictionary with feature dimensions (None for disabled modalities)
+        """
         return {
-            'rgb': self.rgb_backbone.get_feature_dim(),
-            'sonar': self.sonar_encoder.get_feature_dim(),
+            'rgb': self.rgb_backbone.get_feature_dim() if self.rgb_backbone is not None else None,
+            'sonar': self.sonar_encoder.get_feature_dim() if self.sonar_encoder is not None else None,
         }
 
 

@@ -1,0 +1,88 @@
+# ==============================================================================
+# Ablation: RGB-Only Single-Modality
+#
+# Enable single-modality mode to assess RGB-only tracking performance
+# and validate robustness when Sonar is unavailable.
+#
+# CRITICAL FIX (Audit 2025112503 Finding 4):
+# This configuration requires allow_single_modality=True parameter.
+#
+# Author: AquaSOT-3D Team
+# Date: 2025-11-25
+# ==============================================================================
+
+_base_: ../train.yaml
+
+
+# ------------------------------------------------------------------------------
+# Experiment Configuration
+# ------------------------------------------------------------------------------
+experiment:
+  name: ablation_rgb_only
+  tags: [ablation, single_modality, rgb_only]
+  notes: "Ablation study: RGB-only tracking without Sonar fusion"
+  group: ablation
+
+
+# ------------------------------------------------------------------------------
+# Model Configuration - Single RGB Modality
+# ------------------------------------------------------------------------------
+model:
+  # CRITICAL: Enable single-modality mode
+  allow_single_modality: true
+
+  # Backbone configuration with proper schema
+  backbone:
+    # RGB backbone configuration (standard)
+    rgb:
+      type: vit_rgb
+      model_name: vit_base_patch16_224
+      pretrained: true
+      template_size: 256
+      search_size: 512
+
+    # Sonar backbone disabled (set type to null)
+    sonar:
+      type: null
+      # All other sonar config is ignored when type=null
+
+  # Fusion module will use single-RGB bypass path
+  fusion:
+    type: conditional_g2_dcma
+    embed_dim: 256
+    num_heads: 8
+    # Fusion will automatically route to RGB-only branch
+
+
+# ------------------------------------------------------------------------------
+# Dataset Configuration - RGB-only data loading
+# ------------------------------------------------------------------------------
+dataset:
+  train:
+    # Dataset will still load both modalities but validation flags
+    # will mark Sonar as invalid, triggering single-modality routing
+    load_sonar: false  # Optional: skip Sonar loading for efficiency
+
+  val:
+    load_sonar: false
+
+
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+paths:
+  work_dir: outputs/ablation_rgb_only
+  checkpoint_dir: outputs/ablation_rgb_only/checkpoints
+  log_dir: outputs/ablation_rgb_only/logs
+
+
+# ------------------------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------------------------
+# Adjust learning rate for single-modality (typically lower)
+optimizer:
+  lr: 0.0003  # Reduced from 0.0005 (fewer parameters to train)
+
+# Reduce training epochs (single-modality converges faster)
+training:
+  max_epochs: 40  # Reduced from 60

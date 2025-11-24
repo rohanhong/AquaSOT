@@ -78,9 +78,12 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         # 1. Multi-Modal Backbones
         # =====================================================
+        # CRITICAL FIX (Audit 2025112503 Finding 4 Follow-up):
+        # Expose allow_single_modality parameter from config for ablation experiments
         self.backbone = MultiModalBackbone(
             rgb_config=rgb_backbone_config,
-            sonar_config=sonar_backbone_config
+            sonar_config=sonar_backbone_config,
+            allow_single_modality=kwargs.get('allow_single_modality', False)
         )
 
         # Get feature dimensions from actual backbones (not config, to handle timm model variations)

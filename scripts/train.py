@@ -128,12 +128,17 @@ def build_model(cfg):
     box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
     # ARCHITECTURE UPDATE (Audit 2025112313): fusion_head removed (dual-view fusion architecture)
 
+    # CRITICAL FIX (Audit 2025112503 Remaining Issue 3): Extract allow_single_modality from config
+    # This enables single-modality ablation experiments via YAML configuration
+    allow_single_modality = cfg.model.get('allow_single_modality', False)
+
     # Build model
     model = AquaSOT3DTracker(
         rgb_backbone_config=rgb_backbone_cfg,
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
-        box_head_config=box_head_cfg
+        box_head_config=box_head_cfg,
+        allow_single_modality=allow_single_modality  # Pass flag to tracker
     )
 
     logger.info(f"Model built successfully")
