@@ -990,14 +990,33 @@ class Trainer:
         if metrics is None:
             metrics = {}
 
+        # CRITICAL FIX (Audit 2025112509 Bug B4): Handle emergency save properly
+        # When epoch=-1, preserve actual trainer state for complete recovery
+        is_emergency = (epoch == -1)
+        if is_emergency:
+            # Use actual current epoch for state preservation
+            actual_epoch = self.current_epoch
+        else:
+            actual_epoch = epoch
+
         # Generate default filename if not provided
         if filename is None:
-            if epoch == -1:
+            if is_emergency:
                 filename = 'checkpoint_emergency.pth'
             elif is_best:
                 filename = 'checkpoint_best.pth'
             else:
-                filename = f'checkpoint_epoch_{epoch + 1}.pth'
+                filename = f'checkpoint_epoch_{actual_epoch + 1}.pth'
+
+        # CRITICAL FIX (Audit 2025112509 Bug B4): Merge trainer state into metadata
+        # Ensure global_step and best_metric are preserved for complete resumption
+        checkpoint_meta = self.checkpoint_metadata.copy()
+        checkpoint_meta['trainer_state'] = {
+            'current_epoch': self.current_epoch,
+            'global_step': self.global_step,
+            'best_metric': self.best_metric,
+            'is_emergency_save': is_emergency
+        }
 
         logger.info(f"Saving checkpoint: {filename}")
 
@@ -1005,11 +1024,11 @@ class Trainer:
             model=self.model,
             optimizer=self.optimizer,
             scheduler=self.scheduler,
-            epoch=epoch,
+            epoch=actual_epoch,
             metrics=metrics,
             is_best=is_best,
             filename=filename,
-            metadata=self.checkpoint_metadata
+            metadata=checkpoint_meta
         )
 
     def load_checkpoint(
@@ -1052,13 +1071,27 @@ class Trainer:
         epoch = checkpoint.get('epoch', 0)
         self.current_epoch = epoch
 
-        if 'global_step' in checkpoint:
-            self.global_step = checkpoint['global_step']
+        # CRITICAL FIX (Audit 2025112509 Bug B4): Restore complete trainer state
+        # First check for trainer_state in metadata (new format), then fallback to legacy format
+        metadata = checkpoint.get('metadata', {})
+        trainer_state = metadata.get('trainer_state', {})
 
-        if 'best_metric' in checkpoint:
-            self.best_metric = checkpoint['best_metric']
+        if trainer_state:
+            # New format: restore from trainer_state in metadata
+            self.current_epoch = trainer_state.get('current_epoch', epoch)
+            self.global_step = trainer_state.get('global_step', 0)
+            self.best_metric = trainer_state.get('best_metric', float('-inf'))
+            if trainer_state.get('is_emergency_save', False):
+                logger.warning("Resuming from emergency checkpoint - verifying state integrity")
+        else:
+            # Legacy format: restore from top-level checkpoint keys
+            if 'global_step' in checkpoint:
+                self.global_step = checkpoint['global_step']
 
-        logger.info(f"Resumed from epoch {epoch + 1}")
+            if 'best_metric' in checkpoint:
+                self.best_metric = checkpoint['best_metric']
+
+        logger.info(f"Resumed from epoch {epoch + 1} (global_step={self.global_step})")
 
         # Return next epoch to start from
         return epoch + 1

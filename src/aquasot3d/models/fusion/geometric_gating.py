@@ -36,18 +36,24 @@ class RadialProfileExtractor(BaseModule):
         num_bins: Number of radial bins for discretization
         feature_dim: Dimensionality of input feature maps
         learnable_weights: Whether to use learnable aggregation weights
+        default_target_size: Default letterbox target size for stride estimation
+                            when metadata is incomplete (default: 512 for search)
     """
 
     def __init__(
         self,
         num_bins: int = 50,
         feature_dim: int = 256,
-        learnable_weights: bool = True
+        learnable_weights: bool = True,
+        default_target_size: int = 512
     ):
         super().__init__()
         self.num_bins = num_bins
         self.feature_dim = feature_dim
         self.learnable_weights = learnable_weights
+        # CRITICAL FIX (Audit 2025112509 Bug B2): Add explicit default_target_size parameter
+        # This provides a reliable fallback when metadata is incomplete, avoiding fragile inference
+        self.default_target_size = default_target_size
 
         # Learnable channel-wise weights for aggregation
         if learnable_weights:
@@ -244,9 +250,10 @@ class RadialProfileExtractor(BaseModule):
                 target_size = original_h * scale + 2 * pad_top  # Rough estimate
                 stride = target_size / H
             else:
-                # No metadata: assume feature map corresponds directly to image (stride=1)
-                # This is a fallback for cases without letterbox
-                stride = 1.0
+                # No metadata: use default_target_size for stride estimation
+                # CRITICAL FIX (Audit 2025112509 Bug B2): Use configurable default instead of fragile stride=1.0
+                # This provides a reliable fallback when metadata is incomplete
+                stride = self.default_target_size / H
 
             # CRITICAL FIX: Sonar rectangular coordinates are (bearing_angle, range)
             # - x-axis: X-direction angle (bearing, horizontal FOV)
@@ -376,7 +383,16 @@ class ScalePyramidExtractor(BaseModule):
         self.use_attention = use_attention
 
         # Channel dimension adapters (registered as ModuleDict for state dict persistence)
+        # CRITICAL FIX (Audit 2025112509 Bug B3): Pre-initialize common dimension adapters
+        # to ensure checkpoint completeness. Dynamically created adapters during forward
+        # may be missing if model is saved before all dimensions are encountered.
+        common_input_dims = [768, 384, 512, 1024]  # ViT-Base, ViT-Small, common, ViT-Large
         self.channel_adapters = nn.ModuleDict()
+        for dim in common_input_dims:
+            if dim != feature_dim:
+                self.channel_adapters[str(dim)] = nn.Conv2d(
+                    dim, feature_dim, kernel_size=1
+                )
 
         # Scale-specific processing layers
         self.scale_convs = nn.ModuleList([
@@ -587,9 +603,17 @@ class GeometryGatedAttention(BaseModule):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         # Dynamic dimension adapters (registered for state dict persistence)
+        # CRITICAL FIX (Audit 2025112509 Bug B3): Pre-initialize common dimension adapters
+        # to ensure checkpoint completeness for cross-modal attention
+        common_input_dims = [768, 384, 512, 1024]  # ViT-Base, ViT-Small, common, ViT-Large
         self.rgb_adapters = nn.ModuleDict()
         self.sonar_adapters = nn.ModuleDict()
         self.rgb_out_adapters = nn.ModuleDict()
+        for dim in common_input_dims:
+            if dim != embed_dim:
+                self.rgb_adapters[str(dim)] = nn.Linear(dim, embed_dim)
+                self.sonar_adapters[str(dim)] = nn.Linear(dim, embed_dim)
+                self.rgb_out_adapters[str(dim)] = nn.Linear(embed_dim, dim)
 
         self.dropout = nn.Dropout(dropout)
         self.scale = self.head_dim ** -0.5

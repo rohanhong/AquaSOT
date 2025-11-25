@@ -238,8 +238,12 @@ class G2DCMA(BaseModule):
                 'component_weight': 0.2,
                 'representation_weight': 0.1,
                 'component_loss_type': 'l1',
-                'infonce_temperature': 0.07
+                'infonce_temperature': 0.07,
+                'view_consistency_weight': 0.1  # CRITICAL FIX (Audit 2025112509 Bug B5)
             }
+        # CRITICAL FIX (Audit 2025112509 Bug B5): Extract view_consistency_weight from config
+        # This was previously hardcoded as * 0.1 in forward(), now configurable
+        self.view_consistency_weight = consistency_config.pop('view_consistency_weight', 0.1)
         self.consistency_loss = DualConsistencyLoss(**consistency_config)
 
         self.fusion_layer = nn.Sequential(
@@ -480,9 +484,10 @@ class G2DCMA(BaseModule):
 
         # Step 5: Cross-View Consistency (for regularization)
         # Ensure both views can reconstruct each other
+        # CRITICAL FIX (Audit 2025112509 Bug B5): Use configurable weight instead of hardcoded 0.1
         view_consistency_loss = F.mse_loss(
             rgb_view_fused, sonar_view_fused
-        ) * 0.1  # Small weight for consistency regularization
+        ) * self.view_consistency_weight
 
         output = {
             'rgb_view_fused': rgb_view_fused,  # [B, C, H_rgb, W_rgb] - For RGB BoxHead
@@ -686,7 +691,8 @@ class G2DCMALite(BaseModule):
                 'component_weight': 0.1,
                 'representation_weight': 0.05,
                 'component_loss_type': 'l1',
-                'infonce_temperature': 0.1
+                'infonce_temperature': 0.1,
+                'view_consistency_weight': 0.1  # CRITICAL FIX (Audit 2025112509 Bug B5)
             }
         )
 
