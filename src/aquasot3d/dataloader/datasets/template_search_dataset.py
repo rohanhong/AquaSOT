@@ -246,6 +246,9 @@ class TemplateSearchDataset(Dataset):
             # CRITICAL FIX (Audit 2025112505 Issue 7): Convert Tensor to numpy if needed
             if isinstance(rgb_search_raw, torch.Tensor):
                 rgb_search_raw = rgb_search_raw.cpu().numpy()
+                # CRITICAL FIX (Audit 2025112510): Augmentation returns [C, H, W], convert to [H, W, C]
+                if rgb_search_raw.ndim == 3 and rgb_search_raw.shape[0] in [1, 3]:
+                    rgb_search_raw = rgb_search_raw.transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
             # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
             # Note: bbox may have been transformed by augmentation (e.g., horizontal flip)
             # CRITICAL FIX (Audit 2025112505 Issue 6): Handle both numpy and tensor types
@@ -268,6 +271,9 @@ class TemplateSearchDataset(Dataset):
             # CRITICAL FIX (Audit 2025112505 Issue 7): Convert Tensor to numpy if needed
             if isinstance(sonar_search_raw, torch.Tensor):
                 sonar_search_raw = sonar_search_raw.cpu().numpy()
+                # CRITICAL FIX (Audit 2025112510): Augmentation returns [C, H, W], convert to [H, W, C] or [H, W]
+                if sonar_search_raw.ndim == 3 and sonar_search_raw.shape[0] == 1:
+                    sonar_search_raw = sonar_search_raw.transpose(1, 2, 0)  # [1, H, W] -> [H, W, 1]
             # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
             # CRITICAL FIX (Audit 2025112505 Issue 6): Handle both numpy and tensor types
             sonar_bbox = search_sample['sonar_bbox']

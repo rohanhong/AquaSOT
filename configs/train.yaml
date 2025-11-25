@@ -1,247 +1,148 @@
-# ==============================================================================
-# AquaSOT-3D Full Training Configuration
-# ==============================================================================
-# Single-stage end-to-end training with RGB + Sonar dual-modality
-# No pretraining - trains from scratch using ImageNet-pretrained ViT backbones
+# AquaSOT-3D Training Configuration
 
 _base_: default.yaml
 
-
-# ------------------------------------------------------------------------------
-# Experiment Configuration
-# ------------------------------------------------------------------------------
 experiment:
-  name: aquasot3d_full_training
+  name: aquasot3d_full_training   # Experiment name
   tags: [end-to-end, dual-modality, fusion]
-  notes: "Single-stage full training from scratch with dual-modality fusion"
-  group: full_training
+  notes: "Single-stage full training with dual-modality fusion"
+  group: full_training            # Experiment group
 
-
-# ------------------------------------------------------------------------------
-# System Configuration
-# ------------------------------------------------------------------------------
 system:
-  # CRITICAL FIX (Audit 2025112401): Disable AMP for numerical stability
-  # Root cause: G2-DCMA fusion and ViT backbones produce NaN under FP16 AMP
-  # All mainstream fixes (grad clipping, loss weights, GIoU stabilization) failed
-  use_amp: false
+  use_amp: false                  # Mixed precision (disabled for stability)
 
-
-# ------------------------------------------------------------------------------
-# Data Configuration (Multi-Sequence)
-# ------------------------------------------------------------------------------
 data:
-  data_root: data
+  data_root: data                 # Dataset root directory
   train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
   val_sequences: [uuv3, uuv6, uuv10]
-
-  train_root: null
-  val_root: null
-
-  # CRITICAL FIX (Audit 2025112505 Issue 3): Visibility policy for modality filtering
-  # Controls which frames are used based on modality visibility
-  # Options:
-  #   'any': At least one modality visible (excludes zero-modality 0000 frames)
-  #   'both': Both modalities visible (pure dual-modality training)
-  #   'all': Include all frames including zero-modality (REQUIRED for zero/single/dual-modality learning)
-  #
-  # JUSTIFICATION for 'all':
-  # - Model must learn to handle zero-modality scenarios (complete occlusion/out-of-view)
-  # - Confidence head requires zero-modality frames to learn "no object" behavior
-  # - Template update logic needs zero-modality examples for robust tracking
-  # - Evaluation includes 0000 frames, so training must match this distribution
-  # - LossManager uses has_object masks to skip bbox regression on 0000 while training confidence
-  visibility_policy: all
-
-  # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
-  # Removed: sequence_length, frame_stride, use_sequence_grouping
-  template_size: 256  # Template image size (256x256)
-  search_size: 512    # Search image size (512x512, full-frame search)
-  template_search_gap_range: [1, 200]  # Random gap between template and search frames (OSTrack standard)
-
-  # Template Update Policy (MixFormer Implementation)
-  # - Training: Uses random gap sampling (behaves like 'recent') to learn from diverse temporal distances
-  # - Inference: Quality-driven updates in OnlineTracker (independent RGB/Sonar refresh based on quality)
-  template_update_policy: 'mixformer'
-  quality_threshold_rgb: 0.7     # RGB quality threshold for template update (inference only)
-  quality_threshold_sonar: 0.7   # Sonar quality threshold for template update (inference only)
-
-  num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
-  prefetch_factor: 4  # Increased prefetch to reduce GPU idle time
+  train_root: null                # Override train data root
+  val_root: null                  # Override val data root
+  visibility_policy: all          # Frame filtering: all=zero/single/dual modality
+  template_size: 256              # Template frame size (pixels)
+  search_size: 512                # Search frame size (pixels)
+  template_search_gap_range: [1, 200]  # Gap range for template-search pairs
+  template_update_policy: mixformer    # Template update: mixformer/first/recent
+  quality_threshold_rgb: 0.7      # RGB quality threshold for template update
+  quality_threshold_sonar: 0.7    # Sonar quality threshold for template update
+  num_workers: 12                 # DataLoader workers [🚀A4000: 48]
+  prefetch_factor: 4              # Prefetch batches per worker [🚀A4000: 8]
 
   augmentation:
-    enabled: true
-    type: TrackingAugmentation
-
+    enabled: true                 # Enable data augmentation
+    type: TrackingAugmentation    # Augmentation pipeline type
     rgb:
-      enable_color_jitter: true
-      brightness: 0.3
-      contrast: 0.3
-      saturation: 0.3
-      hue: 0.2
-      color_jitter_prob: 0.5
-
-      enable_blur: true
-      blur_prob: 0.3
-
-      enable_occlusion: true
-      occlusion_prob: 0.2
-      occlusion_min_size: 0.05
-      occlusion_max_size: 0.3
-
+      enable_color_jitter: true   # Enable RGB color jitter
+      brightness: 0.3             # Brightness jitter range
+      contrast: 0.3               # Contrast jitter range
+      saturation: 0.3             # Saturation jitter range
+      hue: 0.2                    # Hue jitter range
+      color_jitter_prob: 0.5      # Color jitter probability
+      enable_blur: true           # Enable Gaussian blur
+      blur_prob: 0.3              # Blur probability
+      enable_occlusion: true      # Enable random occlusion
+      occlusion_prob: 0.2         # Occlusion probability
+      occlusion_min_size: 0.05    # Min occlusion size (ratio)
+      occlusion_max_size: 0.3     # Max occlusion size (ratio)
     sonar:
-      enable_speckle: true
-      speckle_level: 0.1
-      speckle_prob: 0.5
+      enable_speckle: true        # Enable speckle noise
+      speckle_level: 0.1          # Speckle noise level
+      speckle_prob: 0.5           # Speckle probability
+      enable_occlusion: true      # Enable random occlusion
+      occlusion_prob: 0.2         # Occlusion probability
+      occlusion_min_size: 0.05    # Min occlusion size (ratio)
+      occlusion_max_size: 0.3     # Max occlusion size (ratio)
 
-      # Rectangular occlusion (similar to RGB, suitable for rect coordinates)
-      enable_occlusion: true
-      occlusion_prob: 0.2
-      occlusion_min_size: 0.05
-      occlusion_max_size: 0.3
-
-
-# ------------------------------------------------------------------------------
-# Model Configuration
-# ------------------------------------------------------------------------------
 model:
   backbone:
     rgb:
-      type: vit_rgb
-      model_name: vit_base_patch16_224
-      pretrained: true
-      output_dim: 768
-
+      type: vit_rgb               # RGB backbone type
+      model_name: vit_base_patch16_224  # ViT model variant
+      pretrained: true            # Use ImageNet pretrained weights
+      output_dim: 768             # Output feature dimension
     sonar:
-      type: vit_sonar
-      model_name: vit_base_patch16_224
-      pretrained: true
-      in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
-      # NOTE: Sonar images are preprocessed to fixed 682x376, then resized to 512x512 for model input
-      img_size: 512
-      output_dim: 768
+      type: vit_sonar             # Sonar backbone type
+      model_name: vit_base_patch16_224  # ViT model variant
+      pretrained: true            # Use ImageNet pretrained weights
+      in_channels: 1              # Input channels (grayscale sonar)
+      img_size: 512               # Input image size
+      output_dim: 768             # Output feature dimension
 
   fusion:
-    # CRITICAL FIX (Analysis 2025112502): Switch to conditional_g2_dcma
-    # Dataset has 38.2% RGB-occluded frames (Sonar-only), requires adaptive routing
-    type: conditional_g2_dcma
-    rgb_channels: 768  # RGB backbone output_dim
-    sonar_channels: 768  # Sonar backbone output_dim
-    embed_dim: 768
-    num_heads: 8
-    num_layers: 2
-
-  # ARCHITECTURE CHANGE (Audit 2025112104): Temporal modules completely removed
-  # Template-search paradigm uses implicit temporal modeling via per-frame template updates
+    type: conditional_g2_dcma     # Conditional G2-DCMA fusion module
+    rgb_channels: 768             # RGB feature channels
+    sonar_channels: 768           # Sonar feature channels
+    embed_dim: 768                # Fusion embedding dimension
+    num_heads: 8                  # Multi-head attention heads
+    num_layers: 2                 # Number of fusion layers
 
   heads:
     rgb_box:
-      type: BoxHead
-      in_channels: 768
-      hidden_dim: 256
-      use_confidence_head: true  # CONTINUOUS FLOW: Enable objectness prediction
-      loss_weight_conf: 1.0
-
+      type: BoxHead               # Box prediction head type
+      in_channels: 768            # Input feature channels
+      hidden_dim: 256             # Hidden layer dimension
+      use_confidence_head: true   # Objectness confidence prediction
+      loss_weight_conf: 1.0       # Confidence loss weight
     sonar_box:
-      type: BoxHead
-      in_channels: 768
-      hidden_dim: 256
-      use_confidence_head: true  # CONTINUOUS FLOW: Enable objectness prediction
-      loss_weight_conf: 1.0
+      type: BoxHead               # Box prediction head type
+      in_channels: 768            # Input feature channels
+      hidden_dim: 256             # Hidden layer dimension
+      use_confidence_head: true   # Objectness confidence prediction
+      loss_weight_conf: 1.0       # Confidence loss weight
 
-    # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
-    # fusion_box REMOVED. RGB and Sonar BoxHeads now use dual-view fused features.
-    # - rgb_box uses rgb_view_fused (RGB perspective with complementary Sonar)
-    # - sonar_box uses sonar_view_fused (Sonar perspective with complementary RGB)
-    # This enables end-to-end learning of RGB-Sonar correspondence without calibration.
-
-
-# ------------------------------------------------------------------------------
-# Training Configuration
-# ------------------------------------------------------------------------------
 training:
-  # Single-stage training: no pretraining required
-  # Backbones initialized from ImageNet-pretrained weights (timm)
-
-  num_epochs: 100  # Extended for end-to-end convergence
-
-  batch_size: 2  # Optimal for RTX3070 Laptop 8GB (86.8% VRAM @ batch=2)
-  # gradient_accumulation_steps optimized for frequent updates while maintaining effective batch
-  gradient_accumulation_steps: 4  # Effective batch size = 2 * 4 = 8
+  num_epochs: 100                 # Total training epochs [🚀A4000: 100]
+  batch_size: 2                   # Batch size per GPU [🚀A4000: 8]
+  gradient_accumulation_steps: 4  # Gradient accumulation [🚀A4000: 2]
 
   optimizer:
-    # Standard learning rate with tight gradient clipping (max_norm=0.1) for stability
-    lr: 0.0001  # Standard LR for ViT fine-tuning (safe with max_norm=0.1 clipping)
-    weight_decay: 0.0001
-    backbone_lr_multiplier: 0.1  # Lower LR for pretrained backbones
+    lr: 0.0001                    # Base learning rate [🚀A4000: 0.0002]
+    weight_decay: 0.0001          # Weight decay coefficient
+    backbone_lr_multiplier: 0.1   # Backbone LR multiplier
 
   scheduler:
-    type: cosine
-    warmup_epochs: 10  # Extended warmup for training from scratch
-    warmup_lr: 1.0e-06  # Standard warmup starting point
-    t_max: 100  # Matches num_epochs
-    eta_min: 1.0e-06  # Minimum learning rate
+    type: cosine                  # LR scheduler type
+    warmup_epochs: 10             # Warmup epochs [🚀A4000: 10]
+    warmup_lr: 1.0e-06            # Warmup starting LR [🚀A4000: 2.0e-06]
+    t_max: 100                    # Cosine annealing period
+    eta_min: 1.0e-06              # Cosine annealing minimum LR
 
-  # Gradient clipping
   grad_clip:
-    enabled: true
-    # CRITICAL FIX: Reduced from 1.0 to 0.1 following SOTFormer best practice
-    # SOTFormer paper: "gradients are clipped (max-norm=0.1) to prevent divergence"
-    # This much tighter clipping is essential for training stability with AMP
-    max_norm: 0.1  # Following SOTFormer for transformer tracking stability
-    norm_type: 2
+    enabled: true                 # Enable gradient clipping
+    max_norm: 0.1                 # Max gradient norm (SOTFormer standard)
+    norm_type: 2                  # Gradient norm type
 
-  # CRITICAL FIX (Audit 2025112302): Removed Weak3D component
-  # Architecture simplified to focus on 2D tracking with cross-modal fusion
-  # CONTINUOUS FLOW DESIGN (Audit 2025112310): Added confidence loss weights
-  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion): Removed fusion losses
   loss_weights:
-    # Box regression (dual-view fused features)
-    # Following mainstream trackers (MixFormer, OSTrack): L1=2.0, GIoU=5.0
-    rgb_box: 1.0
-    rgb_conf: 1.0  # Objectness confidence (has_object prediction)
-    sonar_box: 1.0
-    sonar_conf: 1.0  # Objectness confidence (has_object prediction)
-
-    # Auxiliary losses (feature degradation prevention, training only)
-    aux_rgb: 0.3  # Lightweight auxiliary head on pre-fusion RGB features
-    aux_sonar: 0.3  # Lightweight auxiliary head on pre-fusion Sonar features
-
-    # Cross-modal consistency losses
-    geometric_consistency: 0.5         # Fusion layer: scale vs radial encoding alignment
-    representation_consistency: 0.3    # InfoNCE contrastive loss for feature alignment
-    view_consistency: 0.1              # Dual-view consistency (rgb_view_fused vs sonar_view_fused)
+    rgb_box: 1.0                  # RGB box regression loss weight
+    rgb_conf: 1.0                 # RGB confidence loss weight
+    sonar_box: 1.0                # Sonar box regression loss weight
+    sonar_conf: 1.0               # Sonar confidence loss weight
+    aux_rgb: 0.3                  # Auxiliary RGB loss weight
+    aux_sonar: 0.3                # Auxiliary Sonar loss weight
+    geometric_consistency: 0.5    # Geometric consistency loss weight
+    representation_consistency: 0.3   # Representation consistency loss weight
+    view_consistency: 0.1         # View consistency loss weight
 
   loss_schedule:
-    enabled: false
+    enabled: false                # Enable loss weight scheduling
 
-  val_interval: 1
+  val_interval: 1                 # Validation interval (epochs)
 
   checkpoint:
-    save_interval: 5
-    save_best: true
-    save_last: true
-    metric: val_total
-    mode: min
-    max_keep: 5
+    save_interval: 5              # Checkpoint save interval (epochs)
+    save_best: true               # Save best model
+    save_last: true               # Save last model
+    metric: val_total             # Metric for best model selection
+    mode: min                     # Metric optimization direction
+    max_keep: 5                   # Maximum checkpoints to keep
 
-  log_interval: 10
+  log_interval: 10                # Logging interval (iterations)
+  resume: null                    # Resume checkpoint path
 
-  resume: null
-
-
-# ------------------------------------------------------------------------------
-# Debugging
-# ------------------------------------------------------------------------------
 debug:
-  enabled: false
-  fast_dev_run: false
+  enabled: false                  # Enable debug mode
+  fast_dev_run: false             # Fast development run
 
-
-# ------------------------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------------------------
 paths:
-  work_dir: outputs/train_multiseq
-  checkpoint_dir: outputs/train_multiseq/checkpoints
-  log_dir: outputs/train_multiseq/logs
+  work_dir: outputs/train_multiseq            # Working directory
+  checkpoint_dir: outputs/train_multiseq/checkpoints  # Checkpoint directory
+  log_dir: outputs/train_multiseq/logs        # Log directory

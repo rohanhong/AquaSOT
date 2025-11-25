@@ -856,9 +856,12 @@ class AquaSOT3DTracker(BaseModule):
 
             # Consistency losses
             if 'consistency_losses' in fusion_outputs:
-                # Geometric consistency: compares geometric encodings (scale vs radial)
-                losses['geometric_consistency'] = fusion_outputs['consistency_losses']['component_loss']
-                losses['representation_consistency'] = fusion_outputs['consistency_losses']['infonce_loss']
+                # CRITICAL FIX (Audit 2025112510): Use correct keys from ConditionalG2DCMA
+                # ConditionalG2DCMA renames keys: component_loss -> component_consistency, infonce_loss -> representation_consistency
+                consistency = fusion_outputs['consistency_losses']
+                _device = rgb_template.device  # Use input tensor device
+                losses['geometric_consistency'] = consistency.get('component_consistency', consistency.get('component_loss', torch.tensor(0.0, device=_device)))
+                losses['representation_consistency'] = consistency.get('representation_consistency', consistency.get('infonce_loss', torch.tensor(0.0, device=_device)))
 
             # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
             # Add cross-view consistency loss

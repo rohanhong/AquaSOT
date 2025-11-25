@@ -1,98 +1,58 @@
-# ==============================================================================
-# Multi-Sequence Evaluation Configuration
-# ==============================================================================
+# AquaSOT-3D Evaluation Configuration
 
 _base_: default.yaml
 
-
-# ------------------------------------------------------------------------------
-# Experiment Configuration
-# ------------------------------------------------------------------------------
 experiment:
-  name: aquasot3d_eval_multiseq
-  tags: [evaluation, multimodal]
-  notes: "Multi-sequence evaluation on validation set"
-  group: multiseq_evaluation
+  name: aquasot3d_eval_multiseq   # Experiment name
+  tags: [evaluation, multimodal]  # Experiment tags
+  notes: "Multi-sequence evaluation on test set"
+  group: multiseq_evaluation      # Experiment group
 
-
-# ------------------------------------------------------------------------------
-# Data Configuration (Multi-Sequence)
-# ------------------------------------------------------------------------------
 data:
-  data_root: data
+  data_root: data                 # Dataset root directory
   test_sequences: [uuv3, uuv6, uuv10]
+  test_root: null                 # Override test data root
+  num_workers: 12                 # DataLoader workers [🚀A4000: 48]
+  prefetch_factor: 4              # Prefetch batches per worker [🚀A4000: 8]
 
-  test_root: null
-
-  # ARCHITECTURE CHANGE (Audit 2025112104): Template-search evaluation
-  # Removed: search_sequence_length, use_sequence_grouping, frame_size, sequence_length, frame_stride
-  # Template and search sizes inherited from default.yaml
-
-  num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
-  prefetch_factor: 4  # Increased prefetch to reduce GPU idle time (even for sequential eval)
-
-
-# ------------------------------------------------------------------------------
-# Evaluation Configuration
-# ------------------------------------------------------------------------------
 evaluation:
-  mode: test
-  batch_size: 1  # Sequential evaluation uses batch_size=1
+  mode: test                      # Evaluation mode: val/test
+  batch_size: 1                   # Evaluation batch size (sequential)
 
-  # CRITICAL FIX (Audit 2025112504 Finding 2): Template selection policy
-  # Prevents template from being selected from frames where both modalities are 0000
   template:
-    visibility_policy: any  # 'any'=at least one modality visible (recommended)
-                            # 'both'=both modalities visible (strict)
-                            # 'all'=no restriction (not recommended)
+    visibility_policy: any        # Template selection: any/both/all
 
-  # Standard metrics
   metrics:
-    - success_auc
-    - precision_20
-    - precision_10
-    - precision_5
-    - avg_center_error
-    - mean_iou
-    - success_0.5
-    - success_0.7
+    - success_auc                 # Success plot AUC
+    - precision_20                # Precision at 20 pixels
+    - precision_10                # Precision at 10 pixels
+    - precision_5                 # Precision at 5 pixels
+    - avg_center_error            # Average center location error
+    - mean_iou                    # Mean IoU
+    - success_0.5                 # Success rate at IoU=0.5
+    - success_0.7                 # Success rate at IoU=0.7
 
-  # Per-modality evaluation
-  # ARCHITECTURE UPDATE (Audit 2025112313): fusion removed (dual-view fusion architecture)
-  evaluate_rgb: true
-  evaluate_sonar: true
-  evaluate_fusion: false  # Deprecated: RGB/Sonar now use dual-view fused features
+  evaluate_rgb: true              # Evaluate RGB predictions
+  evaluate_sonar: true            # Evaluate Sonar predictions
+  evaluate_fusion: false          # Deprecated (dual-view fusion)
 
-  # Visualization
   visualization:
-    enabled: true
+    enabled: true                 # Enable visualization
     save_dir: outputs/eval_multiseq/visualization
-    plot_trajectories: true
-    plot_curves: true
-    plot_attention: false
-    create_videos: false
-    save_failure_cases: true
-    num_best: 5
-    num_worst: 5
+    plot_trajectories: true       # Plot tracking trajectories
+    plot_curves: true             # Plot performance curves
+    plot_attention: false         # Plot attention maps
+    create_videos: false          # Create tracking videos
+    save_failure_cases: true      # Save failure cases
+    num_best: 5                   # Number of best cases to save
+    num_worst: 5                  # Number of worst cases to save
 
-  # Result saving
-  save_predictions: true
-  save_metrics: true
-  save_report: true
-  output_dir: outputs/eval_multiseq
+  save_predictions: true          # Save prediction results
+  save_metrics: true              # Save computed metrics
+  save_report: true               # Save evaluation report
+  output_dir: outputs/eval_multiseq   # Evaluation output directory
 
-
-# ------------------------------------------------------------------------------
-# Model Configuration
-# ------------------------------------------------------------------------------
-# ARCHITECTURE CHANGE (Audit 2025112104): Temporal config completely removed
-# Template-search paradigm does not use temporal aggregation
-
-
-# ------------------------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------------------------
 paths:
-  work_dir: outputs/eval_multiseq
-  checkpoint_dir: outputs/eval_multiseq/checkpoints
-  log_dir: outputs/eval_multiseq/logs
+  work_dir: outputs/eval_multiseq             # Working directory
+  checkpoint_dir: outputs/eval_multiseq/checkpoints  # Checkpoint directory
+  log_dir: outputs/eval_multiseq/logs         # Log directory

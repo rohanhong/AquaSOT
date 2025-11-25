@@ -1,435 +1,245 @@
-# ==============================================================================
 # AquaSOT-3D Default Configuration
-# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# System Configuration
-# ------------------------------------------------------------------------------
 system:
-  # Random seed for reproducibility
-  seed: 42
+  seed: 42                    # Random seed for reproducibility
+  device: cuda                # Training device
+  num_gpus: 1                 # Number of GPUs
+  distributed: false          # Distributed training flag
+  dist_backend: nccl          # Distributed backend
+  dist_url: env://            # Distributed URL
+  use_amp: false              # Mixed precision (disabled for numerical stability)
+  amp_dtype: bfloat16         # AMP data type when enabled
+  deterministic: false        # Deterministic mode (slower)
+  benchmark: true             # cuDNN benchmark mode
 
-  # Device configuration
-  device: cuda
-  num_gpus: 1
-
-  # Distributed training
-  distributed: false
-  dist_backend: nccl
-  dist_url: env://
-
-  # Mixed precision training
-  # CRITICAL FIX (Audit 2025112401): Disable AMP for numerical stability
-  # Root cause: G2-DCMA fusion and ViT backbones produce NaN under FP16 AMP
-  # All mainstream fixes (grad clipping, loss weights, GIoU stabilization) failed
-  use_amp: false
-  amp_dtype: bfloat16  # Disabled - use FP32 for numerical stability
-
-  # Deterministic mode (slower but reproducible)
-  deterministic: false
-  benchmark: true
-
-
-# ------------------------------------------------------------------------------
-# Data Configuration
-# ------------------------------------------------------------------------------
 data:
-  data_root: data
+  data_root: data             # Dataset root directory
   train_sequences: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
   val_sequences: [uuv3, uuv6, uuv10]
   test_sequences: [uuv3, uuv6, uuv10]
+  train_root: null            # Override train data root
+  val_root: null              # Override val data root
+  test_root: null             # Override test data root
+  train_split: train          # Training split name
+  val_split: val              # Validation split name
+  test_split: test            # Test split name
+  visibility_policy: all      # Frame filtering: all/any/both (all=zero/single/dual modality)
+  num_workers: 12             # DataLoader workers [🚀A4000: 48]
+  pin_memory: true            # Pin memory for faster transfer
+  prefetch_factor: 4          # Prefetch batches per worker [🚀A4000: 8]
+  persistent_workers: true    # Keep workers alive between epochs
+  template_size: 256          # Template frame size (pixels)
+  search_size: 512            # Search frame size (pixels)
+  template_search_gap_range: [1, 200]  # Gap range for template-search pairs
 
-  train_root: null
-  val_root: null
-  test_root: null
-
-  train_split: train
-  val_split: val
-  test_split: test
-
-  # CRITICAL FIX (Audit 2025112507 Finding 4): Visibility policy for frame filtering
-  # Controls which frames are included in training based on modality availability:
-  #   - 'all': Include ALL frames including zero-modality (0,0,0,0 annotations) - REQUIRED
-  #            Enables model to learn zero/single/dual-modality handling
-  #            Conditional G2-DCMA + confidence heads MUST learn to suppress zero-modality
-  #            Includes 38.2% RGB-occluded frames (Sonar-only) for single-modality routing
-  #   - 'any': Include frames where at least one modality has valid target
-  #            EXCLUDES zero-modality (both 0,0,0,0) - violates specification requirement
-  #   - 'both': Require both modalities to have valid target (pure dual-modality)
-  #            EXCLUDES single/zero-modality - insufficient for conditional fusion
-  visibility_policy: all
-
-  num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
-  pin_memory: true
-  prefetch_factor: 4  # Increased prefetch to reduce GPU idle time
-  persistent_workers: true
-
-  # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
-  # Removed: sequence_length, frame_stride, use_sequence_grouping, frame_size
-  # Training uses random template-search pairs, evaluation uses sequential pairs
-  template_size: 256  # Template frame size (256x256, letterbox preprocessing)
-  search_size: 512    # Search frame size (512x512, full-frame search)
-  template_search_gap_range: [1, 200]  # Gap range for template-search pairs (training only, OSTrack standard)
-
-  # Data augmentation (legacy params, override in specific configs)
   augmentation:
-    enabled: true
+    enabled: true             # Enable data augmentation
+    brightness: 0.2           # Brightness jitter range
+    contrast: 0.2             # Contrast jitter range
+    saturation: 0.2           # Saturation jitter range
+    hue: 0.1                  # Hue jitter range
+    rotation: 15.0            # Rotation angle (degrees)
+    scale_range: [0.8, 1.2]   # Scale jitter range
+    translation_range: [0.1, 0.1]  # Translation range (ratio)
+    horizontal_flip: 0.5      # Horizontal flip probability
+    vertical_flip: 0.0        # Vertical flip probability
+    random_erase: 0.3         # Random erasing probability
+    erase_ratio: [0.02, 0.2]  # Erasing area ratio range
 
-    brightness: 0.2
-    contrast: 0.2
-    saturation: 0.2
-    hue: 0.1
-
-    rotation: 15.0
-    scale_range: [0.8, 1.2]
-    translation_range: [0.1, 0.1]
-
-    horizontal_flip: 0.5
-    vertical_flip: 0.0
-
-    random_erase: 0.3
-    erase_ratio: [0.02, 0.2]
-
-  # Normalization
   normalize:
-    rgb_mean: [0.485, 0.456, 0.406]
-    rgb_std: [0.229, 0.224, 0.225]
-    sonar_mean: [0.5]
-    sonar_std: [0.5]
+    rgb_mean: [0.485, 0.456, 0.406]  # ImageNet RGB mean
+    rgb_std: [0.229, 0.224, 0.225]   # ImageNet RGB std
+    sonar_mean: [0.5]         # Sonar normalization mean
+    sonar_std: [0.5]          # Sonar normalization std
 
-
-# ------------------------------------------------------------------------------
-# Model Architecture Configuration
-# ------------------------------------------------------------------------------
 model:
-  type: AquaSOT3DTracker
+  type: AquaSOT3DTracker      # Model architecture type
 
   backbone:
     rgb:
-      type: vit_rgb
-      model_name: vit_base_patch16_224
-      pretrained: true
-      pretrained_path: null
-      freeze_bn: false
-      output_layers: [9, 11]
-      output_dim: 768
+      type: vit_rgb           # RGB backbone type
+      model_name: vit_base_patch16_224  # ViT model variant
+      pretrained: true        # Use ImageNet pretrained weights
+      pretrained_path: null   # Custom pretrained path
+      freeze_bn: false        # Freeze batch normalization
+      output_layers: [9, 11]  # Output layer indices
+      output_dim: 768         # Output feature dimension
 
     sonar:
-      type: vit_sonar
-      model_name: vit_base_patch16_224
-      pretrained: true
-      in_channels: 1  # Single-channel sonar (1ch -> 3ch adapter applied internally)
-      # NOTE: Sonar images are preprocessed to rectangular coordinates (682x376)
-      # before training. See scripts/preprocess_sonar.py and docs/Training_Guide.md
-      img_size: 512
-      output_dim: 768
+      type: vit_sonar         # Sonar backbone type
+      model_name: vit_base_patch16_224  # ViT model variant
+      pretrained: true        # Use ImageNet pretrained weights
+      in_channels: 1          # Input channels (grayscale sonar)
+      img_size: 512           # Input image size
+      output_dim: 768         # Output feature dimension
 
   fusion:
-    # CRITICAL FIX (Analysis 2025112502): Switch to conditional_g2_dcma
-    # Dataset has 38.2% RGB-occluded frames (Sonar-only), requires adaptive routing
-    type: conditional_g2_dcma
-    rgb_channels: 768  # RGB backbone output_dim
-    sonar_channels: 768  # Sonar backbone output_dim
-    embed_dim: 768
-    num_heads: 8
-    num_layers: 2
-
-    use_geometry_gating: true
-    geometry_gate_type: adaptive
-
-    use_quality_gating: true
-    quality_threshold: 0.5
-
-    use_deformable: true
-    num_points: 4
-    num_levels: 1
-
-    component_consistency_weight: 0.1
-    representation_consistency_weight: 0.1
-
-  # ARCHITECTURE CHANGE (Audit 2025112104): Temporal modules completely removed
-  # Template-search paradigm uses implicit temporal modeling via per-frame template updates
+    type: conditional_g2_dcma # Conditional G2-DCMA fusion module
+    rgb_channels: 768         # RGB feature channels
+    sonar_channels: 768       # Sonar feature channels
+    embed_dim: 768            # Fusion embedding dimension
+    num_heads: 8              # Multi-head attention heads
+    num_layers: 2             # Number of fusion layers
+    use_geometry_gating: true # Enable geometry-based gating
+    geometry_gate_type: adaptive  # Geometry gate type
+    use_quality_gating: true  # Enable quality-based gating
+    quality_threshold: 0.5    # Quality gating threshold
+    use_deformable: true      # Enable deformable attention
+    num_points: 4             # Deformable attention points
+    num_levels: 1             # Feature pyramid levels
+    component_consistency_weight: 0.1       # Component consistency loss weight
+    representation_consistency_weight: 0.1  # Representation consistency loss weight
 
   heads:
     rgb_box:
-      type: BoxHead
-      in_channels: 768
-      hidden_dim: 256
-      num_layers: 3
-      output_format: cxcywh
-      use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
-      loss_weight_conf: 1.0
+      type: BoxHead           # Box prediction head type
+      in_channels: 768        # Input feature channels
+      hidden_dim: 256         # Hidden layer dimension
+      num_layers: 3           # MLP layers
+      output_format: cxcywh   # Box format: center-x, center-y, width, height
+      use_confidence_head: true   # Objectness confidence prediction
+      loss_weight_conf: 1.0   # Confidence loss weight
 
     sonar_box:
-      type: BoxHead
-      in_channels: 768
-      hidden_dim: 256
-      num_layers: 3
-      output_format: cxcywh
-      use_confidence_head: true  # CONTINUOUS FLOW (Audit 2025112306): Enable objectness prediction
-      loss_weight_conf: 1.0
+      type: BoxHead           # Box prediction head type
+      in_channels: 768        # Input feature channels
+      hidden_dim: 256         # Hidden layer dimension
+      num_layers: 3           # MLP layers
+      output_format: cxcywh   # Box format: center-x, center-y, width, height
+      use_confidence_head: true   # Objectness confidence prediction
+      loss_weight_conf: 1.0   # Confidence loss weight
 
-    # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
-    # fusion_box REMOVED. RGB and Sonar BoxHeads now use dual-view fused features.
-    # - rgb_box uses rgb_view_fused (RGB perspective with complementary Sonar)
-    # - sonar_box uses sonar_view_fused (Sonar perspective with complementary RGB)
-    # This enables end-to-end learning of RGB-Sonar correspondence without calibration.
-
-
-# ------------------------------------------------------------------------------
-# Training Configuration
-# ------------------------------------------------------------------------------
 training:
   init_backbones:
-    rgb: null
-    sonar: null
+    rgb: null                 # RGB backbone initialization path
+    sonar: null               # Sonar backbone initialization path
 
-  num_epochs: 60
+  num_epochs: 60              # Total training epochs [🚀A4000: 60]
+  batch_size: 2               # Batch size per GPU [🚀A4000: 8]
+  val_batch_size: 8           # Validation batch size [🚀A4000: 16]
+  gradient_accumulation_steps: 4  # Gradient accumulation steps [🚀A4000: 2]
 
-  batch_size: 2  # Optimal for RTX3070 Laptop 8GB (86.8% VRAM @ batch=2)
-  val_batch_size: 8  # 4x training batch (validation has no gradients/optimizer states)
-  gradient_accumulation_steps: 4  # Optimized for frequent updates, effective batch = 2 * 4 = 8
-
-  # Optimizer
   optimizer:
-    type: adamw
-    lr: 0.0002  # Higher performance: 0.0008 (linearly scaled for batch=64, 4x base lr)
-    weight_decay: 0.0001
-    betas: [0.9, 0.999]
-    eps: 1.0e-8
+    type: adamw               # Optimizer type
+    lr: 0.0001                # Base learning rate [🚀A4000: 0.0002]
+    weight_decay: 0.0001      # Weight decay coefficient
+    betas: [0.9, 0.999]       # Adam beta coefficients
+    eps: 1.0e-8               # Adam epsilon
+    use_layer_decay: true     # Enable layer-wise LR decay
+    layer_decay_rate: 0.75    # Layer decay rate
+    backbone_lr_multiplier: 0.1  # Backbone LR multiplier
 
-    # Parameter groups
-    use_layer_decay: true
-    layer_decay_rate: 0.75
-
-    # Backbone specific
-    backbone_lr_multiplier: 0.1
-
-  # Learning rate scheduler
   scheduler:
-    type: cosine  # cosine, step, multistep, exponential, polynomial
-    warmup_epochs: 5  # Higher performance: 7 (12% ratio for batch=64, 4x increase)
-    warmup_lr: 0.00001  # Higher performance: 0.00004 (linearly scaled for batch=64)
-    min_lr: 0.000001
+    type: cosine              # LR scheduler type
+    warmup_epochs: 5          # Warmup epochs [🚀A4000: 5]
+    warmup_lr: 0.00001        # Warmup starting LR [🚀A4000: 0.00002]
+    min_lr: 0.000001          # Minimum learning rate
+    t_max: 60                 # Cosine annealing period
+    eta_min: 0.000001         # Cosine annealing minimum LR
 
-    # Cosine annealing
-    t_max: 60
-    eta_min: 0.000001
-
-    # Step scheduler (alternative)
-    # type: step
-    # step_size: 20
-    # gamma: 0.1
-
-  # Gradient clipping
   grad_clip:
-    enabled: true
-    # CRITICAL FIX (Audit 2025112401): Reduced from 1.0 to 0.1 following SOTFormer best practice
-    # SOTFormer paper: "gradients are clipped (max-norm=0.1) to prevent divergence"
-    # This much tighter clipping is essential for training stability
-    max_norm: 0.1  # Following SOTFormer for transformer tracking stability
-    norm_type: 2
+    enabled: true             # Enable gradient clipping
+    max_norm: 0.1             # Max gradient norm (SOTFormer standard)
+    norm_type: 2              # Gradient norm type
 
-  # Loss weights
-  # CRITICAL FIX (Audit 2025112302): Removed Weak3D component
-  # Architecture simplified to focus on 2D tracking with cross-modal fusion
-  # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 6): Added confidence losses
-  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion): Removed fusion losses
   loss_weights:
-    # Box regression losses (dual-view fused features)
-    # Following mainstream trackers (MixFormer, OSTrack): L1=2.0, GIoU=5.0
-    rgb_box: 1.0
-    rgb_conf: 1.0  # Objectness confidence (has_object prediction)
-    sonar_box: 1.0
-    sonar_conf: 1.0  # Objectness confidence (has_object prediction)
+    rgb_box: 1.0              # RGB box regression loss weight
+    rgb_conf: 1.0             # RGB confidence loss weight
+    sonar_box: 1.0            # Sonar box regression loss weight
+    sonar_conf: 1.0           # Sonar confidence loss weight
+    aux_rgb: 0.3              # Auxiliary RGB loss weight
+    aux_sonar: 0.3            # Auxiliary Sonar loss weight
+    geometric_consistency: 0.5      # Geometric consistency loss weight
+    representation_consistency: 0.3 # Representation consistency loss weight
+    view_consistency: 0.1     # View consistency loss weight
 
-    # Auxiliary losses (feature degradation prevention, training only)
-    aux_rgb: 0.3  # Lightweight auxiliary head on pre-fusion RGB features
-    aux_sonar: 0.3  # Lightweight auxiliary head on pre-fusion Sonar features
-
-    # Cross-modal consistency losses
-    # geometric_consistency: compares geometric encodings (fusion layer, scale vs radial)
-    # representation_consistency: InfoNCE contrastive loss for feature alignment
-    # view_consistency: dual-view consistency (rgb_view_fused vs sonar_view_fused)
-    geometric_consistency: 0.5
-    representation_consistency: 0.3
-    view_consistency: 0.1
-
-  # Loss weight scheduling
   loss_schedule:
-    enabled: false  # Default disabled for stability, enable for curriculum learning
-    type: linear  # linear, step, cosine
-    max_epoch: 60
+    enabled: false            # Enable loss weight scheduling
+    type: linear              # Schedule type
+    max_epoch: 60             # Schedule duration
 
-    # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
-    # Target weights removed (fusion_box no longer exists)
+  val_interval: 1             # Validation interval (epochs)
+  val_num_samples: null       # Validation samples (null=all)
 
-  # Validation
-  val_interval: 1  # Validate every N epochs
-  val_num_samples: null  # null means use all val data
-
-  # Checkpointing
   checkpoint:
-    save_interval: 5
-    save_best: true
-    save_last: true
-    max_keep: 5
-    metric: val_total  # Metric for best model selection (validation loss)
-    mode: min  # min for loss, max for accuracy/AUC
+    save_interval: 5          # Checkpoint save interval (epochs)
+    save_best: true           # Save best model
+    save_last: true           # Save last model
+    max_keep: 5               # Maximum checkpoints to keep
+    metric: val_total         # Metric for best model selection
+    mode: min                 # Metric optimization direction
 
-  # Logging
-  log_interval: 10  # Log every N iterations
-  tensorboard: true
-  wandb: false
+  log_interval: 10            # Logging interval (iterations)
+  tensorboard: true           # Enable TensorBoard logging
+  wandb: false                # Enable Weights & Biases logging
+  resume: null                # Resume checkpoint path
+  load_optimizer: true        # Load optimizer state on resume
+  load_scheduler: true        # Load scheduler state on resume
 
-  # Resume training
-  resume: null  # Path to checkpoint or null
-  load_optimizer: true
-  load_scheduler: true
-
-
-# ------------------------------------------------------------------------------
-# Evaluation Configuration
-# ------------------------------------------------------------------------------
 evaluation:
-  # Evaluation mode
-  mode: test  # val or test
+  mode: test                  # Evaluation mode: val/test
+  batch_size: 1               # Evaluation batch size
+  metrics: [success_auc, precision_20, avg_center_error, mean_iou, success_0.5]
+  evaluate_rgb: true          # Evaluate RGB predictions
+  evaluate_sonar: true        # Evaluate Sonar predictions
 
-  # Batch size
-  batch_size: 1  # Usually 1 for tracking evaluation
-
-  # Metrics to compute
-  metrics:
-    - success_auc
-    - precision_20
-    - avg_center_error
-    - mean_iou
-    - success_0.5
-
-  # Per-modality evaluation
-  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
-  # evaluate_fusion removed (fusion boxes no longer exist)
-  # RGB and Sonar boxes now use dual-view fused features
-  evaluate_rgb: true
-  evaluate_sonar: true
-
-  # CRITICAL FIX (Audit 2025111703 Finding 4): Template update strategy
-  # Enable evaluation of template-update protocols (OSTrack, TrDiMP baselines)
   template_update:
-    enabled: false  # Enable template update during tracking
-    interval: 10  # Frames between template updates (typical: 10-20)
+    enabled: false            # Enable template update during tracking
+    interval: 10              # Template update interval (frames)
 
-  # Visualization
   visualization:
-    enabled: true
-    save_dir: outputs/visualization
+    enabled: true             # Enable visualization
+    save_dir: outputs/visualization  # Visualization output directory
+    plot_trajectories: true   # Plot tracking trajectories
+    plot_curves: true         # Plot performance curves
+    plot_attention: false     # Plot attention maps
+    create_videos: false      # Create tracking videos
+    save_failure_cases: true  # Save failure cases
+    num_best: 5               # Number of best cases to save
+    num_worst: 5              # Number of worst cases to save
 
-    # What to visualize
-    plot_trajectories: true
-    plot_curves: true
-    plot_attention: false  # Attention maps (slow)
-    create_videos: false  # Create tracking videos (slow)
+  save_predictions: true      # Save prediction results
+  save_metrics: true          # Save computed metrics
+  save_report: true           # Save evaluation report
+  output_dir: outputs/evaluation  # Evaluation output directory
 
-    # Failure analysis
-    save_failure_cases: true
-    num_best: 5
-    num_worst: 5
-
-  # Result saving
-  save_predictions: true
-  save_metrics: true
-  save_report: true
-  output_dir: outputs/evaluation
-
-
-# ------------------------------------------------------------------------------
-# Ablation Study Configuration
-# ------------------------------------------------------------------------------
 ablation:
-  # Which components to ablate (set to false to disable)
   components:
-    # vision_mamba removed (Audit 2025112104) - no temporal modeling
-    geometry_gating: true
-    quality_gating: true
-    deformable_attention: true
-    dual_consistency: true
+    geometry_gating: true     # Enable geometry gating
+    quality_gating: true      # Enable quality gating
+    deformable_attention: true    # Enable deformable attention
+    dual_consistency: true    # Enable dual consistency
 
-  # temporal_alternative removed (Audit 2025112104) - no temporal modeling
-
-
-# ------------------------------------------------------------------------------
-# Demo/Inference Configuration
-# ------------------------------------------------------------------------------
 demo:
-  # Input source
-  input_type: video  # video, images, camera
-  input_path: null  # Path to video/image directory
-  camera_id: 0  # For camera input
+  input_type: video           # Input source type: video/images/camera
+  input_path: null            # Input file path
+  camera_id: 0                # Camera device ID
+  init_bbox: null             # Initial bounding box [cx, cy, w, h]
+  display: true               # Display tracking results
+  save_video: false           # Save output video
+  output_path: outputs/demo/result.mp4  # Output video path
+  fps: 30                     # Output video FPS
+  show_modality: rgb          # Modality to display: rgb/sonar
 
-  # Initial bounding box
-  init_bbox: null  # [cx, cy, w, h] or null for manual selection
-
-  # Visualization
-  display: true
-  save_video: false
-  output_path: outputs/demo/result.mp4
-
-  # FPS limit
-  fps: 30
-
-  # Modality to display
-  # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
-  # fusion option removed (use rgb or sonar, both use dual-view fused features)
-  show_modality: rgb  # rgb, sonar (both use dual-view fused features)
-
-
-# ------------------------------------------------------------------------------
-# Paths Configuration
-# ------------------------------------------------------------------------------
 paths:
-  # Working directories
-  work_dir: outputs
-  checkpoint_dir: outputs/checkpoints
-  log_dir: outputs/logs
-
-  # Pretrained models
+  work_dir: outputs           # Working directory
+  checkpoint_dir: outputs/checkpoints  # Checkpoint directory
+  log_dir: outputs/logs       # Log directory
   pretrained:
-    vit_base: null  # Will use timm default
+    vit_base: null            # ViT-Base pretrained path
+  cache_dir: .cache           # Cache directory
 
-  # Data cache
-  cache_dir: .cache
-
-
-# ------------------------------------------------------------------------------
-# Experiment Tracking
-# ------------------------------------------------------------------------------
 experiment:
-  name: aquasot3d_default
-  tags: []
-  notes: ""
+  name: aquasot3d_default     # Experiment name
+  tags: []                    # Experiment tags
+  notes: ""                   # Experiment notes
+  id: null                    # Experiment ID
+  group: default              # Experiment group
 
-  # Experiment ID (auto-generated if null)
-  id: null
-
-  # Group experiments
-  group: default
-
-
-# ------------------------------------------------------------------------------
-# Debugging Configuration
-# ------------------------------------------------------------------------------
 debug:
-  enabled: false
-
-  # Fast dev run (train on small subset)
-  fast_dev_run: false
-  fast_dev_run_steps: 10
-
-  # Profiling
-  profiler: false  # simple, advanced, pytorch
-
-  # Detect anomaly
-  detect_anomaly: false
-
-  # Overfit test (train on 1 batch)
-  overfit_batches: 0  # 0 means disabled, >0 means number of batches
+  enabled: false              # Enable debug mode
+  fast_dev_run: false         # Fast development run
+  fast_dev_run_steps: 10      # Steps for fast dev run
+  profiler: false             # Enable profiling
+  detect_anomaly: false       # Detect NaN/Inf anomalies
+  overfit_batches: 0          # Overfit on N batches (0=disabled)
