@@ -98,7 +98,8 @@ class CheckpointManager:
         metrics: Optional[Dict[str, float]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         is_best: bool = False,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
+        skip_best_check: bool = False
     ) -> Path:
         """
         Save a checkpoint.
@@ -112,6 +113,8 @@ class CheckpointManager:
             metadata: Additional metadata to save
             is_best: Force save as best checkpoint
             filename: Custom filename (optional)
+            skip_best_check: If True, skip internal best metric check/update.
+                This prevents race conditions when caller manages best_metric externally.
 
         Returns:
             Path to saved checkpoint
@@ -128,7 +131,8 @@ class CheckpointManager:
         metadata = metadata or {}
 
         # Check if this is the best model (if not explicitly specified)
-        if not is_best:
+        # Skip this check when caller manages best_metric externally (skip_best_check=True)
+        if not is_best and not skip_best_check:
             current_metric = metrics.get(self.metric_name, None)
             if current_metric is not None:
                 if self._is_better(current_metric, self.best_metric):

@@ -227,9 +227,8 @@ class Trainer:
                     metrics.update(val_metrics)
 
                 # 1. Save "last" checkpoint every epoch (overwrite) - only if save_last is enabled
-                # CRITICAL FIX (Audit 2025112408): Prevent race condition with best checkpoint saving
-                # Pass is_best=False to prevent CheckpointManager from updating best_metric internally,
-                # which would make the subsequent save_best check always fail
+                # Use skip_best_check=True to prevent race condition with best checkpoint saving.
+                # Trainer manages best_metric externally in step 2 below.
                 if self.save_last:
                     self.checkpoint_manager.save(
                         model=self.model,
@@ -239,7 +238,8 @@ class Trainer:
                         metrics=metrics,
                         filename='checkpoint_last.pth',
                         metadata=self.checkpoint_metadata,
-                        is_best=False  # Prevent internal best_metric update
+                        is_best=False,
+                        skip_best_check=True  # Trainer manages best_metric externally
                     )
 
                 # 2. Save "best" checkpoint if metric improves (overwrite) - only if save_best is enabled
@@ -289,8 +289,8 @@ class Trainer:
                             logger.info(f"Saved best checkpoint at epoch {epoch + 1} with {self.checkpoint_manager.metric_name}={current_metric:.4f}")
 
                 # 3. Save interval checkpoint every N epochs (keep multiple)
-                # CRITICAL FIX (Audit 2025112408): Consistency with save_last fix
-                # Pass is_best=False to prevent unintended best_metric updates
+                # Use skip_best_check=True for consistency with save_last.
+                # Trainer manages best_metric externally in step 2 above.
                 if (epoch + 1) % self.checkpoint_save_interval == 0:
                     self.checkpoint_manager.save(
                         model=self.model,
@@ -300,7 +300,8 @@ class Trainer:
                         metrics=metrics,
                         filename=f'checkpoint_epoch_{epoch + 1}.pth',
                         metadata=self.checkpoint_metadata,
-                        is_best=False  # Maintain consistency with save_last logic
+                        is_best=False,
+                        skip_best_check=True  # Trainer manages best_metric externally
                     )
 
             # Log epoch summary
