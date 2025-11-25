@@ -725,13 +725,44 @@ class AquaSOT3DTracker(BaseModule):
             aux_outputs['aux_sonar_boxes'] = aux_sonar_boxes
 
             # Compute auxiliary losses if GT is available
+            # CRITICAL FIX (Audit 2025112509 Bug B6): Add validity masking to auxiliary losses
+            # Without masking, invalid samples (is_rgb_valid=0) corrupt backbone features
+            # by forcing regression to zero bbox, learning meaningless spatial patterns
             if gt_boxes is not None:
-                # Simple L1 loss for auxiliary predictions (lightweight supervision)
+                # RGB auxiliary loss with validity masking
                 if 'rgb' in gt_boxes:
-                    aux_rgb_loss = F.l1_loss(aux_rgb_boxes, gt_boxes['rgb'], reduction='mean')
+                    # Compute per-sample L1 loss
+                    aux_rgb_loss_per_sample = F.l1_loss(
+                        aux_rgb_boxes, gt_boxes['rgb'], reduction='none'
+                    ).mean(dim=-1)  # [B]
+
+                    # Apply validity masking if available
+                    if is_rgb_valid is not None:
+                        validity_mask = is_rgb_valid.float() if is_rgb_valid.dtype != torch.float32 else is_rgb_valid
+                        masked_loss = aux_rgb_loss_per_sample * validity_mask
+                        num_valid = validity_mask.sum().clamp(min=1.0)
+                        aux_rgb_loss = masked_loss.sum() / num_valid
+                    else:
+                        aux_rgb_loss = aux_rgb_loss_per_sample.mean()
+
                     aux_outputs['aux_rgb_loss'] = aux_rgb_loss * 0.3  # Lower weight
+
+                # Sonar auxiliary loss with validity masking
                 if 'sonar' in gt_boxes:
-                    aux_sonar_loss = F.l1_loss(aux_sonar_boxes, gt_boxes['sonar'], reduction='mean')
+                    # Compute per-sample L1 loss
+                    aux_sonar_loss_per_sample = F.l1_loss(
+                        aux_sonar_boxes, gt_boxes['sonar'], reduction='none'
+                    ).mean(dim=-1)  # [B]
+
+                    # Apply validity masking if available
+                    if is_sonar_valid is not None:
+                        validity_mask = is_sonar_valid.float() if is_sonar_valid.dtype != torch.float32 else is_sonar_valid
+                        masked_loss = aux_sonar_loss_per_sample * validity_mask
+                        num_valid = validity_mask.sum().clamp(min=1.0)
+                        aux_sonar_loss = masked_loss.sum() / num_valid
+                    else:
+                        aux_sonar_loss = aux_sonar_loss_per_sample.mean()
+
                     aux_outputs['aux_sonar_loss'] = aux_sonar_loss * 0.3  # Lower weight
 
         # =====================================================

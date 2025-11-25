@@ -824,6 +824,11 @@ class BoxHead(BaseHead):
 
             # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
             # Confidence loss for objectness prediction
+            # CRITICAL FIX (Audit 2025112509 Bug B7): Add validity masking to confidence loss
+            # Without masking, invalid samples (validity_mask=0) corrupt confidence head training
+            # Key distinction:
+            #   - validity_mask=0: Invalid sample, should NOT contribute to ANY loss
+            #   - has_object=0: Valid sample where target is not visible, should learn low confidence
             conf_loss = torch.tensor(0.0, device=features.device)
             if self.confidence_head is not None and has_object is not None:
                 # Ensure has_object is float tensor
@@ -842,8 +847,29 @@ class BoxHead(BaseHead):
                         torch.zeros_like(pred_confidence)
                     )
 
-                # Compute BCE loss between predicted confidence and has_object ground truth
-                conf_loss = self.confidence_loss_fn(pred_confidence, has_object)
+                # Compute per-sample BCE loss (reduction='none' for masking)
+                conf_loss_per_sample = F.binary_cross_entropy_with_logits(
+                    pred_confidence.squeeze(-1) if pred_confidence.dim() > 1 else pred_confidence,
+                    has_object,
+                    reduction='none'
+                )  # [B]
+
+                # CRITICAL FIX (Audit 2025112509 Bug B7): Apply validity masking
+                # Only valid samples should contribute to confidence loss
+                if validity_mask is not None:
+                    # Ensure mask is float32
+                    if validity_mask.dtype != torch.float32:
+                        validity_mask_float = validity_mask.float()
+                    else:
+                        validity_mask_float = validity_mask
+
+                    # Masked loss: only valid samples contribute
+                    masked_conf_loss = conf_loss_per_sample * validity_mask_float
+                    num_valid = validity_mask_float.sum().clamp(min=1.0)
+                    conf_loss = masked_conf_loss.sum() / num_valid
+                else:
+                    # No masking: use mean reduction
+                    conf_loss = conf_loss_per_sample.mean()
 
                 # CRITICAL FIX: Check if conf_loss is NaN and replace with zero
                 if torch.any(~torch.isfinite(conf_loss)):
