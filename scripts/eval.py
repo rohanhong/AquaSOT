@@ -227,6 +227,10 @@ def main():
         data_root = cfg.data.get('data_root', 'data')
         test_sequences = cfg.data.test_sequences
 
+        # Defensive check: ensure test_sequences is a list
+        if isinstance(test_sequences, str):
+            test_sequences = [test_sequences]
+
         logger.info(f"Multi-sequence evaluation mode: data_root={data_root}")
         logger.info(f"Test sequences: {test_sequences}")
 
@@ -410,12 +414,58 @@ def main():
         logger.info("\n"+"="*70)
         logger.info("Creating visualizations")
         logger.info("="*70)
-        
+
+        from aquasot3d.evaluation import compute_success_curve, compute_precision_curve
+        import numpy as np
+
         visualizer = TrackingVisualizer(
             save_dir=cfg.evaluation.visualization.save_dir,
             dpi=cfg.evaluation.visualization.get('dpi', 150)
         )
-        
+
+        # Aggregate predictions across all sequences for curve computation
+        all_rgb_pred, all_rgb_gt = [], []
+        all_sonar_pred, all_sonar_gt = [], []
+
+        for seq_name, seq_data in results['sequences'].items():
+            preds = seq_data.get('predictions', {})
+            all_rgb_pred.extend(preds.get('rgb_pred', []))
+            all_rgb_gt.extend(preds.get('rgb_gt', []))
+            all_sonar_pred.extend(preds.get('sonar_pred', []))
+            all_sonar_gt.extend(preds.get('sonar_gt', []))
+
+        # Compute and plot success curves
+        if cfg.evaluation.visualization.get('plot_curves', True):
+            logger.info("Plotting success and precision curves...")
+
+            rgb_success_curve = None
+            sonar_success_curve = None
+            rgb_precision_curve = None
+            sonar_precision_curve = None
+
+            if all_rgb_pred and all_rgb_gt:
+                rgb_success_curve = compute_success_curve(all_rgb_pred, all_rgb_gt)
+                rgb_precision_curve = compute_precision_curve(all_rgb_pred, all_rgb_gt)
+
+            if all_sonar_pred and all_sonar_gt:
+                sonar_success_curve = compute_success_curve(all_sonar_pred, all_sonar_gt)
+                sonar_precision_curve = compute_precision_curve(all_sonar_pred, all_sonar_gt)
+
+            # Plot curves
+            visualizer.plot_success_curves(
+                rgb_curve=rgb_success_curve,
+                sonar_curve=sonar_success_curve,
+                save_name='success_curves.png'
+            )
+            logger.info("  Saved: success_curves.png")
+
+            visualizer.plot_precision_curves(
+                rgb_curve=rgb_precision_curve,
+                sonar_curve=sonar_precision_curve,
+                save_name='precision_curves.png'
+            )
+            logger.info("  Saved: precision_curves.png")
+
         # Get best and worst sequences
         best_sequences = evaluator.get_best_sequences(
             n=cfg.evaluation.visualization.get('num_best', 5)
@@ -423,11 +473,11 @@ def main():
         worst_sequences = evaluator.get_worst_sequences(
             n=cfg.evaluation.visualization.get('num_worst', 5)
         )
-        
+
         logger.info(f"\nTop {len(best_sequences)} sequences:")
         for name, auc in best_sequences:
             logger.info(f"  {name}: {auc:.4f}")
-        
+
         logger.info(f"\nBottom {len(worst_sequences)} sequences:")
         for name, auc in worst_sequences:
             logger.info(f"  {name}: {auc:.4f}")

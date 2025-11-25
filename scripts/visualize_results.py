@@ -5,7 +5,7 @@ Results Visualization Script for AquaSOT-3D
 Visualize evaluation results, create comparison plots, and generate reports.
 
 Usage:
-    python scripts/visualize_results.py --results outputs/eval_multiseq/
+    python scripts/visualize_results.py --results outputs/eval/
     python scripts/visualize_results.py --compare baseline.json ours.json
 
 Author: AquaSOT-3D Team

@@ -135,6 +135,8 @@ def parse_cli_overrides(overrides: List[str]) -> Dict:
     """
     Parse command-line configuration overrides.
 
+    Supports YAML syntax for complex types (lists, dicts).
+
     Args:
         overrides: List of override strings in format 'key.subkey=value'
 
@@ -144,6 +146,8 @@ def parse_cli_overrides(overrides: List[str]) -> Dict:
     Example:
         >>> parse_cli_overrides(['training.lr=0.001', 'model.type=vit'])
         {'training': {'lr': 0.001}, 'model': {'type': 'vit'}}
+        >>> parse_cli_overrides(['data.test_sequences=[uuv3,uuv6]'])
+        {'data': {'test_sequences': ['uuv3', 'uuv6']}}
     """
     override_dict = {}
 
@@ -155,17 +159,11 @@ def parse_cli_overrides(overrides: List[str]) -> Dict:
         key_path, value_str = override.split('=', 1)
         keys = key_path.split('.')
 
-        # Try to parse value as int, float, bool, or keep as string
+        # Use yaml.safe_load to parse value (supports lists, dicts, bool, null, etc.)
         try:
-            if value_str.lower() in ['true', 'false']:
-                value = value_str.lower() == 'true'
-            elif value_str.lower() == 'null' or value_str.lower() == 'none':
-                value = None
-            elif '.' in value_str:
-                value = float(value_str)
-            else:
-                value = int(value_str)
-        except ValueError:
+            value = yaml.safe_load(value_str)
+        except yaml.YAMLError:
+            # Fallback to raw string if YAML parsing fails
             value = value_str
 
         # Build nested dictionary

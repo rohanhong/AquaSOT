@@ -3,56 +3,56 @@
 _base_: default.yaml
 
 experiment:
-  name: aquasot3d_eval_multiseq   # Experiment name
-  tags: [evaluation, multimodal]  # Experiment tags
-  notes: "Multi-sequence evaluation on test set"
-  group: multiseq_evaluation      # Experiment group
+  name: aquasot3d_eval              # Experiment name
+  tags: [evaluation, multimodal]    # Experiment tags
+  notes: "Evaluation on test set"
+  group: evaluation                 # Experiment group
 
 data:
-  data_root: data                 # Dataset root directory
+  data_root: data                   # Dataset root directory
   test_sequences: [uuv3, uuv6, uuv10]
-  test_root: null                 # Override test data root
-  num_workers: 12                 # DataLoader workers [🚀A4000: 48]
-  prefetch_factor: 4              # Prefetch batches per worker [🚀A4000: 8]
+  test_root: null                   # Override test data root
+  num_workers: 12                   # DataLoader workers [A4000: 48]
+  prefetch_factor: 4                # Prefetch batches per worker [A4000: 8]
 
 evaluation:
-  mode: test                      # Evaluation mode: val/test
-  batch_size: 1                   # Evaluation batch size (sequential)
+  mode: test                        # Evaluation mode: val/test
+  batch_size: 1                     # Evaluation batch size (sequential)
 
   template:
-    visibility_policy: any        # Template selection: any/both/all
+    visibility_policy: any          # Template selection: any/both/all
 
   metrics:
-    - success_auc                 # Success plot AUC
-    - precision_20                # Precision at 20 pixels
-    - precision_10                # Precision at 10 pixels
-    - precision_5                 # Precision at 5 pixels
-    - avg_center_error            # Average center location error
-    - mean_iou                    # Mean IoU
-    - success_0.5                 # Success rate at IoU=0.5
-    - success_0.7                 # Success rate at IoU=0.7
+    - success_auc                   # Success plot AUC
+    - precision_20                  # Precision at 20 pixels
+    - precision_10                  # Precision at 10 pixels
+    - precision_5                   # Precision at 5 pixels
+    - avg_center_error              # Average center location error
+    - mean_iou                      # Mean IoU
+    - success_0.5                   # Success rate at IoU=0.5
+    - success_0.7                   # Success rate at IoU=0.7
 
-  evaluate_rgb: true              # Evaluate RGB predictions
-  evaluate_sonar: true            # Evaluate Sonar predictions
-  evaluate_fusion: false          # Deprecated (dual-view fusion)
+  evaluate_rgb: true                # Evaluate RGB predictions
+  evaluate_sonar: true              # Evaluate Sonar predictions
+  evaluate_fusion: false            # Deprecated (dual-view fusion)
 
   visualization:
-    enabled: true                 # Enable visualization
-    save_dir: outputs/eval_multiseq/visualization
-    plot_trajectories: true       # Plot tracking trajectories
-    plot_curves: true             # Plot performance curves
-    plot_attention: false         # Plot attention maps
-    create_videos: false          # Create tracking videos
-    save_failure_cases: true      # Save failure cases
-    num_best: 5                   # Number of best cases to save
-    num_worst: 5                  # Number of worst cases to save
+    enabled: true                   # Enable visualization
+    save_dir: outputs/eval/visualization
+    plot_trajectories: true         # Plot tracking trajectories
+    plot_curves: true               # Plot performance curves
+    plot_attention: false           # Plot attention maps
+    create_videos: false            # Create tracking videos
+    save_failure_cases: true        # Save failure cases
+    num_best: 5                     # Number of best cases to save
+    num_worst: 5                    # Number of worst cases to save
 
-  save_predictions: true          # Save prediction results
-  save_metrics: true              # Save computed metrics
-  save_report: true               # Save evaluation report
-  output_dir: outputs/eval_multiseq   # Evaluation output directory
+  save_predictions: true            # Save prediction results
+  save_metrics: true                # Save computed metrics
+  save_report: true                 # Save evaluation report
+  output_dir: outputs/eval          # Evaluation output directory
 
 paths:
-  work_dir: outputs/eval_multiseq             # Working directory
-  checkpoint_dir: outputs/eval_multiseq/checkpoints  # Checkpoint directory
-  log_dir: outputs/eval_multiseq/logs         # Log directory
+  work_dir: outputs/eval            # Working directory
+  checkpoint_dir: outputs/eval/checkpoints  # Checkpoint directory
+  log_dir: outputs/eval/logs        # Log directory

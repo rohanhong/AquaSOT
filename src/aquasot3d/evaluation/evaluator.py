@@ -536,58 +536,70 @@ class TrackingEvaluator:
         # RGB and Sonar boxes now use dual-view fused features (no separate fusion head)
 
         # Get ground truth boxes
-        # CRITICAL FIX (Audit 2025111409 Finding 1): Use *_pixels keys if available (training),
-        # otherwise use direct bbox keys (evaluation - already in physical pixels)
+        # CRITICAL FIX (Audit 2025112601): Use ORIGINAL space GT, NOT letterbox space
+        # Predictions are denormalized to ORIGINAL image coordinates (1920x1080 for RGB, 682x376 for sonar)
+        # GT must also be in ORIGINAL space for correct IoU/precision computation
+        #
+        # Key insight: search_bbox_rgb_pixels is in LETTERBOX space (256x256)
+        #              search_bbox_rgb is in ORIGINAL space (1920x1080)
+        # We need ORIGINAL space for both pred and GT!
 
-        # RGB ground truth
-        if 'search_bbox_rgb_pixels' in batch:
-            # Training mode: use pixel coordinates directly
-            rgb_gt = batch['search_bbox_rgb_pixels'].cpu().numpy()
-            predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
-        elif 'rgb_boxes_pixels' in batch:
-            # Training mode: alternative key
-            rgb_gt = batch['rgb_boxes_pixels'].cpu().numpy()
-            predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
-        else:
-            # Evaluation mode: boxes already in physical pixels, no denormalization needed
-            rgb_gt_key = 'search_bbox_rgb' if 'search_bbox_rgb' in batch else 'rgb_boxes'
-            if rgb_gt_key in batch:
-                rgb_gt = batch[rgb_gt_key].cpu().numpy()
-                # Check if already in pixel coordinates (values > 2)
-                if np.max(np.abs(rgb_gt[0])) >= 2.0:
-                    # Already physical pixels - use directly
-                    predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
-                else:
-                    # Normalized coordinates - denormalize
-                    predictions['rgb_gt'] = [
-                        self._denormalize_bbox(rgb_gt[i], self.search_size)
-                        for i in range(len(rgb_gt))
-                    ]
+        # RGB ground truth - prefer original space coordinates
+        rgb_gt_key = 'search_bbox_rgb' if 'search_bbox_rgb' in batch else 'rgb_boxes'
+        if rgb_gt_key in batch:
+            rgb_gt = batch[rgb_gt_key]
+            if isinstance(rgb_gt, torch.Tensor):
+                rgb_gt = rgb_gt.cpu().numpy()
+            # Check if in original space (values > search_size suggests original coords)
+            if np.max(np.abs(rgb_gt[0])) >= self.search_size:
+                # Already in original space - use directly
+                predictions['rgb_gt'] = [rgb_gt[i] for i in range(len(rgb_gt))]
+            else:
+                # Likely normalized or letterbox space - need to denormalize
+                # Use metadata to convert back to original space
+                predictions['rgb_gt'] = [
+                    self._denormalize_bbox(
+                        rgb_gt[i],
+                        self.search_size,
+                        scale_x=rgb_metadata_list[i].get('scale_x') if i < len(rgb_metadata_list) else None,
+                        scale_y=rgb_metadata_list[i].get('scale_y') if i < len(rgb_metadata_list) else None,
+                        pad_x=rgb_metadata_list[i].get('pad_x', 0) if i < len(rgb_metadata_list) else 0,
+                        pad_y=rgb_metadata_list[i].get('pad_y', 0) if i < len(rgb_metadata_list) else 0,
+                        original_size=(
+                            rgb_metadata_list[i].get('original_height'),
+                            rgb_metadata_list[i].get('original_width')
+                        ) if i < len(rgb_metadata_list) else None
+                    )
+                    for i in range(len(rgb_gt))
+                ]
 
-        # Sonar ground truth
-        if 'search_bbox_sonar_pixels' in batch:
-            # Training mode: use pixel coordinates directly
-            sonar_gt = batch['search_bbox_sonar_pixels'].cpu().numpy()
-            predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
-        elif 'sonar_boxes_pixels' in batch:
-            # Training mode: alternative key
-            sonar_gt = batch['sonar_boxes_pixels'].cpu().numpy()
-            predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
-        else:
-            # Evaluation mode: boxes already in physical pixels
-            sonar_gt_key = 'search_bbox_sonar' if 'search_bbox_sonar' in batch else 'sonar_boxes'
-            if sonar_gt_key in batch:
-                sonar_gt = batch[sonar_gt_key].cpu().numpy()
-                # Check if already in pixel coordinates
-                if np.max(np.abs(sonar_gt[0])) >= 2.0:
-                    # Already physical pixels - use directly
-                    predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
-                else:
-                    # Normalized coordinates - denormalize
-                    predictions['sonar_gt'] = [
-                        self._denormalize_bbox(sonar_gt[i], self.search_size)
-                        for i in range(len(sonar_gt))
-                    ]
+        # Sonar ground truth - prefer original space coordinates
+        sonar_gt_key = 'search_bbox_sonar' if 'search_bbox_sonar' in batch else 'sonar_boxes'
+        if sonar_gt_key in batch:
+            sonar_gt = batch[sonar_gt_key]
+            if isinstance(sonar_gt, torch.Tensor):
+                sonar_gt = sonar_gt.cpu().numpy()
+            # Check if in original space
+            if np.max(np.abs(sonar_gt[0])) >= self.search_size:
+                # Already in original space - use directly
+                predictions['sonar_gt'] = [sonar_gt[i] for i in range(len(sonar_gt))]
+            else:
+                # Likely normalized or letterbox space - need to denormalize
+                predictions['sonar_gt'] = [
+                    self._denormalize_bbox(
+                        sonar_gt[i],
+                        self.search_size,
+                        scale_x=sonar_metadata_list[i].get('scale_x') if i < len(sonar_metadata_list) else None,
+                        scale_y=sonar_metadata_list[i].get('scale_y') if i < len(sonar_metadata_list) else None,
+                        pad_x=sonar_metadata_list[i].get('pad_x', 0) if i < len(sonar_metadata_list) else 0,
+                        pad_y=sonar_metadata_list[i].get('pad_y', 0) if i < len(sonar_metadata_list) else 0,
+                        original_size=(
+                            sonar_metadata_list[i].get('original_height'),
+                            sonar_metadata_list[i].get('original_width')
+                        ) if i < len(sonar_metadata_list) else None
+                    )
+                    for i in range(len(sonar_gt))
+                ]
 
         # CRITICAL FIX (Audit 2025111413 Finding 3): Extract quality scores and fusion weights
         if 'rgb_quality' in outputs:
