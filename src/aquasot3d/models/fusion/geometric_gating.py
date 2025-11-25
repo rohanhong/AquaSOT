@@ -260,8 +260,33 @@ class RadialProfileExtractor(BaseModule):
             # Now both cy and y_grid_pixels are in pixel space
             r = cy - y_grid_pixels  # [H, W], range from sensor (bottom=0, top=max_range)
 
+            # CRITICAL FIX (Audit 2025112507 Finding 2): Mask out letterbox padding regions
+            # Problem: Padding pixels produce negative ranges that dominate bin 0, breaking geometry gating
+            # Solution: Create valid mask to exclude padding, only bin active sonar regions
+            if meta is not None and 'pad_top' in meta and 'scale' in meta:
+                # Compute valid region bounds (exclude top/bottom padding)
+                # Note: metadata values are in letterbox pixel space (e.g., 512x512)
+                # y_grid is in feature space (e.g., 32x32), scaled to pixel space via stride
+                pad_top_letterbox = meta.get('pad_top', 0)  # Top padding in letterbox pixels
+                original_h = meta.get('original_height', H)
+                scale_meta = meta.get('scale', 1.0)  # Letterbox scale factor
+
+                # Active region in letterbox pixels: [pad_top, pad_top + original_h * scale_meta)
+                active_start_pixels = pad_top_letterbox
+                active_end_pixels = pad_top_letterbox + original_h * scale_meta
+
+                # Valid mask: feature pixels that correspond to active sonar region
+                # y_grid_pixels is already in pixel space (via y_grid * stride)
+                valid_mask = (y_grid_pixels >= active_start_pixels) & (y_grid_pixels < active_end_pixels)
+            else:
+                # No metadata: assume all pixels are valid (fallback for non-letterboxed inputs)
+                valid_mask = torch.ones_like(r, dtype=torch.bool)
+
+            # Clamp negative ranges to zero (safety measure, should not occur with proper metadata)
+            r = torch.clamp(r, min=0.0)
+
             # Normalize to bin indices [0, num_bins)
-            r_max = r.max()
+            r_max = r[valid_mask].max() if valid_mask.any() else r.max()  # Only consider valid pixels
             r_normalized = (r / (r_max + 1e-6)) * (self.num_bins - 1)
             r_bins = r_normalized.long().clamp(0, self.num_bins - 1)  # [H, W]
 
@@ -271,16 +296,22 @@ class RadialProfileExtractor(BaseModule):
             else:
                 feat = feature_map[b].mean(dim=0)  # [H, W]
 
-            # Vectorized bin-wise aggregation using scatter_add
-            feat_flat = feat.flatten()  # [H*W]
+            # CRITICAL FIX (Audit 2025112507 Finding 2): Apply valid mask before binning
+            # Only bin pixels from active sonar region, ignore padding
+            feat_masked = feat * valid_mask.float()  # Zero out padding features
+            valid_mask_flat = valid_mask.flatten()  # [H*W]
+
+            # Vectorized bin-wise aggregation using scatter_add (only valid pixels)
+            feat_flat = feat_masked.flatten()  # [H*W]
             r_bins_flat = r_bins.flatten()  # [H*W]
 
-            # Accumulate values and counts for each bin
+            # Accumulate values and counts for each bin (only valid pixels contribute)
             profile = torch.zeros(self.num_bins, device=device)
             counts = torch.zeros(self.num_bins, device=device)
 
-            profile.scatter_add_(0, r_bins_flat, feat_flat)
-            counts.scatter_add_(0, r_bins_flat, torch.ones_like(feat_flat))
+            # Use valid mask to filter: only scatter valid pixels
+            profile.scatter_add_(0, r_bins_flat[valid_mask_flat], feat_flat[valid_mask_flat])
+            counts.scatter_add_(0, r_bins_flat[valid_mask_flat], torch.ones(valid_mask_flat.sum(), device=device))
 
             # Compute mean: divide accumulated values by counts (single normalization)
             profile = profile / (counts + 1e-6)

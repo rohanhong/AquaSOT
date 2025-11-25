@@ -500,8 +500,14 @@ class G2DCMA(BaseModule):
                 'radial_encoding': geometry_output['radial_encoding'],
                 'scale_encoding': geometry_output['scale_encoding'],
                 'attention_probs': geometry_output['attention_probs']
-            },
-            'deformable_info': {
+            }
+        }
+
+        # CRITICAL FIX (Audit 2025112507 Finding 1): Conditional deformable_info construction
+        # When use_deformable=False (ablation mode), rgb_to_sonar_output and sonar_to_rgb_output
+        # are not defined, causing NameError. Provide placeholder tensors for ablation experiments.
+        if self.use_deformable:
+            output['deformable_info'] = {
                 'rgb_to_sonar_offsets': rgb_to_sonar_output['offsets'],  # RGB→Sonar mapping
                 'sonar_to_rgb_offsets': sonar_to_rgb_output['offsets'],  # Sonar→RGB mapping
                 'rgb_sampling_locations': rgb_to_sonar_output['sampling_locations'],
@@ -509,7 +515,17 @@ class G2DCMA(BaseModule):
                 'rgb_attention_weights': rgb_to_sonar_output['attention_weights'],
                 'sonar_attention_weights': sonar_to_rgb_output['attention_weights']
             }
-        }
+        else:
+            # Ablation mode: provide zero placeholders for downstream code compatibility
+            output['deformable_info'] = {
+                'rgb_to_sonar_offsets': torch.zeros(B, 1, device=rgb_features.device),
+                'sonar_to_rgb_offsets': torch.zeros(B, 1, device=rgb_features.device),
+                'rgb_sampling_locations': torch.zeros(B, 1, device=rgb_features.device),
+                'sonar_sampling_locations': torch.zeros(B, 1, device=rgb_features.device),
+                'rgb_attention_weights': torch.zeros(B, 1, device=rgb_features.device),
+                'sonar_attention_weights': torch.zeros(B, 1, device=rgb_features.device),
+                '_ablation_mode': 'no_deformable'  # Flag for debugging
+            }
 
         # Step 4: Consistency Losses
         if return_consistency:

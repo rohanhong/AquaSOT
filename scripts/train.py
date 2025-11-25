@@ -188,11 +188,43 @@ def build_dataloaders(cfg):
 
         # CRITICAL FIX (Audit 2025112504): Read visibility_policy from config
         # This controls which frames are used based on modality visibility:
-        #   'any': At least one modality visible (recommended - excludes zero-modality, keeps single-modality)
-        #   'both': Both modalities visible (pure dual-modality training)
-        #   'all': Include all frames (not recommended - includes zero-modality)
+        #   'all': Include ALL frames including zero-modality (0,0,0,0) - REQUIRED for confidence learning
+        #   'any': At least one modality visible (excludes zero-modality) - insufficient for confidence heads
+        #   'both': Both modalities visible (pure dual-modality training) - insufficient for conditional fusion
         visibility_policy = cfg.data.get('visibility_policy', 'both')
         logger.info(f"Using visibility_policy='{visibility_policy}' for training data filtering")
+
+        # CRITICAL FIX (Audit 2025112507 Gap 2): Compatibility check for fusion type vs visibility policy
+        # Conditional G2-DCMA and confidence heads REQUIRE zero-modality frames (0,0,0,0) to learn suppression
+        fusion_type = cfg.model.fusion.get('type', 'g2_dcma')
+        has_confidence_heads = (
+            cfg.model.heads.get('rgb_box', {}).get('use_confidence_head', False) or
+            cfg.model.heads.get('sonar_box', {}).get('use_confidence_head', False)
+        )
+
+        requires_all_policy = (
+            fusion_type == 'conditional_g2_dcma' or  # Needs single/zero-modality routing
+            has_confidence_heads  # Needs zero-modality for has_object=False learning
+        )
+
+        if requires_all_policy and visibility_policy != 'all':
+            logger.error(
+                f"CRITICAL CONFIGURATION ERROR: fusion_type='{fusion_type}' "
+                f"(has_confidence_heads={has_confidence_heads}) requires visibility_policy='all' "
+                f"to learn zero-modality suppression, but got visibility_policy='{visibility_policy}'."
+            )
+            logger.error(
+                "Without zero-modality frames (0,0,0,0), confidence heads cannot learn has_object=False, "
+                "violating specification requirement. Auto-correcting to visibility_policy='all'."
+            )
+            visibility_policy = 'all'
+            logger.warning(f"Overridden visibility_policy to 'all' for compatibility with {fusion_type}")
+
+        if visibility_policy == 'all':
+            logger.info(
+                "visibility_policy='all' includes zero/single/dual-modality frames. "
+                "Model will learn zero-modality suppression (has_object=False) and single-modality routing."
+            )
 
         # Create multi-sequence base datasets (always dual-sensor)
         # IMPORTANT: Set return_occluded=False to prevent it from overriding visibility_policy
@@ -250,6 +282,38 @@ def build_dataloaders(cfg):
         # CRITICAL FIX (Audit 2025112504): Read visibility_policy from config
         visibility_policy = cfg.data.get('visibility_policy', 'both')
         logger.info(f"Using visibility_policy='{visibility_policy}' for training data filtering")
+
+        # CRITICAL FIX (Audit 2025112507 Gap 2): Compatibility check for fusion type vs visibility policy
+        # (Same logic as multi-sequence mode above)
+        fusion_type = cfg.model.fusion.get('type', 'g2_dcma')
+        has_confidence_heads = (
+            cfg.model.heads.get('rgb_box', {}).get('use_confidence_head', False) or
+            cfg.model.heads.get('sonar_box', {}).get('use_confidence_head', False)
+        )
+
+        requires_all_policy = (
+            fusion_type == 'conditional_g2_dcma' or
+            has_confidence_heads
+        )
+
+        if requires_all_policy and visibility_policy != 'all':
+            logger.error(
+                f"CRITICAL CONFIGURATION ERROR: fusion_type='{fusion_type}' "
+                f"(has_confidence_heads={has_confidence_heads}) requires visibility_policy='all' "
+                f"to learn zero-modality suppression, but got visibility_policy='{visibility_policy}'."
+            )
+            logger.error(
+                "Without zero-modality frames (0,0,0,0), confidence heads cannot learn has_object=False, "
+                "violating specification requirement. Auto-correcting to visibility_policy='all'."
+            )
+            visibility_policy = 'all'
+            logger.warning(f"Overridden visibility_policy to 'all' for compatibility with {fusion_type}")
+
+        if visibility_policy == 'all':
+            logger.info(
+                "visibility_policy='all' includes zero/single/dual-modality frames. "
+                "Model will learn zero-modality suppression (has_object=False) and single-modality routing."
+            )
 
         # Create single-sequence base datasets (always dual-sensor)
         # IMPORTANT: Set return_occluded=False to prevent it from overriding visibility_policy

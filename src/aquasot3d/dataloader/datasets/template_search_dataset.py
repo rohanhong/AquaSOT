@@ -216,23 +216,26 @@ class TemplateSearchDataset(Dataset):
 
         # 3. Process template (crop around target bbox)
         # Always process both sensors (target visibility handled by None checks)
+        # CRITICAL FIX (Audit 2025112507 Finding 3): Capture crop metadata for bbox transformation
         if template_sample['rgb_img'] is not None:
-            rgb_template = self._crop_template(
+            rgb_template, rgb_crop_meta = self._crop_template(
                 template_sample['rgb_img'],
                 template_sample['rgb_bbox'],
                 self.template_size
             )
         else:
             rgb_template = None
+            rgb_crop_meta = None
 
         if template_sample['sonar_img'] is not None:
-            sonar_template = self._crop_template(
+            sonar_template, sonar_crop_meta = self._crop_template(
                 template_sample['sonar_img'],
                 template_sample['sonar_bbox'],
                 self.template_size
             )
         else:
             sonar_template = None
+            sonar_crop_meta = None
 
         # 4. Process search (letterbox resize to search_size)
         # CRITICAL FIX (Template-Search Migration 2025112104):
@@ -367,10 +370,50 @@ class TemplateSearchDataset(Dataset):
         # Trainer expects normalized CXCYWH format to match model predictions
         # Use existing bbox_utils functions per code review
 
+        # CRITICAL FIX (Audit 2025112507 Finding 3): Transform template bbox into crop coordinates
+        # Problem: Template bbox was normalized from full-frame coordinates, misaligned with cropped template
+        # Solution: Apply crop transform (offset + scale + letterbox) before normalization
+        def transform_bbox_to_crop(bbox_xywh, crop_meta):
+            """
+            Transform bbox from original image coordinates to crop coordinates.
+
+            Args:
+                bbox_xywh: [x, y, w, h] in original image space
+                crop_meta: Dict with crop_x1, crop_y1, letterbox_scale, letterbox_pad_*
+
+            Returns:
+                bbox_xywh_crop: [x, y, w, h] in crop coordinate space (after letterbox)
+            """
+            if crop_meta is None:
+                return bbox_xywh  # No crop, return as-is
+
+            x, y, w, h = bbox_xywh
+
+            # Step 1: Translate to crop-relative coordinates
+            x_crop = x - crop_meta['crop_x1']
+            y_crop = y - crop_meta['crop_y1']
+
+            # Step 2: Apply letterbox transform (scale + padding)
+            scale = crop_meta['letterbox_scale']
+            pad_left = crop_meta['letterbox_pad_left']
+            pad_top = crop_meta['letterbox_pad_top']
+
+            x_letterbox = x_crop * scale + pad_left
+            y_letterbox = y_crop * scale + pad_top
+            w_letterbox = w * scale
+            h_letterbox = h * scale
+
+            return np.array([x_letterbox, y_letterbox, w_letterbox, h_letterbox], dtype=np.float32)
+
         # Template bbox (in 256x256 template crop) - Use RGB if available, else Sonar
-        if template_sample['rgb_bbox'] is not None:
+        if template_sample['rgb_bbox'] is not None and rgb_crop_meta is not None:
+            # Transform bbox to crop space
+            template_bbox_crop = transform_bbox_to_crop(
+                template_sample['rgb_bbox'],
+                rgb_crop_meta
+            )
             template_bbox_cxcywh = convert_bbox_format(
-                template_sample['rgb_bbox'].reshape(1, 4),
+                template_bbox_crop.reshape(1, 4),
                 src_format='xywh',
                 dst_format='cxcywh'
             )
@@ -379,9 +422,14 @@ class TemplateSearchDataset(Dataset):
                 image_size=(self.template_size, self.template_size),
                 format='cxcywh'
             )[0]  # Extract single box from batch
-        elif template_sample['sonar_bbox'] is not None:
+        elif template_sample['sonar_bbox'] is not None and sonar_crop_meta is not None:
+            # Transform bbox to crop space
+            template_bbox_crop = transform_bbox_to_crop(
+                template_sample['sonar_bbox'],
+                sonar_crop_meta
+            )
             template_bbox_cxcywh = convert_bbox_format(
-                template_sample['sonar_bbox'].reshape(1, 4),
+                template_bbox_crop.reshape(1, 4),
                 src_format='xywh',
                 dst_format='cxcywh'
             )
@@ -605,12 +653,15 @@ class TemplateSearchDataset(Dataset):
         image: torch.Tensor,
         bbox: np.ndarray,
         crop_size: int
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Dict]:
         """
         Crop template region around target bbox using letterbox (resize+pad).
 
         CRITICAL: Uses letterbox preprocessing to preserve aspect ratio and avoid
         distortion, following mainstream SOT methods (OSTrack/TransT).
+
+        CRITICAL FIX (Audit 2025112507 Finding 3): Now returns crop metadata
+        to enable bbox coordinate transformation into template space.
 
         Args:
             image: [3, H, W] or [1, H, W] tensor (from base_dataset)
@@ -618,7 +669,13 @@ class TemplateSearchDataset(Dataset):
             crop_size: Target crop size (e.g., 256)
 
         Returns:
-            Letterboxed template [C, crop_size, crop_size] with preserved aspect ratio
+            Tuple of (crop_tensor, crop_metadata):
+                - crop_tensor: Letterboxed template [C, crop_size, crop_size]
+                - crop_metadata: Dict with keys:
+                    - 'crop_x1', 'crop_y1': Crop region offset in original image
+                    - 'crop_width', 'crop_height': Crop region size before letterbox
+                    - 'letterbox_scale': Scale factor from letterbox
+                    - 'letterbox_pad_left', 'letterbox_pad_top': Padding from letterbox
         """
         # Convert tensor to numpy for cropping
         if isinstance(image, torch.Tensor):
@@ -649,6 +706,14 @@ class TemplateSearchDataset(Dataset):
         # Crop
         crop = image_np[y1:y2, x1:x2]
 
+        # CRITICAL FIX (Audit 2025112507 Finding 3): Capture crop metadata for bbox transformation
+        crop_metadata = {
+            'crop_x1': x1,
+            'crop_y1': y1,
+            'crop_width': x2 - x1,
+            'crop_height': y2 - y1
+        }
+
         # Handle empty crops (degenerate bbox)
         if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
             # Return black template
@@ -661,10 +726,16 @@ class TemplateSearchDataset(Dataset):
                 # RGB (3-channel)
                 crop = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
             crop_letterboxed = crop  # Already correct size
+            letterbox_meta = {'scale': 1.0, 'pad_left': 0, 'pad_top': 0}
         else:
             # Apply letterbox preprocessing (resize + pad to preserve aspect ratio)
             # CRITICAL FIX (Audit 2025112401 Finding 1): _letterbox now returns metadata
-            crop_letterboxed, _ = self._letterbox(crop, crop_size)
+            crop_letterboxed, letterbox_meta = self._letterbox(crop, crop_size)
+
+        # CRITICAL FIX (Audit 2025112507 Finding 3): Merge letterbox metadata
+        crop_metadata['letterbox_scale'] = letterbox_meta['scale']
+        crop_metadata['letterbox_pad_left'] = letterbox_meta['pad_left']
+        crop_metadata['letterbox_pad_top'] = letterbox_meta['pad_top']
 
         # Convert to tensor [C, H, W] and apply normalization
         # CRITICAL FIX (Audit 2025112401 Finding 4):
@@ -678,7 +749,7 @@ class TemplateSearchDataset(Dataset):
             crop_tensor = torch.from_numpy(crop_letterboxed).permute(2, 0, 1).float() / 255.0
             crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
 
-        return crop_tensor
+        return crop_tensor, crop_metadata
 
     def _letterbox(self, img: np.ndarray, target_size: int) -> Tuple[np.ndarray, Dict]:
         """

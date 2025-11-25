@@ -47,6 +47,18 @@ data:
   val_split: val
   test_split: test
 
+  # CRITICAL FIX (Audit 2025112507 Finding 4): Visibility policy for frame filtering
+  # Controls which frames are included in training based on modality availability:
+  #   - 'all': Include ALL frames including zero-modality (0,0,0,0 annotations) - REQUIRED
+  #            Enables model to learn zero/single/dual-modality handling
+  #            Conditional G2-DCMA + confidence heads MUST learn to suppress zero-modality
+  #            Includes 38.2% RGB-occluded frames (Sonar-only) for single-modality routing
+  #   - 'any': Include frames where at least one modality has valid target
+  #            EXCLUDES zero-modality (both 0,0,0,0) - violates specification requirement
+  #   - 'both': Require both modalities to have valid target (pure dual-modality)
+  #            EXCLUDES single/zero-modality - insufficient for conditional fusion
+  visibility_policy: all
+
   num_workers: 12  # Optimized for i7-11800H (16 threads): 12 workers for faster data loading
   pin_memory: true
   prefetch_factor: 4  # Increased prefetch to reduce GPU idle time
