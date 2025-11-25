@@ -18,7 +18,7 @@ python scripts/train.py --config configs/train.yaml
 
 ```bash
 python scripts/train.py --config configs/train.yaml \
-    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
+    --resume outputs/train/checkpoints/checkpoint_epoch_20.pth
 ```
 
 ### Override Parameters
@@ -31,13 +31,13 @@ python scripts/train.py --config configs/train.yaml \
 ## Monitoring
 
 ```bash
-tensorboard --logdir outputs/train_multiseq/logs --port 6006
+tensorboard --logdir outputs/train/logs --port 6006
 ```
 
 ## Output Structure
 
 ```
-outputs/train_multiseq/
+outputs/train/
 ├── checkpoints/
 │   ├── checkpoint_best.pth
 │   ├── checkpoint_last.pth

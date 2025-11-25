@@ -143,6 +143,6 @@ debug:
   fast_dev_run: false             # Fast development run
 
 paths:
-  work_dir: outputs/train_multiseq            # Working directory
-  checkpoint_dir: outputs/train_multiseq/checkpoints  # Checkpoint directory
-  log_dir: outputs/train_multiseq/logs        # Log directory
+  work_dir: outputs/train                     # Working directory
+  checkpoint_dir: outputs/train/checkpoints   # Checkpoint directory
+  log_dir: outputs/train/logs                 # Log directory

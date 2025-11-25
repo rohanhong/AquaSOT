@@ -323,7 +323,7 @@ python scripts/train.py --config configs/train/pretrain_sonar_only.yaml
 
 # Resume training from checkpoint
 python scripts/train.py --config configs/train/train.yaml \
-    --resume outputs/train_multiseq/checkpoints/checkpoint_epoch_20.pth
+    --resume outputs/train/checkpoints/checkpoint_epoch_20.pth
 
 # Override sequences dynamically
 python scripts/train.py --config configs/base/default.yaml \
@@ -346,7 +346,7 @@ Evaluate on all 3 validation sequences:
 ```bash
 python scripts/eval.py \
     --config configs/eval.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth
 ```
 
 **Single-Sequence Evaluation** (Legacy):
@@ -356,7 +356,7 @@ Evaluate on UUV3 only:
 ```bash
 python scripts/eval.py \
     --config configs/eval.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth
 ```
 
 **Custom Evaluation**:
@@ -364,7 +364,7 @@ python scripts/eval.py \
 # Evaluate specific sequences
 python scripts/eval.py \
     --config configs/base/default.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
     --opts data.data_root=data \
            data.test_sequences="[uuv6,uuv10]" \
            evaluation.batch_size=1
@@ -378,13 +378,13 @@ Visualization is **enabled by default** in evaluation configs. To control it:
 # Disable visualization for faster evaluation
 python scripts/eval.py \
     --config configs/eval/eval.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
     --no-visualize
 
 # Force enable visualization (override config)
 python scripts/eval.py \
     --config configs/eval/eval.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/checkpoint_best.pth \
+    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
     --visualize
 ```
 
@@ -594,7 +594,7 @@ Metrics are reported separately for:
 ```bash
 python scripts/eval.py \
     --config configs/eval/eval.yaml \
-    --checkpoint outputs/train_multiseq/checkpoints/best_model.pth \
+    --checkpoint outputs/train/checkpoints/best_model.pth \
     --output eval_results/
 ```
 
@@ -708,7 +708,7 @@ Export trained model for deployment:
 
 ```bash
 python scripts/export.py \
-    --checkpoint outputs/train_multiseq/checkpoints/best_model.pth \
+    --checkpoint outputs/train/checkpoints/best_model.pth \
     --output model.onnx \
     --format onnx \
     --input_shape 1,3,224,224
