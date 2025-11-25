@@ -42,8 +42,9 @@ evaluation:
     plot_trajectories: true         # Plot tracking trajectories
     plot_curves: true               # Plot performance curves
     plot_attention: false           # Plot attention maps
-    create_videos: false            # Create tracking videos
-    save_failure_cases: true        # Save failure cases
+    create_videos: true             # Create tracking videos
+    video_fps: 10                   # Video frame rate
+    save_failure_cases: true        # Save frame sequences with bboxes
     num_best: 5                     # Number of best cases to save
     num_worst: 5                    # Number of worst cases to save
 

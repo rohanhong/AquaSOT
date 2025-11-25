@@ -23,6 +23,8 @@ sys.path.insert(0, str(project_root / 'src'))
 import argparse
 import torch
 import logging
+import numpy as np
+import cv2
 
 from aquasot3d.utils.config import load_config, save_config, setup_config_logging
 from aquasot3d.dataloader import create_dataloader
@@ -481,7 +483,123 @@ def main():
         logger.info(f"\nBottom {len(worst_sequences)} sequences:")
         for name, auc in worst_sequences:
             logger.info(f"  {name}: {auc:.4f}")
-    
+
+        # Frame-level visualization with bounding boxes
+        if cfg.evaluation.visualization.get('save_failure_cases', True):
+            logger.info("\nGenerating frame visualizations with bounding boxes...")
+
+            # Denormalization parameters (ImageNet for RGB, 0.5 for Sonar)
+            rgb_mean = np.array(cfg.data.normalize.get('rgb_mean', [0.485, 0.456, 0.406]))
+            rgb_std = np.array(cfg.data.normalize.get('rgb_std', [0.229, 0.224, 0.225]))
+            sonar_mean = cfg.data.normalize.get('sonar_mean', [0.5])[0]
+            sonar_std = cfg.data.normalize.get('sonar_std', [0.5])[0]
+
+            for seq_name, seq_data in results['sequences'].items():
+                seq_vis_dir = Path(cfg.evaluation.visualization.save_dir) / 'frames' / seq_name
+                seq_vis_dir.mkdir(parents=True, exist_ok=True)
+
+                preds = seq_data.get('predictions', {})
+                rgb_preds = preds.get('rgb_pred', [])
+                sonar_preds = preds.get('sonar_pred', [])
+                rgb_gts = preds.get('rgb_gt', [])
+                sonar_gts = preds.get('sonar_gt', [])
+
+                # Re-iterate through dataset to get frames for this sequence
+                seq_frames_rgb = []
+                seq_frames_sonar = []
+
+                for i, sample in enumerate(eval_dataset):
+                    if sample.get('sequence_name', '') != seq_name:
+                        continue
+                    if i >= len(rgb_preds):
+                        break
+
+                    # Denormalize RGB image
+                    rgb_img = sample['rgb_search'].numpy()  # [3, H, W]
+                    rgb_img = rgb_img.transpose(1, 2, 0)  # [H, W, 3]
+                    rgb_img = rgb_img * rgb_std + rgb_mean
+                    rgb_img = (rgb_img * 255).clip(0, 255).astype(np.uint8)
+
+                    # Denormalize Sonar image
+                    sonar_img = sample['sonar_search'].numpy()  # [1, H, W]
+                    sonar_img = sonar_img.squeeze(0)  # [H, W]
+                    sonar_img = sonar_img * sonar_std + sonar_mean
+                    sonar_img = (sonar_img * 255).clip(0, 255).astype(np.uint8)
+                    sonar_img = cv2.cvtColor(sonar_img, cv2.COLOR_GRAY2RGB)
+
+                    # Get predictions and GT (in letterbox space for visualization)
+                    rgb_pred = preds.get('rgb_pred', [None])[i] if i < len(preds.get('rgb_pred', [])) else None
+                    sonar_pred = preds.get('sonar_pred', [None])[i] if i < len(preds.get('sonar_pred', [])) else None
+                    rgb_gt_pixels = sample.get('search_bbox_rgb_pixels')
+                    sonar_gt_pixels = sample.get('search_bbox_sonar_pixels')
+
+                    # Convert GT to numpy if tensor
+                    if rgb_gt_pixels is not None and hasattr(rgb_gt_pixels, 'numpy'):
+                        rgb_gt_pixels = rgb_gt_pixels.numpy()
+                    if sonar_gt_pixels is not None and hasattr(sonar_gt_pixels, 'numpy'):
+                        sonar_gt_pixels = sonar_gt_pixels.numpy()
+
+                    # Transform predictions to letterbox space for visualization
+                    rgb_meta = sample.get('rgb_search_metadata', {})
+                    sonar_meta = sample.get('sonar_search_metadata', {})
+
+                    def transform_to_letterbox(bbox_orig, meta):
+                        if bbox_orig is None:
+                            return None
+                        x, y, w, h = bbox_orig
+                        scale = meta.get('scale', 1.0)
+                        pad_left = meta.get('pad_left', 0)
+                        pad_top = meta.get('pad_top', 0)
+                        return np.array([
+                            x * scale + pad_left,
+                            y * scale + pad_top,
+                            w * scale,
+                            h * scale
+                        ])
+
+                    rgb_pred_lb = transform_to_letterbox(rgb_pred, rgb_meta)
+                    sonar_pred_lb = transform_to_letterbox(sonar_pred, sonar_meta)
+
+                    # Draw RGB frame
+                    rgb_vis = visualizer.draw_tracking_result(
+                        rgb_img.copy(),
+                        pred_box=rgb_pred_lb,
+                        gt_box=rgb_gt_pixels,
+                        frame_id=i,
+                        pred_format='xywh',
+                        gt_format='xywh'
+                    )
+
+                    # Draw Sonar frame
+                    sonar_vis = visualizer.draw_tracking_result(
+                        sonar_img.copy(),
+                        pred_box=sonar_pred_lb,
+                        gt_box=sonar_gt_pixels,
+                        frame_id=i,
+                        pred_format='xywh',
+                        gt_format='xywh'
+                    )
+
+                    # Combine RGB and Sonar side by side
+                    combined = np.hstack([rgb_vis, sonar_vis])
+                    seq_frames_rgb.append(combined)
+
+                    # Save frame
+                    frame_path = seq_vis_dir / f'frame_{i:04d}.png'
+                    cv2.imwrite(str(frame_path), cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+
+                # Create video if frames exist
+                if cfg.evaluation.visualization.get('create_videos', False) and len(seq_frames_rgb) > 0:
+                    video_path = visualizer.create_video_from_frames(
+                        seq_frames_rgb,
+                        f'{seq_name}_tracking.mp4',
+                        fps=cfg.evaluation.visualization.get('video_fps', 10)
+                    )
+                    if video_path:
+                        logger.info(f"  Video saved: {video_path}")
+
+                logger.info(f"  Saved {len(seq_frames_rgb)} frames for {seq_name}")
+
     logger.info("\n"+"="*70)
     logger.info("Evaluation completed successfully")
     logger.info(f"Results saved to: {cfg.evaluation.output_dir}")
