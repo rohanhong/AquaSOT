@@ -415,10 +415,41 @@ class TrackingEvaluator:
             'template_sonar_metadata': template_sonar_metadata,
         }
 
-        # Run model with metadata for quality estimators
+        # CRITICAL FIX (Audit 2025112504 Finding 1):
+        # Extract and pass modality visibility flags for conditional fusion
+        # These flags enable ConditionalG2DCMA to route single/zero modality scenarios
+        # collate_fn_template_search already stacked these as float32 tensors
+        is_rgb_valid = batch.get('is_valid_rgb')      # [B] float32 tensor
+        is_sonar_valid = batch.get('is_valid_sonar')  # [B] float32 tensor
+        has_object_rgb = batch.get('has_object_rgb')  # [B] float32 tensor
+        has_object_sonar = batch.get('has_object_sonar')  # [B] float32 tensor
+        has_object = batch.get('has_object')          # [B] float32 tensor
+
+        # Convert float32 to bool for model forward (model expects Optional[Tensor])
+        # Keep on CPU initially, model will move to device internally
+        if is_rgb_valid is not None:
+            is_rgb_valid = is_rgb_valid.bool().to(self.device)
+        if is_sonar_valid is not None:
+            is_sonar_valid = is_sonar_valid.bool().to(self.device)
+
+        # has_object flags stay as float32 for loss masking (needed for confidence heads)
+        if has_object_rgb is not None:
+            has_object_rgb = has_object_rgb.to(self.device)
+        if has_object_sonar is not None:
+            has_object_sonar = has_object_sonar.to(self.device)
+        if has_object is not None:
+            has_object = has_object.to(self.device)
+
+        # Run model with full visibility context for proper routing
         outputs = self.model(
             rgb_template, rgb_search, sonar_template, sonar_search,
-            metadata=metadata
+            is_rgb_valid=is_rgb_valid,
+            is_sonar_valid=is_sonar_valid,
+            has_object_rgb=has_object_rgb,
+            has_object_sonar=has_object_sonar,
+            has_object=has_object,
+            metadata=metadata,
+            return_losses=False  # Evaluation mode (no loss computation)
         )
 
         # Extract predictions with quality scores

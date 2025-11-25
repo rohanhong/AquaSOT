@@ -235,16 +235,23 @@ def main():
         total_frames = 0
 
         for seq_name in test_sequences:
-            # Create base dataset for this sequence
+            # CRITICAL FIX (Audit 2025112504 Finding 2):
+            # Create base dataset with return_occluded=True to include all frames for evaluation,
+            # but EvaluationSequenceDataset will use template_visibility_policy='any' to ensure
+            # template is selected from frames with at least one modality visible
             seq_base_dataset = RGBSonarDataset(
                 data_root=data_root,
                 sequence_name=seq_name,
-                return_occluded=True
+                return_occluded=True  # Include all frames for evaluation (even 0000)
             )
 
             # CRITICAL FIX (Audit 2025111703 Finding 4): Read template_update config
             template_update_enabled = cfg.evaluation.get('template_update', {}).get('enabled', False)
             template_update_interval = cfg.evaluation.get('template_update', {}).get('interval', 10)
+
+            # CRITICAL FIX (Audit 2025112504 Finding 2): Read template_visibility_policy
+            # Default to 'any' to prevent template selection from 0000 frames
+            template_visibility_policy = cfg.evaluation.get('template', {}).get('visibility_policy', 'any')
 
             # Create evaluation dataset for this sequence
             seq_eval_dataset = EvaluationSequenceDataset(
@@ -254,7 +261,8 @@ def main():
                 template_frame='first',
                 enable_update=template_update_enabled,
                 update_interval=template_update_interval,
-                normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+                normalization_config=cfg.data.normalize,  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+                template_visibility_policy=template_visibility_policy  # CRITICAL FIX (Audit 2025112504 Finding 2)
             )
 
             eval_datasets.append(seq_eval_dataset)
@@ -299,16 +307,23 @@ def main():
         logger.info(f"Data root: {data_root}")
         logger.info(f"Sequence name: {sequence_name}")
 
-        # Create base dataset (single frames)
+        # CRITICAL FIX (Audit 2025112504 Finding 2):
+        # Create base dataset with return_occluded=True to include all frames for evaluation,
+        # but EvaluationSequenceDataset will use template_visibility_policy='any' to ensure
+        # template is selected from frames with at least one modality visible
         eval_base_dataset = RGBSonarDataset(
             data_root=data_root,
             sequence_name=sequence_name,
-            return_occluded=True
+            return_occluded=True  # Include all frames for evaluation (even 0000)
         )
 
         # CRITICAL FIX (Audit 2025111703 Finding 4): Read template_update config
         template_update_enabled = cfg.evaluation.get('template_update', {}).get('enabled', False)
         template_update_interval = cfg.evaluation.get('template_update', {}).get('interval', 10)
+
+        # CRITICAL FIX (Audit 2025112504 Finding 2): Read template_visibility_policy
+        # Default to 'any' to prevent template selection from 0000 frames
+        template_visibility_policy = cfg.evaluation.get('template', {}).get('visibility_policy', 'any')
 
         # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
         # This ensures reproducible, protocol-compliant evaluation
@@ -319,7 +334,8 @@ def main():
             template_frame='first',  # Use first frame as template (RGBS50 protocol)
             enable_update=template_update_enabled,
             update_interval=template_update_interval,
-            normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+            normalization_config=cfg.data.normalize,  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+            template_visibility_policy=template_visibility_policy  # CRITICAL FIX (Audit 2025112504 Finding 2)
         )
 
         logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")

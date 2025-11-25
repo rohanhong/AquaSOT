@@ -38,6 +38,89 @@ Sonar augmentation pipeline uses rectangular-coordinate-appropriate transforms:
 
 ---
 
+## Modality Visibility Policy (NEW)
+
+**CRITICAL FIX (Audit 2025112504):** Control which frames are used during training/evaluation based on modality visibility.
+
+### Visibility Policies
+
+AquaSOT-3D now supports three visibility policies for frame filtering:
+
+| Policy | Description | Use Case |
+|--------|-------------|----------|
+| `'all'` | Include all frames (zero/single/dual modality) | Full evaluation with occlusion |
+| `'any'` | At least one modality visible (single/dual) | **Recommended for training** - robust to single-modality |
+| `'both'` | Both modalities visible (dual only) | Pure dual-modality training/baseline |
+
+**Default:** `'both'` (for backward compatibility)
+
+### Why Use `'any'` for Training?
+
+The `'any'` policy:
+- ✅ Excludes zero-modality frames (both RGB=0000 and Sonar=0000) - no useful supervision
+- ✅ Keeps single-modality frames (RGB-only or Sonar-only) - trains robustness
+- ✅ Keeps dual-modality frames - full fusion training
+- ✅ Matches real-world scenarios where one sensor may temporarily fail
+
+**Recommended for robust training.** The model learns to handle sensor failures gracefully.
+
+### Configuration Examples
+
+**Training with Single-Modality Robustness (Recommended):**
+
+Add to your training config (e.g., `configs/train.yaml`):
+
+```yaml
+data:
+  # NEW: Filter zero-modality but keep single-modality
+  visibility_policy: any  # At least one modality visible
+```
+
+**Pure Dual-Modality Training (Baseline):**
+
+```yaml
+data:
+  visibility_policy: both  # Both modalities must be visible
+```
+
+**Full Evaluation (Include Occlusion):**
+
+```yaml
+# configs/eval.yaml
+data:
+  visibility_policy: all  # Include all frames for complete evaluation
+
+evaluation:
+  template:
+    visibility_policy: any  # But template still requires visible target
+```
+
+### Implementation Details
+
+The visibility policy is set at the dataset level:
+
+```python
+# Example: Create dataset with 'any' policy
+from aquasot3d.dataloader.datasets import RGBSonarDataset
+
+dataset = RGBSonarDataset(
+    data_root='data',
+    sequence_name='uuv2',
+    visibility_policy='any'  # Recommended for training
+)
+
+# Valid frames: [RGB visible] OR [Sonar visible]
+# Excludes: frames where both are 0000
+```
+
+**Backward Compatibility:** If you don't specify `visibility_policy`, the legacy `return_occluded` parameter is used:
+- `return_occluded=True` → `visibility_policy='all'`
+- `return_occluded=False` → `visibility_policy='both'`
+
+**Note:** Explicitly setting `visibility_policy` takes priority over `return_occluded`.
+
+---
+
 ## Overview
 
 AquaSOT-3D supports **multi-sequence training** across the full AquaSOT-3D dataset (12 sequences):

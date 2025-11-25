@@ -45,6 +45,11 @@ class TemplateSearchDataset(Dataset):
 
     Args:
         base_dataset: RGBSonarDataset or MultiSequenceRGBSonarDataset instance
+                      IMPORTANT (Audit 2025112504 Finding 3): Set base_dataset.visibility_policy
+                      to control frame filtering:
+                        - 'any': At least one modality visible (recommended for robust training)
+                        - 'both': Both modalities visible (pure dual-modality training)
+                        - 'all': Include all frames including zero-modality (not recommended)
         template_size: Template crop size (default: 256)
         search_size: Search region size (default: 512, full-frame)
         template_search_gap: Frame gap range (min, max) for curriculum learning
@@ -86,6 +91,22 @@ class TemplateSearchDataset(Dataset):
         self.quality_threshold_rgb = quality_threshold_rgb
         self.quality_threshold_sonar = quality_threshold_sonar
         self.context_factor = context_factor
+
+        # CRITICAL FIX (Audit 2025112504 Finding 3):
+        # Log visibility_policy from base_dataset for transparency
+        # TemplateSearchDataset inherits filtering behavior from base_dataset.valid_indices
+        if hasattr(base_dataset, 'visibility_policy'):
+            visibility_policy = base_dataset.visibility_policy
+            logger.info(
+                f"TemplateSearchDataset using visibility_policy='{visibility_policy}' "
+                f"from base_dataset ({len(base_dataset)} valid frames)"
+            )
+            # Warn if using 'all' policy (includes zero-modality frames)
+            if visibility_policy == 'all':
+                logger.warning(
+                    "base_dataset.visibility_policy='all' includes zero-modality frames (both 0000). "
+                    "This may dilute training signal. Consider using 'any' or 'both' for cleaner supervision."
+                )
 
         # CRITICAL FIX (Audit 2025112401 Finding 3):
         # Enable augmentation pipeline to improve robustness

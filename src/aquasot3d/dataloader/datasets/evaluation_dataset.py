@@ -73,7 +73,8 @@ class EvaluationSequenceDataset(Dataset):
         template_frame: str = 'first',
         enable_update: bool = False,
         update_interval: int = 10,
-        normalization_config: Optional[Dict] = None
+        normalization_config: Optional[Dict] = None,
+        template_visibility_policy: str = 'any'
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
@@ -101,20 +102,44 @@ class EvaluationSequenceDataset(Dataset):
         self.sequence_name = seq_info['sequence_name']
         self.num_frames = base_dataset.num_frames
 
+        # CRITICAL FIX (Audit 2025112504 Finding 2):
+        # Build visibility-aware template candidate list to prevent 0000 template selection
+        # Even if base_dataset uses visibility_policy='all' (includes all frames for evaluation),
+        # template selection requires at least one modality visible
+        self.template_visibility_policy = template_visibility_policy
+        self.template_candidates = self._build_template_candidates(
+            base_dataset, template_visibility_policy
+        )
+
+        if len(self.template_candidates) == 0:
+            raise ValueError(
+                f"No valid template candidates found in sequence {self.sequence_name} "
+                f"with template_visibility_policy='{template_visibility_policy}'. "
+                f"This sequence may start with zero-modality frames (both RGB and Sonar 0000)."
+            )
+
         # Determine template frame index (0-based)
         if isinstance(template_frame, int):
             # Explicit frame ID (convert 1-based to 0-based)
-            self.template_idx = template_frame - 1
-            if self.template_idx < 0 or self.template_idx >= self.num_frames:
+            requested_idx = template_frame - 1
+            if requested_idx < 0 or requested_idx >= self.num_frames:
                 raise ValueError(
                     f"Template frame {template_frame} out of range [1, {self.num_frames}]"
                 )
+
+            # Validate that requested frame satisfies visibility policy
+            if requested_idx not in self.template_candidates:
+                logger.warning(
+                    f"Template frame {template_frame} does not satisfy "
+                    f"template_visibility_policy='{template_visibility_policy}'. "
+                    f"Using first valid candidate (frame {self.template_candidates[0] + 1}) instead."
+                )
+                self.template_idx = self.template_candidates[0]
+            else:
+                self.template_idx = requested_idx
         elif template_frame in ['first', 'init']:
-            # Use first valid frame
-            valid_indices = base_dataset.valid_indices
-            if len(valid_indices) == 0:
-                raise ValueError(f"No valid frames found in sequence {self.sequence_name}")
-            self.template_idx = valid_indices[0]
+            # Use first valid template candidate (guaranteed to have at least one modality visible)
+            self.template_idx = self.template_candidates[0]
         else:
             raise ValueError(
                 f"Invalid template_frame: {template_frame}. "
@@ -127,6 +152,60 @@ class EvaluationSequenceDataset(Dataset):
         # Load template once (remains fixed unless update is enabled)
         self._template_data = None
         self._load_template()
+
+    def _build_template_candidates(
+        self,
+        base_dataset: 'RGBSonarDataset',
+        policy: str
+    ) -> List[int]:
+        """
+        Build list of valid template candidate frame indices.
+
+        CRITICAL FIX (Audit 2025112504 Finding 2):
+        Template frames must satisfy visibility requirements to prevent 0000 templates.
+        Even if base_dataset uses 'all' policy for evaluation, template selection
+        requires at least one modality visible.
+
+        Args:
+            base_dataset: Base RGBSonarDataset
+            policy: Visibility policy ('any', 'both', 'all')
+                - 'any': At least one modality visible (recommended for template selection)
+                - 'both': Both modalities visible (strict dual-modality requirement)
+                - 'all': No restriction (not recommended for template selection)
+
+        Returns:
+            List of frame indices (0-based) that satisfy visibility policy
+        """
+        from .rgb_sonar_dataset import is_occluded
+
+        candidates = []
+
+        for idx in range(base_dataset.num_frames):
+            rgb_bbox = base_dataset.rgb_bboxes[idx]
+            rgb_valid = not is_occluded(rgb_bbox)
+
+            sonar_bbox = base_dataset.sonar_bboxes[idx]
+            sonar_valid = not is_occluded(sonar_bbox)
+
+            if policy == 'all':
+                # Include all frames (not recommended for template selection)
+                include = True
+            elif policy == 'any':
+                # At least one modality visible (recommended for template selection)
+                include = rgb_valid or sonar_valid
+            elif policy == 'both':
+                # Both modalities visible (strict requirement)
+                include = rgb_valid and sonar_valid
+            else:
+                raise ValueError(
+                    f"Invalid template_visibility_policy: '{policy}'. "
+                    f"Must be 'all', 'any', or 'both'."
+                )
+
+            if include:
+                candidates.append(idx)
+
+        return candidates
 
     def _load_template(self):
         """Load and cache template frame data with transformation metadata."""
@@ -266,10 +345,16 @@ class EvaluationSequenceDataset(Dataset):
             'rgb_boxes_pixels': search_bbox_rgb_pixels,
             'sonar_boxes_pixels': search_bbox_sonar_pixels,
 
-            # Validity flags
+            # Validity flags (CRITICAL FIX Audit 2025112504 Finding 1)
+            # These flags enable ConditionalG2DCMA to route single/zero modality scenarios
             'is_valid': search_data['is_valid'],
             'is_rgb_valid': search_data['is_rgb_valid'],
             'is_sonar_valid': search_data['is_sonar_valid'],
+            # has_object flags distinguish "no object" from "object present"
+            # Needed for confidence head training and zero-modality handling
+            'has_object_rgb': search_data['has_object_rgb'],
+            'has_object_sonar': search_data['has_object_sonar'],
+            'has_object': search_data['has_object'],
 
             # Frame indices for tracking state
             'template_idx': self.template_idx,

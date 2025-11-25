@@ -186,11 +186,21 @@ def build_dataloaders(cfg):
         logger.info(f"Train sequences: {train_sequences}")
         logger.info(f"Val sequences: {val_sequences}")
 
+        # CRITICAL FIX (Audit 2025112504): Read visibility_policy from config
+        # This controls which frames are used based on modality visibility:
+        #   'any': At least one modality visible (recommended - excludes zero-modality, keeps single-modality)
+        #   'both': Both modalities visible (pure dual-modality training)
+        #   'all': Include all frames (not recommended - includes zero-modality)
+        visibility_policy = cfg.data.get('visibility_policy', 'both')
+        logger.info(f"Using visibility_policy='{visibility_policy}' for training data filtering")
+
         # Create multi-sequence base datasets (always dual-sensor)
+        # IMPORTANT: Set return_occluded=False to prevent it from overriding visibility_policy
         train_base_dataset = MultiSequenceRGBSonarDataset(
             data_root=data_root,
             sequence_names=train_sequences,
-            return_occluded=True,
+            return_occluded=False,  # Use visibility_policy instead
+            visibility_policy=visibility_policy,  # CRITICAL: Pass visibility_policy from config
             sampling_policy='frame_balanced'
         )
 
@@ -204,11 +214,12 @@ def build_dataloaders(cfg):
             )
 
         if val_sequences:
-            # Create validation dataset (always dual-sensor)
+            # Create validation dataset (same visibility_policy as training)
             val_base_dataset = MultiSequenceRGBSonarDataset(
                 data_root=data_root,
                 sequence_names=val_sequences,
-                return_occluded=True,
+                return_occluded=False,  # Use visibility_policy instead
+                visibility_policy=visibility_policy,  # Same policy as training
                 sampling_policy='frame_balanced'
             )
 
@@ -236,17 +247,24 @@ def build_dataloaders(cfg):
         logger.info(f"Train data: {train_data_root}/{train_sequence_name}")
         logger.info(f"Val data: {val_data_root}/{val_sequence_name}")
 
+        # CRITICAL FIX (Audit 2025112504): Read visibility_policy from config
+        visibility_policy = cfg.data.get('visibility_policy', 'both')
+        logger.info(f"Using visibility_policy='{visibility_policy}' for training data filtering")
+
         # Create single-sequence base datasets (always dual-sensor)
+        # IMPORTANT: Set return_occluded=False to prevent it from overriding visibility_policy
         train_base_dataset = RGBSonarDataset(
             data_root=train_data_root,
             sequence_name=train_sequence_name,
-            return_occluded=True
+            return_occluded=False,  # Use visibility_policy instead
+            visibility_policy=visibility_policy  # CRITICAL: Pass visibility_policy from config
         )
 
         val_base_dataset = RGBSonarDataset(
             data_root=val_data_root,
             sequence_name=val_sequence_name,
-            return_occluded=True
+            return_occluded=False,  # Use visibility_policy instead
+            visibility_policy=visibility_policy  # Same policy as training
         )
 
     # Build augmentation pipeline for training

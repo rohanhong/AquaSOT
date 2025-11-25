@@ -38,6 +38,14 @@ data:
   train_root: null
   val_root: null
 
+  # CRITICAL FIX (Audit 2025112504): Visibility policy for modality filtering
+  # Controls which frames are used based on modality visibility
+  # Options:
+  #   'any': At least one modality visible (recommended - excludes zero-modality, keeps single-modality)
+  #   'both': Both modalities visible (pure dual-modality training)
+  #   'all': Include all frames (not recommended - dilutes training signal)
+  visibility_policy: any  # Recommended: trains robustness to single-modality scenarios
+
   # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
   # Removed: sequence_length, frame_stride, use_sequence_grouping
   template_size: 256  # Template image size (256x256)

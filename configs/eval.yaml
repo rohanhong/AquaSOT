@@ -39,6 +39,13 @@ evaluation:
   mode: test
   batch_size: 1  # Sequential evaluation uses batch_size=1
 
+  # CRITICAL FIX (Audit 2025112504 Finding 2): Template selection policy
+  # Prevents template from being selected from frames where both modalities are 0000
+  template:
+    visibility_policy: any  # 'any'=at least one modality visible (recommended)
+                            # 'both'=both modalities visible (strict)
+                            # 'all'=no restriction (not recommended)
+
   # Standard metrics
   metrics:
     - success_auc

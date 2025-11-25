@@ -151,7 +151,11 @@ class RGBSonarDataset(Dataset):
         sequence_name: Name of sequence folder (e.g., 'uuv2', 'uuv3')
         rgb_transform: Optional transform for RGB images
         sonar_transform: Optional transform for Sonar images
-        return_occluded: If False, skip occluded frames during iteration
+        return_occluded: If False, skip occluded frames during iteration (deprecated, use visibility_policy)
+        visibility_policy: Frame filtering policy ('all', 'any', 'both')
+            - 'all': Include all frames (zero/single/dual modality) - for full evaluation
+            - 'any': Require at least one modality visible (single/dual) - for template selection
+            - 'both': Require both modalities visible (dual only) - for pure dual-modality training
         start_frame: Starting frame index (1-based, default=1)
         end_frame: Ending frame index (1-based, None=all frames)
 
@@ -183,6 +187,7 @@ class RGBSonarDataset(Dataset):
         sonar_transform: Optional[callable] = None,
         augmentation: Optional[callable] = None,
         return_occluded: bool = True,
+        visibility_policy: str = 'both',
         start_frame: int = 1,
         end_frame: Optional[int] = None,
     ):
@@ -199,7 +204,43 @@ class RGBSonarDataset(Dataset):
         # for better augmentation quality and avoid augmenting padding
         self.augmentation = augmentation
 
+        # CRITICAL FIX (Audit 2025112504 Finding 2&3):
+        # Add visibility_policy for flexible frame filtering
         self.return_occluded = return_occluded
+
+        # Validate visibility_policy
+        valid_policies = ['all', 'any', 'both']
+        if visibility_policy not in valid_policies:
+            raise ValueError(
+                f"Invalid visibility_policy: '{visibility_policy}'. "
+                f"Must be one of {valid_policies}."
+            )
+
+        # Backward compatibility logic (IMPROVED):
+        # Priority: visibility_policy > return_occluded
+        # Only use return_occluded if visibility_policy is at default value
+        visibility_policy_is_default = visibility_policy == 'both'
+
+        if visibility_policy_is_default:
+            # User didn't specify visibility_policy, use return_occluded (legacy behavior)
+            if return_occluded:
+                self.visibility_policy = 'all'
+                logger.debug("Using legacy return_occluded=True → visibility_policy='all'")
+            else:
+                self.visibility_policy = 'both'
+                logger.debug("Using legacy return_occluded=False → visibility_policy='both'")
+        else:
+            # User explicitly specified visibility_policy, use it
+            self.visibility_policy = visibility_policy
+
+            # Warn if return_occluded conflicts with explicit visibility_policy
+            expected_return_occluded = (visibility_policy == 'all')
+            if return_occluded != expected_return_occluded:
+                logger.warning(
+                    f"visibility_policy='{visibility_policy}' takes priority over return_occluded={return_occluded}. "
+                    f"Consider using only visibility_policy for clarity. "
+                    f"(return_occluded is deprecated in favor of visibility_policy)"
+                )
 
         # Construct directory paths
         self.sequence_dir = self.data_root / sequence_name
@@ -321,10 +362,16 @@ class RGBSonarDataset(Dataset):
 
     def _build_valid_indices(self) -> List[int]:
         """
-        Build list of valid frame indices.
+        Build list of valid frame indices based on visibility policy.
+
+        CRITICAL FIX (Audit 2025112504 Finding 2&3):
+        Supports three visibility policies for flexible frame filtering:
+            - 'all': Include all frames (zero/single/dual modality) - for full evaluation
+            - 'any': Require at least one modality visible (single/dual) - for template selection
+            - 'both': Require both modalities visible (dual only) - for pure dual-modality training
 
         Returns:
-            List of frame indices (0-based) that are valid for training
+            List of frame indices (0-based) that satisfy visibility policy
         """
         valid_indices = []
 
@@ -336,15 +383,26 @@ class RGBSonarDataset(Dataset):
             sonar_bbox = self.sonar_bboxes[idx]
             sonar_valid = not is_occluded(sonar_bbox)
 
-            if self.return_occluded:
-                # Return all frames (including occluded frames)
-                valid_indices.append(idx)
+            # Apply visibility policy
+            if self.visibility_policy == 'all':
+                # Include all frames (zero/single/dual modality)
+                include_frame = True
+            elif self.visibility_policy == 'any':
+                # At least one modality visible (single or dual modality)
+                # Excludes zero-modality frames where both are 0000
+                include_frame = rgb_valid or sonar_valid
+            elif self.visibility_policy == 'both':
+                # Both modalities visible (dual modality only)
+                include_frame = rgb_valid and sonar_valid
             else:
-                # Only return frames where both sensors see the target
-                is_valid = rgb_valid and sonar_valid
+                # Should never reach here due to validation in __init__
+                raise ValueError(
+                    f"Invalid visibility_policy: {self.visibility_policy}. "
+                    f"Must be 'all', 'any', or 'both'."
+                )
 
-                if is_valid:
-                    valid_indices.append(idx)
+            if include_frame:
+                valid_indices.append(idx)
 
         return valid_indices
 
@@ -595,7 +653,11 @@ class MultiSequenceRGBSonarDataset(Dataset):
         sequence_names: List of sequence names (e.g., ['uuv1', 'uuv2', 'uuv4'])
         rgb_transform: Optional transform for RGB images
         sonar_transform: Optional transform for Sonar images
-        return_occluded: If False, skip occluded frames during iteration
+        return_occluded: If False, skip occluded frames during iteration (deprecated, use visibility_policy)
+        visibility_policy: Frame filtering policy ('all', 'any', 'both')
+            - 'all': Include all frames (zero/single/dual modality) - for full evaluation
+            - 'any': Require at least one modality visible (single/dual) - for template selection
+            - 'both': Require both modalities visible (dual only) - for pure dual-modality training
         sampling_policy: Sampling strategy ('frame_balanced', 'sequence_balanced', 'weighted')
         sequence_weights: Optional weights for weighted sampling (must match sequence count)
 
@@ -623,6 +685,7 @@ class MultiSequenceRGBSonarDataset(Dataset):
         rgb_transform: Optional[callable] = None,
         sonar_transform: Optional[callable] = None,
         return_occluded: bool = True,
+        visibility_policy: str = 'both',
         sampling_policy: str = "frame_balanced",
         sequence_weights: Optional[List[float]] = None,
     ):
@@ -634,6 +697,7 @@ class MultiSequenceRGBSonarDataset(Dataset):
         self.rgb_transform = rgb_transform
         self.sonar_transform = sonar_transform
         self.return_occluded = return_occluded
+        self.visibility_policy = visibility_policy
         self.sampling_policy = sampling_policy
 
         if sampling_policy not in ["frame_balanced", "sequence_balanced", "weighted"]:
@@ -674,12 +738,14 @@ class MultiSequenceRGBSonarDataset(Dataset):
 
         for seq_name in self.sequence_names:
             # Create single-sequence dataset (always loads both sensors)
+            # CRITICAL FIX (Audit 2025112504 Finding 2&3): Pass visibility_policy
             seq_dataset = RGBSonarDataset(
                 data_root=self.data_root,
                 sequence_name=seq_name,
                 rgb_transform=self.rgb_transform,
                 sonar_transform=self.sonar_transform,
                 return_occluded=self.return_occluded,
+                visibility_policy=self.visibility_policy,
             )
 
             # Store dataset
