@@ -825,6 +825,7 @@ class ConditionalG2DCMA(BaseModule):
         consistency_config: Optional[Dict] = None,
         rgb_channels: int = 384,
         sonar_channels: int = 384,
+        confidence_threshold: float = 0.3,
         **kwargs
     ):
         super().__init__()
@@ -832,6 +833,10 @@ class ConditionalG2DCMA(BaseModule):
         self.embed_dim = embed_dim
         self.rgb_channels = rgb_channels
         self.sonar_channels = sonar_channels
+
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # Confidence threshold for automatic validity inference
+        self.confidence_threshold = confidence_threshold
 
         # Core G²-DCMA for dual-modality fusion
         self.g2_dcma = G2DCMA(
@@ -844,6 +849,20 @@ class ConditionalG2DCMA(BaseModule):
             num_levels=num_levels,
             dropout=dropout,
             consistency_config=consistency_config
+        )
+
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # Lightweight confidence estimators for routing decisions
+        # These run BEFORE the full G2DCMA to determine which path to take
+        self.routing_rgb_confidence = ModalityConfidenceEstimator(
+            in_channels=rgb_channels,
+            hidden_dim=128,
+            dropout=dropout
+        )
+        self.routing_sonar_confidence = ModalityConfidenceEstimator(
+            in_channels=sonar_channels,
+            hidden_dim=128,
+            dropout=dropout
         )
 
         # Single-modality bypass branches
@@ -881,7 +900,7 @@ class ConditionalG2DCMA(BaseModule):
         self.logger.info(
             f"Initialized ConditionalG2DCMA: embed_dim={embed_dim}, "
             f"rgb_channels={rgb_channels}, sonar_channels={sonar_channels}, "
-            f"num_heads={num_heads}"
+            f"num_heads={num_heads}, confidence_threshold={confidence_threshold}"
         )
 
     def forward(
@@ -930,21 +949,25 @@ class ConditionalG2DCMA(BaseModule):
 
         assert B == B_s, f"Batch size mismatch: RGB={B}, Sonar={B_s}"
 
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # Automatic validity inference from confidence scores when not provided
+        if is_rgb_valid is None or is_sonar_valid is None:
+            # Estimate confidence scores using lightweight estimators
+            rgb_conf_scores = self.routing_rgb_confidence(rgb_features)  # [B]
+            sonar_conf_scores = self.routing_sonar_confidence(sonar_features)  # [B]
+
+            # Infer validity from confidence thresholding
+            if is_rgb_valid is None:
+                is_rgb_valid = rgb_conf_scores > self.confidence_threshold
+            if is_sonar_valid is None:
+                is_sonar_valid = sonar_conf_scores > self.confidence_threshold
+
         # CRITICAL FIX (Audit 2025112502 Revision): Convert float32 validity masks to bool
         # Trainer/collate_fn produces float32 tensors (0.0/1.0), but bitwise ops require bool
-        if is_rgb_valid is None:
-            is_rgb_valid = torch.ones(B, dtype=torch.bool, device=rgb_features.device)
-        else:
-            # Convert to bool if float (from Trainer's float32 validity masks)
-            if is_rgb_valid.dtype != torch.bool:
-                is_rgb_valid = is_rgb_valid.bool()
-
-        if is_sonar_valid is None:
-            is_sonar_valid = torch.ones(B, dtype=torch.bool, device=sonar_features.device)
-        else:
-            # Convert to bool if float (from Trainer's float32 validity masks)
-            if is_sonar_valid.dtype != torch.bool:
-                is_sonar_valid = is_sonar_valid.bool()
+        if is_rgb_valid.dtype != torch.bool:
+            is_rgb_valid = is_rgb_valid.bool()
+        if is_sonar_valid.dtype != torch.bool:
+            is_sonar_valid = is_sonar_valid.bool()
 
         # Detect modality availability for each sample
         zero_modality_mask = (~is_rgb_valid) & (~is_sonar_valid)  # [B]
@@ -1090,7 +1113,12 @@ class ConditionalG2DCMA(BaseModule):
             'consistency_losses': consistency_losses if return_consistency else None,
             # CRITICAL FIX (Audit 2025112503 Remaining Issue 1): Propagate view_consistency_loss
             # This enables training.loss_weights.view_consistency to take effect
-            'view_consistency_loss': view_consistency_loss_accum
+            'view_consistency_loss': view_consistency_loss_accum,
+            # CRITICAL FIX (Audit 2025112508 Finding 2): Return inferred validity
+            # This allows tracker.py to pass inferred validity to predict_boxes
+            # for proper validity-aware box prediction and loss computation
+            'inferred_is_rgb_valid': is_rgb_valid,
+            'inferred_is_sonar_valid': is_sonar_valid
         }
 
         return output

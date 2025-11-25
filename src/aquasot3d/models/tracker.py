@@ -737,17 +737,22 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         # Stage 2: Cross-Modal Fusion
         # =====================================================
-        # CRITICAL FIX (Audit 2025112101 Phase 2.2):
-        # If no validity flags provided, default to all valid (dual-modality)
-        if is_rgb_valid is None:
-            is_rgb_valid = torch.ones(batch_size, dtype=torch.bool, device=rgb_features.device)
-        if is_sonar_valid is None:
-            is_sonar_valid = torch.ones(batch_size, dtype=torch.bool, device=sonar_features.device)
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # DO NOT force None to all-true here! Allow ConditionalG2DCMA to infer validity
+        # from confidence scores. This enables single/zero-modality routing at inference.
+        #
+        # Previous behavior (INCORRECT):
+        # if is_rgb_valid is None:
+        #     is_rgb_valid = torch.ones(...)  # ❌ Forces dual-modality always
+        #
+        # New behavior (CORRECT):
+        # Pass None through to fusion layer, let ConditionalG2DCMA auto-infer
+        # based on learned confidence estimators.
 
         fusion_outputs = self.fuse_features(
             rgb_features, sonar_features,
-            is_rgb_valid=is_rgb_valid,
-            is_sonar_valid=is_sonar_valid,
+            is_rgb_valid=is_rgb_valid,  # Can be None - fusion will infer
+            is_sonar_valid=is_sonar_valid,  # Can be None - fusion will infer
             return_consistency=return_losses,
             metadata=metadata
         )
@@ -757,16 +762,24 @@ class AquaSOT3DTracker(BaseModule):
         # Keep the full dict for passing to predict_boxes
         fused_features = fusion_outputs  # Keep as dict to access both views
 
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # Extract inferred validity from fusion layer (if available)
+        # This ensures predict_boxes uses the same validity that fusion used for routing
+        if 'inferred_is_rgb_valid' in fusion_outputs:
+            is_rgb_valid = fusion_outputs['inferred_is_rgb_valid']
+        if 'inferred_is_sonar_valid' in fusion_outputs:
+            is_sonar_valid = fusion_outputs['inferred_is_sonar_valid']
 
         # =====================================================
         # Stage 4: 2D Box Prediction
         # =====================================================
         # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Pass has_object flags
+        # CRITICAL FIX (Audit 2025112508 Finding 2): Now uses inferred validity
         box_outputs = self.predict_boxes(
             rgb_features, sonar_features, fused_features,
             gt_boxes=gt_boxes if return_losses else None,
-            is_rgb_valid=is_rgb_valid,
-            is_sonar_valid=is_sonar_valid,
+            is_rgb_valid=is_rgb_valid,  # May be inferred from fusion
+            is_sonar_valid=is_sonar_valid,  # May be inferred from fusion
             has_object_rgb=has_object_rgb,
             has_object_sonar=has_object_sonar,
             has_object=has_object

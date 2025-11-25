@@ -6,19 +6,35 @@ following mainstream SOT methods (OSTrack/TransT/ARTrack).
 
 Implements class-agnostic tracking with dynamic template refresh.
 
+CRITICAL FIX (Audit 2025112508):
+- Fixed letterbox metadata generation and transmission to model
+- Fixed conditional fusion routing via confidence-driven validity inference
+- Fixed preprocessing consistency (padding values, normalization from config)
+
 Author: AquaSOT-3D Team
-Date: 2025-11-21
+Date: 2025-11-25
 """
 
 import torch
 import numpy as np
 from typing import Dict, Literal, Optional, Tuple
 from dataclasses import dataclass
+from pathlib import Path
+
+# CRITICAL FIX (Audit 2025112508 Finding 1 & 3):
+# Import shared preprocessing utilities for consistency
+from aquasot3d.utils.preprocessing import preprocess_for_inference
+from aquasot3d.utils.config import load_config
 
 
 @dataclass
 class TemplateBuffer:
-    """Buffer for storing template frames and metadata."""
+    """
+    Buffer for storing template frames and metadata.
+
+    CRITICAL FIX (Audit 2025112508 Finding 1):
+    Added metadata storage for letterbox transformation.
+    """
     rgb_template: torch.Tensor  # [1, 3, H, W]
     sonar_template: torch.Tensor  # [1, 1, H, W]
     template_bbox_rgb: np.ndarray  # [4] in CXCYWH normalized format
@@ -27,6 +43,9 @@ class TemplateBuffer:
     frame_id_sonar: int  # Frame ID when Sonar template was last updated
     quality_score_rgb: Optional[float] = None  # RGB quality score [0, 1]
     quality_score_sonar: Optional[float] = None  # Sonar quality score [0, 1]
+    # CRITICAL FIX (Audit 2025112508 Finding 1): Letterbox metadata
+    rgb_template_metadata: Optional[Dict] = None
+    sonar_template_metadata: Optional[Dict] = None
 
 
 class OnlineTracker:
@@ -62,14 +81,36 @@ class OnlineTracker:
     def __init__(
         self,
         model: torch.nn.Module,
+        config_path: Optional[str] = None,
         template_size: int = 256,
         search_size: int = 512,
         update_strategy: Literal['first_frame', 'recent', 'keyframe', 'mixformer'] = 'first_frame',
         update_interval: int = 10,
         quality_threshold_rgb: float = 0.7,
         quality_threshold_sonar: float = 0.7,
+        confidence_threshold: float = 0.3,
         device: str = 'cuda'
     ):
+        """
+        Initialize OnlineTracker.
+
+        CRITICAL FIX (Audit 2025112508):
+        - Added config_path to load normalization parameters
+        - Added confidence_threshold for modality validity inference
+        - Now stores metadata for geometry-gated fusion
+
+        Args:
+            model: AquaSOT3DTracker instance
+            config_path: Path to config file (for normalization params). If None, uses defaults.
+            template_size: Template image size (default: 256)
+            search_size: Search image size (default: 512)
+            update_strategy: Template update strategy
+            update_interval: Frames between updates for 'recent' strategy
+            quality_threshold_rgb: RGB quality threshold for 'mixformer'/'keyframe'
+            quality_threshold_sonar: Sonar quality threshold for 'mixformer'/'keyframe'
+            confidence_threshold: Confidence threshold for validity inference (Audit 2025112508 Finding 2)
+            device: Device for inference
+        """
         self.model = model.to(device)
         self.model.eval()
 
@@ -81,10 +122,34 @@ class OnlineTracker:
         self.quality_threshold_sonar = quality_threshold_sonar
         self.device = device
 
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # Confidence threshold for modality validity inference
+        self.confidence_threshold = confidence_threshold
+
+        # CRITICAL FIX (Audit 2025112508 Finding 3):
+        # Load normalization parameters from config (not hardcoded)
+        if config_path is not None:
+            cfg = load_config(config_path)
+            self.rgb_mean = cfg.data.normalize.rgb_mean
+            self.rgb_std = cfg.data.normalize.rgb_std
+            self.sonar_mean = cfg.data.normalize.sonar_mean[0] if isinstance(cfg.data.normalize.sonar_mean, list) else cfg.data.normalize.sonar_mean
+            self.sonar_std = cfg.data.normalize.sonar_std[0] if isinstance(cfg.data.normalize.sonar_std, list) else cfg.data.normalize.sonar_std
+        else:
+            # Default to standard values if no config provided
+            self.rgb_mean = [0.485, 0.456, 0.406]
+            self.rgb_std = [0.229, 0.224, 0.225]
+            self.sonar_mean = 0.5
+            self.sonar_std = 0.5
+
         # Tracking state
         self.template_buffer: Optional[TemplateBuffer] = None
         self.frame_count = 0
         self.is_initialized = False
+
+        # CRITICAL FIX (Audit 2025112508 Finding 1):
+        # Storage for current frame metadata (needed for model forward pass)
+        self.current_rgb_search_metadata: Optional[Dict] = None
+        self.current_sonar_search_metadata: Optional[Dict] = None
 
     def init(
         self,
@@ -96,17 +161,28 @@ class OnlineTracker:
         """
         Initialize tracker with first frame.
 
+        CRITICAL FIX (Audit 2025112508 Finding 1):
+        Now captures and stores letterbox metadata.
+
         Args:
             rgb_frame: RGB image [H, W, 3] in uint8 format
             sonar_frame: Sonar image [H, W] in uint8 format
             bbox_rgb: Initial RGB bbox [4] in CXCYWH normalized format
             bbox_sonar: Initial sonar bbox [4] in CXCYWH normalized format
         """
-        # Preprocess frames
-        rgb_template = self._preprocess_image(rgb_frame, is_rgb=True, target_size=self.template_size)
-        sonar_template = self._preprocess_image(sonar_frame, is_rgb=False, target_size=self.template_size)
+        # CRITICAL FIX: Preprocess frames and capture metadata
+        rgb_template, rgb_template_metadata = preprocess_for_inference(
+            rgb_frame, self.template_size, is_rgb=True,
+            rgb_mean=self.rgb_mean, rgb_std=self.rgb_std,
+            device=self.device
+        )
+        sonar_template, sonar_template_metadata = preprocess_for_inference(
+            sonar_frame, self.template_size, is_rgb=False,
+            sonar_mean=self.sonar_mean, sonar_std=self.sonar_std,
+            device=self.device
+        )
 
-        # Store initial template
+        # Store initial template with metadata
         self.template_buffer = TemplateBuffer(
             rgb_template=rgb_template,
             sonar_template=sonar_template,
@@ -115,7 +191,9 @@ class OnlineTracker:
             frame_id_rgb=0,
             frame_id_sonar=0,
             quality_score_rgb=1.0,
-            quality_score_sonar=1.0
+            quality_score_sonar=1.0,
+            rgb_template_metadata=rgb_template_metadata,
+            sonar_template_metadata=sonar_template_metadata
         )
 
         self.frame_count = 0
@@ -129,6 +207,11 @@ class OnlineTracker:
         """
         Track object in current frame.
 
+        CRITICAL FIX (Audit 2025112508):
+        - Now generates and passes letterbox metadata to model (Finding 1)
+        - Implements confidence-driven validity inference (Finding 2)
+        - Uses unified preprocessing with correct padding/normalization (Finding 3)
+
         Args:
             rgb_frame: RGB image [H, W, 3] in uint8 format
             sonar_frame: Sonar image [H, W] in uint8 format
@@ -141,18 +224,53 @@ class OnlineTracker:
 
         self.frame_count += 1
 
-        # Preprocess search frames
-        rgb_search = self._preprocess_image(rgb_frame, is_rgb=True, target_size=self.search_size)
-        sonar_search = self._preprocess_image(sonar_frame, is_rgb=False, target_size=self.search_size)
+        # CRITICAL FIX (Audit 2025112508 Finding 1 & 3):
+        # Preprocess search frames with metadata capture
+        # Uses shared letterbox implementation with correct padding (RGB=114, Sonar=127)
+        # and config-driven normalization
+        rgb_search, rgb_search_metadata = preprocess_for_inference(
+            rgb_frame, self.search_size, is_rgb=True,
+            rgb_mean=self.rgb_mean, rgb_std=self.rgb_std,
+            device=self.device
+        )
+        sonar_search, sonar_search_metadata = preprocess_for_inference(
+            sonar_frame, self.search_size, is_rgb=False,
+            sonar_mean=self.sonar_mean, sonar_std=self.sonar_std,
+            device=self.device
+        )
 
-        # Run tracker forward pass
+        # Store metadata for current frame
+        self.current_rgb_search_metadata = rgb_search_metadata
+        self.current_sonar_search_metadata = sonar_search_metadata
+
+        # CRITICAL FIX (Audit 2025112508 Finding 1):
+        # Prepare metadata dict for model (geometry-gated fusion needs this)
+        metadata = {
+            'rgb_search_metadata': rgb_search_metadata,
+            'sonar_search_metadata': sonar_search_metadata,
+            'rgb_template_metadata': self.template_buffer.rgb_template_metadata,
+            'sonar_template_metadata': self.template_buffer.sonar_template_metadata
+        }
+
+        # CRITICAL FIX (Audit 2025112508 Finding 2):
+        # DO NOT pass is_rgb_valid/is_sonar_valid here - let them default to None
+        # This allows ConditionalG2DCMA.forward() to automatically infer validity
+        # from learned confidence estimators, enabling proper single/zero-modality routing.
+        #
+        # Flow: OnlineTracker (validity=None)
+        #       → AquaSOT3DTracker.forward (passes None through)
+        #       → ConditionalG2DCMA.forward (infers validity from confidence)
+        #       → Correct routing (dual/single-RGB/single-Sonar/zero)
         with torch.no_grad():
             outputs = self.model(
                 rgb_template=self.template_buffer.rgb_template,
                 rgb_search=rgb_search,
                 sonar_template=self.template_buffer.sonar_template,
                 sonar_search=sonar_search,
-                return_losses=False
+                return_losses=False,
+                metadata=metadata
+                # NOTE: is_rgb_valid and is_sonar_valid NOT passed (default to None)
+                # This enables automatic validity inference in ConditionalG2DCMA
             )
 
         # Extract predictions (CXCYWH normalized)
@@ -226,8 +344,17 @@ class OnlineTracker:
 
         elif self.update_strategy == 'recent':
             if self.frame_count % self.update_interval == 0:
-                rgb_template = self._preprocess_image(rgb_frame, is_rgb=True, target_size=self.template_size)
-                sonar_template = self._preprocess_image(sonar_frame, is_rgb=False, target_size=self.template_size)
+                # CRITICAL FIX (Audit 2025112508): Use shared preprocessing with metadata
+                rgb_template, rgb_template_metadata = preprocess_for_inference(
+                    rgb_frame, self.template_size, is_rgb=True,
+                    rgb_mean=self.rgb_mean, rgb_std=self.rgb_std,
+                    device=self.device
+                )
+                sonar_template, sonar_template_metadata = preprocess_for_inference(
+                    sonar_frame, self.template_size, is_rgb=False,
+                    sonar_mean=self.sonar_mean, sonar_std=self.sonar_std,
+                    device=self.device
+                )
 
                 self.template_buffer = TemplateBuffer(
                     rgb_template=rgb_template,
@@ -237,7 +364,9 @@ class OnlineTracker:
                     frame_id_rgb=self.frame_count,
                     frame_id_sonar=self.frame_count,
                     quality_score_rgb=quality_score_rgb,
-                    quality_score_sonar=quality_score_sonar
+                    quality_score_sonar=quality_score_sonar,
+                    rgb_template_metadata=rgb_template_metadata,
+                    sonar_template_metadata=sonar_template_metadata
                 )
 
         elif self.update_strategy == 'keyframe':
@@ -246,8 +375,17 @@ class OnlineTracker:
                 avg_quality = (quality_score_rgb + quality_score_sonar) / 2.0
 
             if avg_quality is not None and avg_quality > max(self.quality_threshold_rgb, self.quality_threshold_sonar):
-                rgb_template = self._preprocess_image(rgb_frame, is_rgb=True, target_size=self.template_size)
-                sonar_template = self._preprocess_image(sonar_frame, is_rgb=False, target_size=self.template_size)
+                # CRITICAL FIX (Audit 2025112508): Use shared preprocessing with metadata
+                rgb_template, rgb_template_metadata = preprocess_for_inference(
+                    rgb_frame, self.template_size, is_rgb=True,
+                    rgb_mean=self.rgb_mean, rgb_std=self.rgb_std,
+                    device=self.device
+                )
+                sonar_template, sonar_template_metadata = preprocess_for_inference(
+                    sonar_frame, self.template_size, is_rgb=False,
+                    sonar_mean=self.sonar_mean, sonar_std=self.sonar_std,
+                    device=self.device
+                )
 
                 self.template_buffer = TemplateBuffer(
                     rgb_template=rgb_template,
@@ -257,7 +395,9 @@ class OnlineTracker:
                     frame_id_rgb=self.frame_count,
                     frame_id_sonar=self.frame_count,
                     quality_score_rgb=quality_score_rgb,
-                    quality_score_sonar=quality_score_sonar
+                    quality_score_sonar=quality_score_sonar,
+                    rgb_template_metadata=rgb_template_metadata,
+                    sonar_template_metadata=sonar_template_metadata
                 )
 
         elif self.update_strategy == 'mixformer':
@@ -285,6 +425,7 @@ class OnlineTracker:
                     update_sonar = True
 
             if update_rgb or update_sonar:
+                # Start with current buffer values
                 new_rgb_template = self.template_buffer.rgb_template
                 new_sonar_template = self.template_buffer.sonar_template
                 new_bbox_rgb = self.template_buffer.template_bbox_rgb
@@ -293,15 +434,26 @@ class OnlineTracker:
                 new_frame_id_sonar = self.template_buffer.frame_id_sonar
                 new_quality_rgb = self.template_buffer.quality_score_rgb
                 new_quality_sonar = self.template_buffer.quality_score_sonar
+                new_rgb_metadata = self.template_buffer.rgb_template_metadata
+                new_sonar_metadata = self.template_buffer.sonar_template_metadata
 
+                # CRITICAL FIX (Audit 2025112508): Use shared preprocessing with metadata
                 if update_rgb:
-                    new_rgb_template = self._preprocess_image(rgb_frame, is_rgb=True, target_size=self.template_size)
+                    new_rgb_template, new_rgb_metadata = preprocess_for_inference(
+                        rgb_frame, self.template_size, is_rgb=True,
+                        rgb_mean=self.rgb_mean, rgb_std=self.rgb_std,
+                        device=self.device
+                    )
                     new_bbox_rgb = bbox_rgb.copy()
                     new_frame_id_rgb = self.frame_count
                     new_quality_rgb = quality_score_rgb
 
                 if update_sonar:
-                    new_sonar_template = self._preprocess_image(sonar_frame, is_rgb=False, target_size=self.template_size)
+                    new_sonar_template, new_sonar_metadata = preprocess_for_inference(
+                        sonar_frame, self.template_size, is_rgb=False,
+                        sonar_mean=self.sonar_mean, sonar_std=self.sonar_std,
+                        device=self.device
+                    )
                     new_bbox_sonar = bbox_sonar.copy()
                     new_frame_id_sonar = self.frame_count
                     new_quality_sonar = quality_score_sonar
@@ -314,101 +466,16 @@ class OnlineTracker:
                     frame_id_rgb=new_frame_id_rgb,
                     frame_id_sonar=new_frame_id_sonar,
                     quality_score_rgb=new_quality_rgb,
-                    quality_score_sonar=new_quality_sonar
+                    quality_score_sonar=new_quality_sonar,
+                    rgb_template_metadata=new_rgb_metadata,
+                    sonar_template_metadata=new_sonar_metadata
                 )
 
-    def _preprocess_image(
-        self,
-        img: np.ndarray,
-        is_rgb: bool,
-        target_size: int
-    ) -> torch.Tensor:
-        """
-        Preprocess image for tracker input.
-
-        Applies letterbox resize to preserve aspect ratio, then normalizes.
-
-        Args:
-            img: Input image [H, W, C] or [H, W] in uint8 format
-            is_rgb: Whether image is RGB (True) or sonar (False)
-            target_size: Target size (H=W)
-
-        Returns:
-            Preprocessed tensor [1, C, H, W]
-        """
-        # Ensure correct shape
-        if is_rgb:
-            if img.ndim == 2:
-                img = np.stack([img, img, img], axis=-1)
-            elif img.shape[-1] != 3:
-                raise ValueError(f"RGB image must have 3 channels, got {img.shape[-1]}")
-        else:
-            if img.ndim == 3:
-                img = img[:, :, 0]  # Take first channel if multi-channel
-
-        # Letterbox resize
-        img_resized = self._letterbox_resize(img, target_size)
-
-        # Convert to float32 and normalize to [0, 1]
-        img_float = img_resized.astype(np.float32) / 255.0
-
-        # Apply normalization (ImageNet stats for RGB, mean=0.5 std=0.5 for sonar)
-        if is_rgb:
-            mean = np.array([0.485, 0.456, 0.406]).reshape(1, 1, 3)
-            std = np.array([0.229, 0.224, 0.225]).reshape(1, 1, 3)
-            img_normalized = (img_float - mean) / std
-            # HWC to CHW
-            img_tensor = torch.from_numpy(img_normalized).permute(2, 0, 1).unsqueeze(0)
-        else:
-            mean = 0.5
-            std = 0.5
-            img_normalized = (img_float - mean) / std
-            # HW to 1HW
-            img_tensor = torch.from_numpy(img_normalized).unsqueeze(0).unsqueeze(0)
-
-        return img_tensor.to(self.device)
-
-    def _letterbox_resize(self, img: np.ndarray, target_size: int) -> np.ndarray:
-        """
-        Letterbox resize: resize to fit within target_size and pad to square.
-
-        Preserves aspect ratio by:
-        1. Scaling to fit within target_size
-        2. Padding to target_size x target_size
-
-        Args:
-            img: Input image [H, W] or [H, W, C]
-            target_size: Target size (H=W)
-
-        Returns:
-            Resized and padded image [target_size, target_size] or [target_size, target_size, C]
-        """
-        import cv2
-
-        h, w = img.shape[:2]
-        scale = target_size / max(h, w)
-        new_h, new_w = int(h * scale), int(w * scale)
-
-        # Resize
-        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        # Create padded canvas
-        if img.ndim == 3:
-            canvas = np.zeros((target_size, target_size, img.shape[2]), dtype=img.dtype)
-        else:
-            canvas = np.zeros((target_size, target_size), dtype=img.dtype)
-
-        # Calculate padding
-        pad_top = (target_size - new_h) // 2
-        pad_left = (target_size - new_w) // 2
-
-        # Paste resized image onto canvas
-        if img.ndim == 3:
-            canvas[pad_top:pad_top+new_h, pad_left:pad_left+new_w, :] = resized
-        else:
-            canvas[pad_top:pad_top+new_h, pad_left:pad_left+new_w] = resized
-
-        return canvas
+    # REMOVED (Audit 2025112508): Legacy preprocessing methods replaced with shared utilities
+    # Old _preprocess_image and _letterbox_resize removed in favor of
+    # aquasot3d.utils.preprocessing.preprocess_for_inference
+    # This ensures training-inference consistency with correct padding (RGB=114, Sonar=127)
+    # and metadata generation for geometry-gated fusion
 
     def reset(self):
         """Reset tracker state."""
