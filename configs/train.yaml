@@ -91,18 +91,18 @@ model:
 
 training:
   num_epochs: 100                 # Total training epochs [🚀A4000: 100]
-  batch_size: 2                   # Batch size per GPU [🚀A4000: 8]
-  gradient_accumulation_steps: 4  # Gradient accumulation [🚀A4000: 2]
+  batch_size: 2                   # Batch size per GPU [🚀A4000: 6]
+  gradient_accumulation_steps: 4  # Gradient accumulation [🚀A4000: 3]
 
   optimizer:
-    lr: 0.0001                    # Base learning rate [🚀A4000: 0.0002]
+    lr: 0.0001                    # Base learning rate [🚀A4000: 0.00015]
     weight_decay: 0.0001          # Weight decay coefficient
     backbone_lr_multiplier: 0.1   # Backbone LR multiplier
 
   scheduler:
     type: cosine                  # LR scheduler type
     warmup_epochs: 10             # Warmup epochs [🚀A4000: 10]
-    warmup_lr: 1.0e-06            # Warmup starting LR [🚀A4000: 2.0e-06]
+    warmup_lr: 1.0e-06            # Warmup starting LR [🚀A4000: 1.5e-06]
     t_max: 100                    # Cosine annealing period
     eta_min: 1.0e-06              # Cosine annealing minimum LR
 

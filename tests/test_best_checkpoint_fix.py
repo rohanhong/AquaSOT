@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 # Test 1: Verify checkpoint files
-checkpoint_dir = Path('outputs/train_multiseq/checkpoints')
+checkpoint_dir = Path('../outputs/train_multiseq/checkpoints')
 checkpoint_last = checkpoint_dir / 'checkpoint_last.pth'
 checkpoint_best = checkpoint_dir / 'checkpoint_best.pth'
 
