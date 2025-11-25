@@ -24,11 +24,14 @@ import random
 import cv2
 import numpy as np
 import torch
+import logging
 from typing import Dict, Tuple, Optional, List
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset, MultiSequenceRGBSonarDataset
 from aquasot3d.utils.bbox_utils import convert_bbox_format, normalize_bbox
+
+logger = logging.getLogger(__name__)
 
 
 class TemplateSearchDataset(Dataset):
@@ -237,9 +240,17 @@ class TemplateSearchDataset(Dataset):
         # Always process both sensors (target visibility handled by None checks)
         if search_sample['rgb_img'] is not None:
             rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array (after augmentation)
+            # CRITICAL FIX (Audit 2025112505 Issue 7): Convert Tensor to numpy if needed
+            if isinstance(rgb_search_raw, torch.Tensor):
+                rgb_search_raw = rgb_search_raw.cpu().numpy()
             # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
             # Note: bbox may have been transformed by augmentation (e.g., horizontal flip)
-            rgb_bbox_original = search_sample['rgb_bbox'].copy()  # XYWH format
+            # CRITICAL FIX (Audit 2025112505 Issue 6): Handle both numpy and tensor types
+            rgb_bbox = search_sample['rgb_bbox']
+            if isinstance(rgb_bbox, torch.Tensor):
+                rgb_bbox_original = rgb_bbox.clone().cpu().numpy()  # XYWH format
+            else:
+                rgb_bbox_original = rgb_bbox.copy()  # XYWH format
             # Apply letterbox resize to search size (preserve aspect ratio)
             # CRITICAL FIX (Audit 2025112401 Finding 1): Capture metadata for bbox transform
             rgb_search, rgb_letterbox_meta = self._letterbox(rgb_search_raw, self.search_size)
@@ -251,8 +262,16 @@ class TemplateSearchDataset(Dataset):
 
         if search_sample['sonar_img'] is not None:
             sonar_search_raw = search_sample['sonar_img']  # Raw [H, W] numpy array (after augmentation)
+            # CRITICAL FIX (Audit 2025112505 Issue 7): Convert Tensor to numpy if needed
+            if isinstance(sonar_search_raw, torch.Tensor):
+                sonar_search_raw = sonar_search_raw.cpu().numpy()
             # CRITICAL FIX (Audit 2025112401 Finding 1): Store original bbox before letterbox
-            sonar_bbox_original = search_sample['sonar_bbox'].copy()  # XYWH format
+            # CRITICAL FIX (Audit 2025112505 Issue 6): Handle both numpy and tensor types
+            sonar_bbox = search_sample['sonar_bbox']
+            if isinstance(sonar_bbox, torch.Tensor):
+                sonar_bbox_original = sonar_bbox.clone().cpu().numpy()  # XYWH format
+            else:
+                sonar_bbox_original = sonar_bbox.copy()  # XYWH format
             # Apply letterbox resize to search size (preserve aspect ratio)
             sonar_search, sonar_letterbox_meta = self._letterbox(sonar_search_raw, self.search_size)
         else:
@@ -522,8 +541,6 @@ class TemplateSearchDataset(Dataset):
                     return candidate_idx
 
             # No valid frame found - log warning and use target anyway
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(
                 f"No valid template frame found in range [{start_idx}, {target_idx}]. "
                 f"Using frame {target_idx} which may be occluded (0,0,0,0)."
@@ -546,6 +563,12 @@ class TemplateSearchDataset(Dataset):
             return template_idx
 
         elif self.update_policy in ('recent', 'mixformer'):
+            # CRITICAL FIX (Audit 2025112505 Issue 2):
+            # Handle first frame case to prevent negative template index
+            if search_idx == seq_start:
+                # First frame: use itself as template (find nearest valid)
+                return find_nearest_valid_frame(seq_start, seq_start, seq_start)
+
             # Sample from [search_idx - gap_max, search_idx - gap_min]
             # MixFormer training: learn to track from variable temporal distances
             gap = random.randint(self.gap_range[0], self.gap_range[1])

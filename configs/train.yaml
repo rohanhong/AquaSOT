@@ -38,13 +38,20 @@ data:
   train_root: null
   val_root: null
 
-  # CRITICAL FIX (Audit 2025112504): Visibility policy for modality filtering
+  # CRITICAL FIX (Audit 2025112505 Issue 3): Visibility policy for modality filtering
   # Controls which frames are used based on modality visibility
   # Options:
-  #   'any': At least one modality visible (recommended - excludes zero-modality, keeps single-modality)
+  #   'any': At least one modality visible (excludes zero-modality 0000 frames)
   #   'both': Both modalities visible (pure dual-modality training)
-  #   'all': Include all frames (not recommended - dilutes training signal)
-  visibility_policy: any  # Recommended: trains robustness to single-modality scenarios
+  #   'all': Include all frames including zero-modality (REQUIRED for zero/single/dual-modality learning)
+  #
+  # JUSTIFICATION for 'all':
+  # - Model must learn to handle zero-modality scenarios (complete occlusion/out-of-view)
+  # - Confidence head requires zero-modality frames to learn "no object" behavior
+  # - Template update logic needs zero-modality examples for robust tracking
+  # - Evaluation includes 0000 frames, so training must match this distribution
+  # - LossManager uses has_object masks to skip bbox regression on 0000 while training confidence
+  visibility_policy: all
 
   # ARCHITECTURE CHANGE (Audit 2025112104): Template-search paradigm (OSTrack-style)
   # Removed: sequence_length, frame_stride, use_sequence_grouping

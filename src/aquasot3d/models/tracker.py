@@ -119,6 +119,10 @@ class AquaSOT3DTracker(BaseModule):
             elif fusion_type == 'conditional_g2_dcma':
                 # CRITICAL FIX (Audit 2025112101 Phase 2.2):
                 # ConditionalG2DCMA requires rgb_channels and sonar_channels
+                # CRITICAL FIX (Audit 2025112505 Issue 5):
+                # Remove rgb_channels and sonar_channels from config to avoid duplicate keyword arguments
+                fusion_config_copy.pop('rgb_channels', None)
+                fusion_config_copy.pop('sonar_channels', None)
                 self.fusion = build_conditional_g2_dcma(
                     rgb_channels=self.rgb_feat_dim,
                     sonar_channels=self.sonar_feat_dim,

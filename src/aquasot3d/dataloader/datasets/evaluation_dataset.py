@@ -12,12 +12,15 @@ Date: 2025-01-07
 
 import torch
 import numpy as np
+import logging
 import torch.nn.functional as F
 from typing import Dict, Optional, List
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset
 # Note: letterbox_resize removed - unified with RGB strategy (2025-11-19)
+
+logger = logging.getLogger(__name__)
 
 
 class EvaluationSequenceDataset(Dataset):
