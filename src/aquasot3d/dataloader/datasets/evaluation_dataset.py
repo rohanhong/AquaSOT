@@ -12,9 +12,10 @@ Date: 2025-01-07
 
 import torch
 import numpy as np
+import cv2
 import logging
 import torch.nn.functional as F
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from torch.utils.data import Dataset
 
 from .rgb_sonar_dataset import RGBSonarDataset
@@ -77,13 +78,15 @@ class EvaluationSequenceDataset(Dataset):
         enable_update: bool = False,
         update_interval: int = 10,
         normalization_config: Optional[Dict] = None,
-        template_visibility_policy: str = 'any'
+        template_visibility_policy: str = 'any',
+        context_factor: float = 2.0
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
         self.search_size = search_size
         self.enable_update = enable_update
         self.update_interval = update_interval
+        self.context_factor = context_factor
 
         # CRITICAL FIX (Audit 2025112402 Finding 3):
         # Load normalization parameters from config instead of hardcoding
@@ -211,17 +214,27 @@ class EvaluationSequenceDataset(Dataset):
         return candidates
 
     def _load_template(self):
-        """Load and cache template frame data with transformation metadata."""
+        """
+        Load and cache template frame data with bbox-based cropping.
+
+        CRITICAL FIX (Audit 2025112601):
+        Template must be cropped around target bbox (same as training),
+        NOT full-frame letterbox resize. This follows mainstream SOT methods
+        (OSTrack, TransT, MixFormer) where template is a target-centered crop.
+        """
         template_raw = self.base_dataset._get_frame_data(self.template_idx)
 
-        # Prepare template images and get transformation metadata
-        rgb_template, rgb_metadata = self._prepare_image(
+        # CRITICAL FIX: Use bbox-based cropping (same as training)
+        # Crop template around target with context factor
+        rgb_template, rgb_metadata = self._crop_template(
             template_raw['rgb_img'],
+            template_raw['rgb_bbox'],
             self.template_size,
             is_sonar=False
         )
-        sonar_template, sonar_metadata = self._prepare_image(
+        sonar_template, sonar_metadata = self._crop_template(
             template_raw['sonar_img'],
+            template_raw['sonar_bbox'],
             self.template_size,
             is_sonar=True
         )
@@ -236,6 +249,166 @@ class EvaluationSequenceDataset(Dataset):
             'template_rgb_metadata': rgb_metadata,
             'template_sonar_metadata': sonar_metadata,
         }
+
+    def _crop_template(
+        self,
+        image: np.ndarray,
+        bbox: np.ndarray,
+        crop_size: int,
+        is_sonar: bool = False
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Crop template region around target bbox using letterbox (resize+pad).
+
+        This follows mainstream SOT methods (OSTrack/TransT) where template
+        is a target-centered crop with context padding.
+
+        Args:
+            image: Input image [H, W, C] or [H, W] numpy array
+            bbox: [x, y, w, h] in XYWH pixel format
+            crop_size: Target crop size (e.g., 256)
+            is_sonar: If True, process as single-channel sonar
+
+        Returns:
+            Tuple of (crop_tensor, crop_metadata)
+        """
+        # Handle None images (occluded frames)
+        if image is None:
+            num_channels = 1 if is_sonar else 3
+            dummy_metadata = {
+                'crop_x1': 0, 'crop_y1': 0,
+                'crop_width': crop_size, 'crop_height': crop_size,
+                'letterbox_scale': 1.0,
+                'letterbox_pad_left': 0, 'letterbox_pad_top': 0,
+                'original_height': crop_size, 'original_width': crop_size,
+            }
+            return torch.zeros(num_channels, crop_size, crop_size), dummy_metadata
+
+        # Convert tensor to numpy if needed
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3 and image.shape[0] in [1, 3]:
+                image = image.permute(1, 2, 0).cpu().numpy()
+            elif image.dim() == 2:
+                image = image.cpu().numpy()
+            if image.max() <= 1.0:
+                image = (image * 255).astype(np.uint8)
+
+        image_np = image if isinstance(image, np.ndarray) else np.array(image)
+
+        # Ensure uint8 format
+        if image_np.dtype != np.uint8:
+            if image_np.max() <= 1.0:
+                image_np = (image_np * 255).astype(np.uint8)
+            else:
+                image_np = image_np.astype(np.uint8)
+
+        x, y, w, h = bbox
+
+        # Compute crop region (centered on bbox with context padding)
+        cx, cy = x + w / 2, y + h / 2
+        crop_sz = max(w, h) * self.context_factor
+
+        # Clamp to image boundaries
+        H, W = image_np.shape[:2]
+        x1 = max(0, int(cx - crop_sz / 2))
+        y1 = max(0, int(cy - crop_sz / 2))
+        x2 = min(W, int(cx + crop_sz / 2))
+        y2 = min(H, int(cy + crop_sz / 2))
+
+        # Crop
+        crop = image_np[y1:y2, x1:x2]
+
+        # Store crop metadata
+        crop_metadata = {
+            'crop_x1': x1,
+            'crop_y1': y1,
+            'crop_width': x2 - x1,
+            'crop_height': y2 - y1,
+            'original_height': H,
+            'original_width': W,
+        }
+
+        # Handle empty crops (degenerate bbox)
+        if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
+            if is_sonar or image_np.ndim == 2:
+                crop = np.zeros((crop_size, crop_size), dtype=np.uint8)
+            else:
+                crop = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+            letterbox_meta = {'scale': 1.0, 'pad_left': 0, 'pad_top': 0}
+        else:
+            # Apply letterbox preprocessing
+            crop, letterbox_meta = self._letterbox(crop, crop_size)
+
+        # Merge letterbox metadata
+        crop_metadata['letterbox_scale'] = letterbox_meta['scale']
+        crop_metadata['letterbox_pad_left'] = letterbox_meta['pad_left']
+        crop_metadata['letterbox_pad_top'] = letterbox_meta['pad_top']
+
+        # Convert to tensor and normalize
+        if crop.ndim == 2:
+            crop_tensor = torch.from_numpy(crop).unsqueeze(0).float() / 255.0
+            crop_tensor = (crop_tensor - self.sonar_mean) / self.sonar_std
+        else:
+            crop_tensor = torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0
+            crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
+
+        return crop_tensor, crop_metadata
+
+    def _letterbox(self, img: np.ndarray, target_size: int) -> Tuple[np.ndarray, Dict]:
+        """
+        Letterbox preprocessing: resize to fit within target_size and pad to square.
+
+        Args:
+            img: Input image [H, W] or [H, W, C]
+            target_size: Target square size
+
+        Returns:
+            Tuple of (letterboxed_image, metadata)
+        """
+        h, w = img.shape[:2]
+        is_single_channel = img.ndim == 3 and img.shape[2] == 1
+
+        # Compute scale factor
+        scale = min(target_size / w, target_size / h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+
+        # Resize
+        if is_single_channel:
+            img_to_resize = img.squeeze(-1)
+        else:
+            img_to_resize = img
+
+        img_resized = cv2.resize(img_to_resize, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # Compute padding
+        pad_w = target_size - new_w
+        pad_h = target_size - new_h
+        top = pad_h // 2
+        bottom = pad_h - top
+        left = pad_w // 2
+        right = pad_w - left
+
+        # Pad with gray
+        if img_resized.ndim == 2:
+            pad_value = 127
+        else:
+            pad_value = (114, 114, 114)
+
+        img_letterboxed = cv2.copyMakeBorder(
+            img_resized, top, bottom, left, right,
+            cv2.BORDER_CONSTANT, value=pad_value
+        )
+
+        metadata = {
+            'scale': scale,
+            'pad_left': left,
+            'pad_top': top,
+            'original_size': (h, w),
+            'new_size': (new_h, new_w)
+        }
+
+        return img_letterboxed, metadata
 
     def __len__(self) -> int:
         """Return total number of frames in sequence."""
@@ -350,9 +523,11 @@ class EvaluationSequenceDataset(Dataset):
 
             # Validity flags (CRITICAL FIX Audit 2025112504 Finding 1)
             # These flags enable ConditionalG2DCMA to route single/zero modality scenarios
+            # CRITICAL FIX (Audit 2025112601): Use is_valid_rgb naming for consistency with
+            # collate_fn_template_search and TrackingEvaluator expectations
             'is_valid': search_data['is_valid'],
-            'is_rgb_valid': search_data['is_rgb_valid'],
-            'is_sonar_valid': search_data['is_sonar_valid'],
+            'is_valid_rgb': search_data['is_rgb_valid'],
+            'is_valid_sonar': search_data['is_sonar_valid'],
             # has_object flags distinguish "no object" from "object present"
             # Needed for confidence head training and zero-modality handling
             'has_object_rgb': search_data['has_object_rgb'],

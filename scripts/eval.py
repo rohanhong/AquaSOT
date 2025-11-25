@@ -260,15 +260,17 @@ def main():
             template_visibility_policy = cfg.evaluation.get('template', {}).get('visibility_policy', 'any')
 
             # Create evaluation dataset for this sequence
+            # CRITICAL FIX (Audit 2025112601): Pass context_factor for bbox-based template cropping
             seq_eval_dataset = EvaluationSequenceDataset(
                 base_dataset=seq_base_dataset,
-                template_size=cfg.data.get('template_size', 128),
-                search_size=cfg.data.get('search_size', 256),
+                template_size=cfg.data.get('template_size', 256),
+                search_size=cfg.data.get('search_size', 512),
                 template_frame='first',
                 enable_update=template_update_enabled,
                 update_interval=template_update_interval,
-                normalization_config=cfg.data.normalize,  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
-                template_visibility_policy=template_visibility_policy  # CRITICAL FIX (Audit 2025112504 Finding 2)
+                normalization_config=cfg.data.normalize,
+                template_visibility_policy=template_visibility_policy,
+                context_factor=cfg.data.get('context_factor', 2.0)
             )
 
             eval_datasets.append(seq_eval_dataset)
@@ -333,15 +335,17 @@ def main():
 
         # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
         # This ensures reproducible, protocol-compliant evaluation
+        # CRITICAL FIX (Audit 2025112601): Pass context_factor for bbox-based template cropping
         eval_dataset = EvaluationSequenceDataset(
             base_dataset=eval_base_dataset,
-            template_size=cfg.data.get('template_size', 128),
-            search_size=cfg.data.get('search_size', 256),
+            template_size=cfg.data.get('template_size', 256),
+            search_size=cfg.data.get('search_size', 512),
             template_frame='first',  # Use first frame as template (RGBS50 protocol)
             enable_update=template_update_enabled,
             update_interval=template_update_interval,
-            normalization_config=cfg.data.normalize,  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
-            template_visibility_policy=template_visibility_policy  # CRITICAL FIX (Audit 2025112504 Finding 2)
+            normalization_config=cfg.data.normalize,
+            template_visibility_policy=template_visibility_policy,
+            context_factor=cfg.data.get('context_factor', 2.0)
         )
 
         logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")
