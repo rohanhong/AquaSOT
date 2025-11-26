@@ -435,7 +435,7 @@ class AquaSOT3DTracker(BaseModule):
                     fusion_kwargs['sonar_letterbox_metadata'] = sonar_metadata_list
                     import logging
                     logger = logging.getLogger(__name__)
-                    logger.info(
+                    logger.debug(
                         "Batch contains samples with heterogeneous letterbox parameters. "
                         "Using per-sample metadata for accurate radial binning."
                     )
