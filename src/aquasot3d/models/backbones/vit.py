@@ -32,13 +32,13 @@ class ViTBackbone(BaseModule):
 
     ARCHITECTURE CHANGE (Audit 2025112104):
     Migrated from frame-sequence processing to template-search paradigm.
-    Separate positional embeddings for template (256x256) and search (512x512).
+    Separate positional embeddings for template (128x128) and search (256x256).
 
     Args:
         model_name: timm model name (e.g., 'vit_base_patch16_224')
         pretrained: Whether to load ImageNet pretrained weights
-        template_size: Template input size (default: 256)
-        search_size: Search input size (default: 512)
+        template_size: Template input size (default: 128, OSTrack-256 standard)
+        search_size: Search input size (default: 256, OSTrack-256 standard)
         patch_size: Patch size for ViT (default: 16)
         embed_dim: Embedding dimension (default: 768 for ViT-Base)
         depth: Number of transformer blocks (default: 12)
@@ -55,18 +55,18 @@ class ViTBackbone(BaseModule):
             - feat_search: [B, N_x, C] where N_x = (search_size // patch_size)^2
 
     Example:
-        >>> # RGB backbone for template-search
+        >>> # RGB backbone for template-search (OSTrack-256 standard)
         >>> rgb_backbone = ViTBackbone(
         ...     model_name='vit_base_patch16_224',
-        ...     template_size=256,
-        ...     search_size=512,
+        ...     template_size=128,
+        ...     search_size=256,
         ...     in_channels=3
         ... )
-        >>> template = torch.randn(4, 3, 256, 256)
-        >>> search = torch.randn(4, 3, 512, 512)
+        >>> template = torch.randn(4, 3, 128, 128)
+        >>> search = torch.randn(4, 3, 256, 256)
         >>> feat_z, feat_x = rgb_backbone(template, search)
-        >>> print(feat_z.shape)  # [4, 256, 768]
-        >>> print(feat_x.shape)  # [4, 1024, 768]
+        >>> print(feat_z.shape)  # [4, 64, 768]  (128/16)^2 = 64
+        >>> print(feat_x.shape)  # [4, 256, 768] (256/16)^2 = 256
     """
 
     def __init__(
@@ -74,8 +74,8 @@ class ViTBackbone(BaseModule):
         model_name: str = "vit_base_patch16_224",
         pretrained: bool = True,
         pretrained_path: Optional[str] = None,
-        template_size: int = 256,  # NEW: Template image size
-        search_size: int = 512,    # NEW: Search image size
+        template_size: int = 128,  # OSTrack-256 standard: template 128x128
+        search_size: int = 256,    # OSTrack-256 standard: search 256x256
         patch_size: int = 16,
         embed_dim: int = 768,
         depth: int = 12,
@@ -92,8 +92,8 @@ class ViTBackbone(BaseModule):
         self.model_name = model_name
         self.pretrained = pretrained
         self.pretrained_path = pretrained_path
-        self.template_size = template_size  # NEW: 256
-        self.search_size = search_size      # NEW: 512
+        self.template_size = template_size  # OSTrack-256: 128
+        self.search_size = search_size      # OSTrack-256: 256
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.depth = depth
@@ -130,8 +130,8 @@ class ViTBackbone(BaseModule):
             self.patch_size = self.vit.patch_embed.patch_size[0]
 
         # Calculate number of patches for template and search
-        self.num_patches_template = (template_size // self.patch_size) ** 2  # 256/16 = 16, 16*16 = 256
-        self.num_patches_search = (search_size // self.patch_size) ** 2      # 512/16 = 32, 32*32 = 1024
+        self.num_patches_template = (template_size // self.patch_size) ** 2  # 128/16 = 8, 8*8 = 64
+        self.num_patches_search = (search_size // self.patch_size) ** 2      # 256/16 = 16, 16*16 = 256
 
         # CRITICAL: Create SEPARATE positional embeddings for template and search (OSTrack style)
         # Remove original pos_embed from ViT (will use our custom embeddings)
@@ -375,8 +375,8 @@ class ViTBackbone(BaseModule):
         before transformer, enabling cross-attention between regions.
 
         Args:
-            x_template: Template image [B, C, template_size, template_size] (e.g., [B, 3, 256, 256])
-            x_search: Search image [B, C, search_size, search_size] (e.g., [B, 3, 512, 512])
+            x_template: Template image [B, C, template_size, template_size] (e.g., [B, 3, 128, 128])
+            x_search: Search image [B, C, search_size, search_size] (e.g., [B, 3, 256, 256])
 
         Returns:
             Tuple of (feat_template, feat_search):
@@ -384,11 +384,11 @@ class ViTBackbone(BaseModule):
                 - feat_search: [B, N_x, D] where N_x = (search_size // patch_size)^2
 
         Example:
-            >>> template = torch.randn(4, 3, 256, 256)
-            >>> search = torch.randn(4, 3, 512, 512)
+            >>> template = torch.randn(4, 3, 128, 128)
+            >>> search = torch.randn(4, 3, 256, 256)
             >>> feat_z, feat_x = backbone(template, search)
-            >>> print(feat_z.shape)  # [4, 256, 768]
-            >>> print(feat_x.shape)  # [4, 1024, 768]
+            >>> print(feat_z.shape)  # [4, 64, 768]
+            >>> print(feat_x.shape)  # [4, 256, 768]
         """
         B = x_template.shape[0]
 

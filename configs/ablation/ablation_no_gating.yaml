@@ -1,37 +1,19 @@
-# ==============================================================================
 # Ablation: No Geometry Gating
-#
-# Disable geometry-based gating in G²-DCMA fusion to assess its impact.
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-10
-# ==============================================================================
+# Disable geometry-based gating in G2-DCMA fusion to assess its impact.
 
 _base_: ../train.yaml
 
-
-# ------------------------------------------------------------------------------
-# Experiment Configuration
-# ------------------------------------------------------------------------------
 experiment:
   name: ablation_no_gating
   tags: [ablation, no_gating, no_geometry]
   notes: "Ablation study: Disable geometry-based gating in fusion"
   group: ablation
 
-
-# ------------------------------------------------------------------------------
-# Model Configuration - Disable Geometry Gating
-# ------------------------------------------------------------------------------
 model:
   fusion:
     use_geometry_gating: false  # Disable geometry gating
     geometry_gate_type: null
 
-
-# ------------------------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------------------------
 paths:
   work_dir: outputs/ablation_no_gating
   checkpoint_dir: outputs/ablation_no_gating/checkpoints

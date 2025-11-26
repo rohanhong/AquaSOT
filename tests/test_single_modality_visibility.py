@@ -84,8 +84,8 @@ def test_separate_gt_boxes():
         )
         ts_dataset = TemplateSearchDataset(
             base_dataset=base_dataset,
-            template_size=256,
-            search_size=512,
+            template_size=128,  # OSTrack-256 standard
+            search_size=256,   # OSTrack-256 standard
             template_update_policy='first_frame',
             template_search_gap=(10, 50)
         )
@@ -135,8 +135,8 @@ def test_collate_function_handles_separate_gt():
         )
         ts_dataset = TemplateSearchDataset(
             base_dataset=base_dataset,
-            template_size=256,
-            search_size=512,
+            template_size=128,  # OSTrack-256 standard
+            search_size=256,   # OSTrack-256 standard
             template_update_policy='first_frame',
             template_search_gap=(10, 50)
         )

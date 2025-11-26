@@ -350,9 +350,9 @@ def build_dataloaders(cfg):
     else:
         logger.info("Augmentation disabled")
 
-    # Template-search dataset configuration
-    template_size = cfg.data.get('template_size', 256)
-    search_size = cfg.data.get('search_size', 512)
+    # Template-search dataset configuration (OSTrack-256 standard defaults)
+    template_size = cfg.data.get('template_size', 128)  # OSTrack-256 standard
+    search_size = cfg.data.get('search_size', 256)      # OSTrack-256 standard
     template_search_gap_range = cfg.data.get('template_search_gap_range', [1, 30])
     template_update_policy = cfg.data.get('template_update_policy', 'first_frame')
 

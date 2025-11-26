@@ -63,8 +63,8 @@ class OnlineTracker:
 
     Args:
         model: AquaSOT3DTracker instance
-        template_size: Template image size (default: 256)
-        search_size: Search image size (default: 512)
+        template_size: Template image size (default: 128, OSTrack-256 standard)
+        search_size: Search image size (default: 256, OSTrack-256 standard)
         update_strategy: Template update strategy (default: 'first_frame')
         update_interval: Frames between updates for 'recent' strategy (default: 10)
         quality_threshold_rgb: RGB quality threshold for 'mixformer'/'keyframe' (default: 0.7)
@@ -82,8 +82,8 @@ class OnlineTracker:
         self,
         model: torch.nn.Module,
         config_path: Optional[str] = None,
-        template_size: int = 256,
-        search_size: int = 512,
+        template_size: int = 128,  # OSTrack-256 standard
+        search_size: int = 256,    # OSTrack-256 standard
         update_strategy: Literal['first_frame', 'recent', 'keyframe', 'mixformer'] = 'first_frame',
         update_interval: int = 10,
         quality_threshold_rgb: float = 0.7,
@@ -102,8 +102,8 @@ class OnlineTracker:
         Args:
             model: AquaSOT3DTracker instance
             config_path: Path to config file (for normalization params). If None, uses defaults.
-            template_size: Template image size (default: 256)
-            search_size: Search image size (default: 512)
+            template_size: Template image size (default: 128, OSTrack-256 standard)
+            search_size: Search image size (default: 256, OSTrack-256 standard)
             update_strategy: Template update strategy
             update_interval: Frames between updates for 'recent' strategy
             quality_threshold_rgb: RGB quality threshold for 'mixformer'/'keyframe'

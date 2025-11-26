@@ -7,7 +7,7 @@ system:
   distributed: false          # Distributed training flag
   dist_backend: nccl          # Distributed backend
   dist_url: env://            # Distributed URL
-  use_amp: false              # Mixed precision (disabled for numerical stability)
+  use_amp: false              # Mixed precision training
   amp_dtype: bfloat16         # AMP data type when enabled
   deterministic: false        # Deterministic mode (slower)
   benchmark: true             # cuDNN benchmark mode
@@ -23,14 +23,19 @@ data:
   train_split: train          # Training split name
   val_split: val              # Validation split name
   test_split: test            # Test split name
-  visibility_policy: all      # Frame filtering: all/any/both (all=zero/single/dual modality)
+  visibility_policy: all      # Frame filtering: all/any/both
   num_workers: 12             # DataLoader workers [🚀A4000: 48]
   pin_memory: true            # Pin memory for faster transfer
   prefetch_factor: 4          # Prefetch batches per worker [🚀A4000: 8]
   persistent_workers: true    # Keep workers alive between epochs
-  template_size: 256          # Template frame size (pixels)
-  search_size: 512            # Search frame size (pixels)
+  template_size: 128          # Template frame size
+  search_size: 256            # Search frame size
   template_search_gap_range: [1, 200]  # Gap range for template-search pairs
+  search_area_factor: 4.0     # Search region = sqrt(w*h) * factor
+  template_area_factor: 2.0   # Template region = sqrt(w*h) * factor
+  center_jitter_factor: 0.0   # Center jitter for training
+  scale_jitter_factor: 0.0    # Scale jitter for training
+  use_attention_mask: true    # Enable attention mask for padded regions
 
   augmentation:
     enabled: true             # Enable data augmentation
@@ -57,21 +62,26 @@ model:
 
   backbone:
     rgb:
-      type: vit_rgb           # RGB backbone type
+      type: vit_rgb                     # RGB backbone type
       model_name: vit_base_patch16_224  # ViT model variant
-      pretrained: true        # Use ImageNet pretrained weights
-      pretrained_path: null   # Custom pretrained path
-      freeze_bn: false        # Freeze batch normalization
-      output_layers: [9, 11]  # Output layer indices
-      output_dim: 768         # Output feature dimension
+      pretrained: true                  # Use ImageNet pretrained weights
+      pretrained_path: null             # Custom pretrained path
+      freeze_backbone: false            # Freeze backbone parameters
+      in_channels: 3                    # Input channels
+      embed_dim: 768                    # Embedding dimension
+      template_size: 128                # Template size
+      search_size: 256                  # Search size
 
     sonar:
-      type: vit_sonar         # Sonar backbone type
+      type: vit_sonar                   # Sonar backbone type
       model_name: vit_base_patch16_224  # ViT model variant
-      pretrained: true        # Use ImageNet pretrained weights
-      in_channels: 1          # Input channels (grayscale sonar)
-      img_size: 512           # Input image size
-      output_dim: 768         # Output feature dimension
+      pretrained: true                  # Use ImageNet pretrained weights
+      pretrained_path: null             # Custom pretrained path
+      freeze_backbone: false            # Freeze backbone parameters
+      in_channels: 1                    # Input channels (grayscale)
+      embed_dim: 768                    # Embedding dimension
+      template_size: 128                # Template size
+      search_size: 256                  # Search size
 
   fusion:
     type: conditional_g2_dcma # Conditional G2-DCMA fusion module
@@ -96,22 +106,22 @@ model:
       in_channels: 768        # Input feature channels
       hidden_dim: 256         # Hidden layer dimension
       num_layers: 3           # MLP layers
-      output_format: cxcywh   # Box format: center-x, center-y, width, height
+      output_format: cxcywh   # Box format
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0   # Confidence loss weight
-      loss_weight_l1: 5.0     # L1 regression loss weight (OSTrack standard)
-      loss_weight_iou: 2.0    # GIoU/CIoU loss weight (OSTrack standard)
+      loss_weight_l1: 5.0     # L1 regression loss weight
+      loss_weight_iou: 2.0    # GIoU loss weight
 
     sonar_box:
       type: BoxHead           # Box prediction head type
       in_channels: 768        # Input feature channels
       hidden_dim: 256         # Hidden layer dimension
       num_layers: 3           # MLP layers
-      output_format: cxcywh   # Box format: center-x, center-y, width, height
+      output_format: cxcywh   # Box format
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0   # Confidence loss weight
-      loss_weight_l1: 5.0     # L1 regression loss weight (OSTrack standard)
-      loss_weight_iou: 2.0    # GIoU/CIoU loss weight (OSTrack standard)
+      loss_weight_l1: 5.0     # L1 regression loss weight
+      loss_weight_iou: 2.0    # GIoU loss weight
 
 training:
   init_backbones:
@@ -143,7 +153,7 @@ training:
 
   grad_clip:
     enabled: true             # Enable gradient clipping
-    max_norm: 0.1             # Max gradient norm (SOTFormer standard)
+    max_norm: 0.1             # Max gradient norm
     norm_type: 2              # Gradient norm type
 
   loss_weights:

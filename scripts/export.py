@@ -42,10 +42,10 @@ def parse_args():
                         help='ONNX opset version (default: 11)')
     parser.add_argument('--simplify', action='store_true',
                         help='Simplify ONNX model (requires onnx-simplifier)')
-    parser.add_argument('--template-size', type=int, default=256,
-                        help='Template image size (default: 256)')
-    parser.add_argument('--search-size', type=int, default=512,
-                        help='Search image size (default: 512)')
+    parser.add_argument('--template-size', type=int, default=128,
+                        help='Template image size (default: 128, OSTrack-256 standard)')
+    parser.add_argument('--search-size', type=int, default=256,
+                        help='Search image size (default: 256, OSTrack-256 standard)')
 
     return parser.parse_args()
 
@@ -166,7 +166,7 @@ class ONNXExportWrapper(torch.nn.Module):
         return rgb_boxes, sonar_boxes, rgb_confidence, sonar_confidence
 
 
-def export_onnx(model, output_path, opset_version=11, simplify=False, template_size=256, search_size=512):
+def export_onnx(model, output_path, opset_version=11, simplify=False, template_size=128, search_size=256):
     """Export model to ONNX format
 
     CRITICAL FIX (Audit 2025112403 Finding 4):
@@ -177,8 +177,8 @@ def export_onnx(model, output_path, opset_version=11, simplify=False, template_s
         output_path: Path to save ONNX model
         opset_version: ONNX opset version (default: 11)
         simplify: Whether to simplify ONNX model (default: False)
-        template_size: Template image size (default: 256)
-        search_size: Search image size (default: 512)
+        template_size: Template image size (default: 128, OSTrack-256 standard)
+        search_size: Search image size (default: 256, OSTrack-256 standard)
     """
     logger.info(f"Exporting to ONNX (opset {opset_version})")
     logger.info(f"Using template_size={template_size}, search_size={search_size}")
@@ -238,14 +238,14 @@ def export_onnx(model, output_path, opset_version=11, simplify=False, template_s
             logger.warning("onnx-simplifier not installed, skipping simplification")
 
 
-def export_torchscript(model, output_path, template_size=256, search_size=512):
+def export_torchscript(model, output_path, template_size=128, search_size=256):
     """Export model to TorchScript format
 
     Args:
         model: PyTorch model to export
         output_path: Path to save TorchScript model
-        template_size: Template image size (default: 256)
-        search_size: Search image size (default: 512)
+        template_size: Template image size (default: 128, OSTrack-256 standard)
+        search_size: Search image size (default: 256, OSTrack-256 standard)
     """
     logger.info("Exporting to TorchScript")
     logger.info(f"Using template_size={template_size}, search_size={search_size}")

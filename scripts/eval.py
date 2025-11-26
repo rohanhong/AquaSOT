@@ -263,8 +263,8 @@ def main():
             # CRITICAL FIX (Audit 2025112601): Pass context_factor for bbox-based template cropping
             seq_eval_dataset = EvaluationSequenceDataset(
                 base_dataset=seq_base_dataset,
-                template_size=cfg.data.get('template_size', 256),
-                search_size=cfg.data.get('search_size', 512),
+                template_size=cfg.data.get('template_size', 128),  # OSTrack-256 standard
+                search_size=cfg.data.get('search_size', 256),      # OSTrack-256 standard
                 template_frame='first',
                 enable_update=template_update_enabled,
                 update_interval=template_update_interval,
@@ -338,8 +338,8 @@ def main():
         # CRITICAL FIX (Audit 2025112601): Pass context_factor for bbox-based template cropping
         eval_dataset = EvaluationSequenceDataset(
             base_dataset=eval_base_dataset,
-            template_size=cfg.data.get('template_size', 256),
-            search_size=cfg.data.get('search_size', 512),
+            template_size=cfg.data.get('template_size', 128),  # OSTrack-256 standard
+            search_size=cfg.data.get('search_size', 256),      # OSTrack-256 standard
             template_frame='first',  # Use first frame as template (RGBS50 protocol)
             enable_update=template_update_enabled,
             update_interval=template_update_interval,

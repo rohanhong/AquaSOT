@@ -359,17 +359,17 @@ class Trainer:
             if 'rgb_template' in batch and batch['rgb_template'] is not None:
                 # Template-search format (RGB available)
                 batch_size = batch['rgb_template'].shape[0]
-                rgb_template = batch['rgb_template']  # [B, 3, 256, 256]
-                rgb_search = batch['rgb_search']  # [B, 3, 512, 512]
-                sonar_template = batch.get('sonar_template', None)  # [B, 1, 256, 256]
-                sonar_search = batch.get('sonar_search', None)  # [B, 1, 512, 512]
+                rgb_template = batch['rgb_template']  # [B, 3, 128, 128] OSTrack-256
+                rgb_search = batch['rgb_search']  # [B, 3, 256, 256] OSTrack-256
+                sonar_template = batch.get('sonar_template', None)  # [B, 1, 128, 128]
+                sonar_search = batch.get('sonar_search', None)  # [B, 1, 256, 256]
             elif 'sonar_template' in batch and batch['sonar_template'] is not None:
                 # Template-search format (Sonar only)
                 batch_size = batch['sonar_template'].shape[0]
                 rgb_template = None
                 rgb_search = None
-                sonar_template = batch['sonar_template']  # [B, 1, 256, 256]
-                sonar_search = batch['sonar_search']  # [B, 1, 512, 512]
+                sonar_template = batch['sonar_template']  # [B, 1, 128, 128] OSTrack-256
+                sonar_search = batch['sonar_search']  # [B, 1, 256, 256] OSTrack-256
             else:
                 raise RuntimeError(
                     "Batch must contain template-search format with keys: "
@@ -682,17 +682,17 @@ class Trainer:
                 if 'rgb_template' in batch and batch['rgb_template'] is not None:
                     # Template-search format (RGB available)
                     batch_size = batch['rgb_template'].shape[0]
-                    rgb_template = batch['rgb_template']  # [B, 3, 256, 256]
-                    rgb_search = batch['rgb_search']  # [B, 3, 512, 512]
-                    sonar_template = batch.get('sonar_template', None)  # [B, 1, 256, 256]
-                    sonar_search = batch.get('sonar_search', None)  # [B, 1, 512, 512]
+                    rgb_template = batch['rgb_template']  # [B, 3, 128, 128] OSTrack-256
+                    rgb_search = batch['rgb_search']  # [B, 3, 256, 256] OSTrack-256
+                    sonar_template = batch.get('sonar_template', None)  # [B, 1, 128, 128]
+                    sonar_search = batch.get('sonar_search', None)  # [B, 1, 256, 256]
                 elif 'sonar_template' in batch and batch['sonar_template'] is not None:
                     # Template-search format (Sonar only)
                     batch_size = batch['sonar_template'].shape[0]
                     rgb_template = None
                     rgb_search = None
-                    sonar_template = batch['sonar_template']  # [B, 1, 256, 256]
-                    sonar_search = batch['sonar_search']  # [B, 1, 512, 512]
+                    sonar_template = batch['sonar_template']  # [B, 1, 128, 128] OSTrack-256
+                    sonar_search = batch['sonar_search']  # [B, 1, 256, 256] OSTrack-256
                 else:
                     raise RuntimeError(
                         "Batch must contain template-search format with keys: "

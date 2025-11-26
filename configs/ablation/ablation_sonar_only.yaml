@@ -1,89 +1,45 @@
-# ==============================================================================
 # Ablation: Sonar-Only Single-Modality
-#
-# Enable single-modality mode to assess Sonar-only tracking performance
-# and validate robustness when RGB is unavailable.
-#
-# CRITICAL FIX (Audit 2025112503 Finding 4):
-# This configuration requires allow_single_modality=True parameter.
-#
-# Author: AquaSOT-3D Team
-# Date: 2025-11-25
-# ==============================================================================
+# Assess Sonar-only tracking performance when RGB is unavailable.
 
 _base_: ../train.yaml
 
-
-# ------------------------------------------------------------------------------
-# Experiment Configuration
-# ------------------------------------------------------------------------------
 experiment:
   name: ablation_sonar_only
   tags: [ablation, single_modality, sonar_only]
   notes: "Ablation study: Sonar-only tracking without RGB fusion"
   group: ablation
 
-
-# ------------------------------------------------------------------------------
-# Model Configuration - Single Sonar Modality
-# ------------------------------------------------------------------------------
 model:
-  # CRITICAL: Enable single-modality mode
-  allow_single_modality: true
+  allow_single_modality: true   # Enable single-modality mode
 
-  # Backbone configuration with proper schema
   backbone:
-    # RGB backbone disabled (set type to null)
     rgb:
-      type: null
-      # All other RGB config is ignored when type=null
-
-    # Sonar backbone configuration (standard)
+      type: null                # RGB backbone disabled
     sonar:
       type: vit_sonar
       model_name: vit_base_patch16_224
       pretrained: true
       in_channels: 1
-      template_size: 256
-      search_size: 512
+      template_size: 128
+      search_size: 256
 
-  # Fusion module will use single-Sonar bypass path
   fusion:
     type: conditional_g2_dcma
     embed_dim: 256
     num_heads: 8
-    # Fusion will automatically route to Sonar-only branch
 
-
-# ------------------------------------------------------------------------------
-# Dataset Configuration - Sonar-only data loading
-# ------------------------------------------------------------------------------
 dataset:
   train:
-    # Dataset will still load both modalities but validation flags
-    # will mark RGB as invalid, triggering single-modality routing
-    load_rgb: false  # Optional: skip RGB loading for efficiency
-
+    load_rgb: false             # Skip RGB loading for efficiency
   val:
     load_rgb: false
 
-
-# ------------------------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------------------------
 paths:
   work_dir: outputs/ablation_sonar_only
   checkpoint_dir: outputs/ablation_sonar_only/checkpoints
   log_dir: outputs/ablation_sonar_only/logs
 
-
-# ------------------------------------------------------------------------------
-# Training Configuration
-# ------------------------------------------------------------------------------
-# Adjust learning rate for single-modality
-optimizer:
-  lr: 0.0003  # Reduced from 0.0005
-
-# Sonar-only may need more epochs due to lower information density
 training:
-  max_epochs: 50  # Slightly more than RGB-only
+  num_epochs: 100               # Same as train.yaml for fair comparison
+  optimizer:
+    lr: 0.0001

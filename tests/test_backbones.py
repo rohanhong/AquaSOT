@@ -26,24 +26,26 @@ class TestViTBackbone:
 
     @pytest.fixture
     def vit_rgb_backbone(self):
-        """Create ViT backbone for RGB testing."""
+        """Create ViT backbone for RGB testing (OSTrack-256 standard)."""
         return ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
             in_channels=3,
-            img_size=224,
+            template_size=128,  # OSTrack-256 standard
+            search_size=256,    # OSTrack-256 standard
             embed_dim=192,
             depth=12,
             num_heads=3)
 
     @pytest.fixture
     def vit_sonar_backbone(self):
-        """Create ViT backbone for Sonar testing."""
+        """Create ViT backbone for Sonar testing (OSTrack-256 standard)."""
         return ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
             in_channels=1,  # Single-channel sonar
-            img_size=224,
+            template_size=128,  # OSTrack-256 standard
+            search_size=256,    # OSTrack-256 standard
             embed_dim=192,
             depth=12,
             num_heads=3)
@@ -62,45 +64,49 @@ class TestViTBackbone:
         assert vit_sonar_backbone.in_channels == 1
         assert vit_sonar_backbone.channel_adapter is not None
         # Channel adapter should convert 1ch -> 3ch
-        test_input = torch.randn(1, 1, 224, 224)
+        test_input = torch.randn(1, 1, 128, 128)  # Use template_size
         adapted = vit_sonar_backbone.channel_adapter(test_input)
         assert adapted.shape[1] == 3
 
     def test_vit_forward_separate_rgb(self, vit_rgb_backbone):
-        """Test ViT forward pass with separate processing (RGB)."""
-        template = torch.randn(2, 3, 128, 128)
-        search = torch.randn(2, 3, 256, 256)
+        """Test ViT forward pass with RGB backbone (OSTrack-256 standard)."""
+        template = torch.randn(2, 3, 128, 128)  # OSTrack-256 standard
+        search = torch.randn(2, 3, 256, 256)    # OSTrack-256 standard
 
-        outputs = vit_rgb_backbone(template, search, return_separate=True)
+        # New ViT backbone returns (feat_template, feat_search) tuple directly
+        feat_template, feat_search = vit_rgb_backbone(template, search)
 
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
-        assert outputs['template_features'].shape[0] == 2
-        assert outputs['search_features'].shape[0] == 2
+        # Verify output shapes: template (128/16)^2=64 patches, search (256/16)^2=256 patches
+        assert feat_template.shape[0] == 2
+        assert feat_search.shape[0] == 2
+        assert feat_template.shape == (2, 64, 192)  # [B, N_z, D]
+        assert feat_search.shape == (2, 256, 192)   # [B, N_x, D]
 
     def test_vit_forward_separate_sonar(self, vit_sonar_backbone):
-        """Test ViT forward pass with separate processing (Sonar)."""
-        template = torch.randn(2, 1, 128, 128)
-        search = torch.randn(2, 1, 256, 256)
+        """Test ViT forward pass with Sonar backbone (OSTrack-256 standard)."""
+        template = torch.randn(2, 1, 128, 128)  # OSTrack-256 standard
+        search = torch.randn(2, 1, 256, 256)    # OSTrack-256 standard
 
-        outputs = vit_sonar_backbone(template, search, return_separate=True)
+        # New ViT backbone returns (feat_template, feat_search) tuple directly
+        feat_template, feat_search = vit_sonar_backbone(template, search)
 
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
-        assert outputs['template_features'].shape[0] == 2
-        assert outputs['search_features'].shape[0] == 2
+        # Verify output shapes: template (128/16)^2=64 patches, search (256/16)^2=256 patches
+        assert feat_template.shape[0] == 2
+        assert feat_search.shape[0] == 2
+        assert feat_template.shape == (2, 64, 192)  # [B, N_z, D]
+        assert feat_search.shape == (2, 256, 192)   # [B, N_x, D]
 
     def test_vit_forward_combined(self, vit_rgb_backbone):
-        """Test ViT forward pass with combined processing."""
-        template = torch.randn(2, 3, 224, 224)
-        search = torch.randn(2, 3, 224, 224)
+        """Test ViT forward pass with combined processing (OSTrack-256 standard)."""
+        template = torch.randn(2, 3, 128, 128)  # OSTrack-256 standard
+        search = torch.randn(2, 3, 256, 256)    # OSTrack-256 standard
 
-        outputs = vit_rgb_backbone(template, search, return_separate=False)
+        # Note: The new ViT backbone returns (feat_template, feat_search) tuple directly
+        feat_template, feat_search = vit_rgb_backbone(template, search)
 
-        assert 'features' in outputs
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
-        assert outputs['features'].shape[0] == 4  # 2*B
+        # Verify output shapes: template (128/16)^2=64 patches, search (256/16)^2=256 patches
+        assert feat_template.shape == (2, 64, 192)  # [B, N_z, D]
+        assert feat_search.shape == (2, 256, 192)   # [B, N_x, D]
 
     def test_vit_feature_dim(self, vit_rgb_backbone):
         """Test feature dimension getter."""
@@ -120,9 +126,9 @@ class TestViTBackbone:
             assert not param.requires_grad
 
     def test_channel_adapter_applied(self, vit_sonar_backbone):
-        """Test that channel adapter is applied in forward pass."""
-        template = torch.randn(2, 1, 224, 224)
-        search = torch.randn(2, 1, 224, 224)
+        """Test that channel adapter is applied in forward pass (OSTrack-256 standard)."""
+        template = torch.randn(2, 1, 128, 128)  # OSTrack-256 standard
+        search = torch.randn(2, 1, 256, 256)    # OSTrack-256 standard
 
         # Verify channel adapter exists and has correct shape
         assert vit_sonar_backbone.channel_adapter is not None
@@ -130,12 +136,13 @@ class TestViTBackbone:
 
         # Test channel adapter converts 1ch to 3ch
         adapted = vit_sonar_backbone.channel_adapter(template)
-        assert adapted.shape == (2, 3, 224, 224)
+        assert adapted.shape == (2, 3, 128, 128)
 
         # Verify forward pass works with 1ch input
-        outputs = vit_sonar_backbone(template, search)
-        assert 'template_features' in outputs
-        assert 'search_features' in outputs
+        # Note: The new ViT backbone returns (feat_template, feat_search) tuple directly
+        feat_template, feat_search = vit_sonar_backbone(template, search)
+        assert feat_template.shape == (2, 64, 192)  # [B, N_z, D]
+        assert feat_search.shape == (2, 256, 192)   # [B, N_x, D]
 
 
 class TestBackboneFactory:
@@ -206,17 +213,21 @@ class TestMultiModalBackbone:
 
     @pytest.fixture
     def multimodal_backbone(self):
-        """Create multi-modal backbone for testing."""
+        """Create multi-modal backbone for testing (OSTrack-256 standard)."""
         rgb_config = {
             'type': 'vit_rgb',
             'model_name': 'vit_tiny_patch16_224',
-            'pretrained': False
+            'pretrained': False,
+            'template_size': 128,  # OSTrack-256 standard
+            'search_size': 256,    # OSTrack-256 standard
         }
         sonar_config = {
             'type': 'vit_sonar',
             'model_name': 'vit_tiny_patch16_224',
             'pretrained': False,
-            'in_channels': 1
+            'in_channels': 1,
+            'template_size': 128,  # OSTrack-256 standard
+            'search_size': 256,    # OSTrack-256 standard
         }
         return MultiModalBackbone(rgb_config, sonar_config)
 
@@ -228,11 +239,11 @@ class TestMultiModalBackbone:
         assert isinstance(multimodal_backbone.sonar_encoder, ViTBackbone)
 
     def test_multimodal_forward(self, multimodal_backbone):
-        """Test multi-modal forward pass."""
-        rgb_template = torch.randn(2, 3, 224, 224)
-        rgb_search = torch.randn(2, 3, 224, 224)
-        sonar_template = torch.randn(2, 1, 224, 224)
-        sonar_search = torch.randn(2, 1, 224, 224)
+        """Test multi-modal forward pass (OSTrack-256 standard)."""
+        rgb_template = torch.randn(2, 3, 128, 128)  # OSTrack-256 standard
+        rgb_search = torch.randn(2, 3, 256, 256)    # OSTrack-256 standard
+        sonar_template = torch.randn(2, 1, 128, 128)
+        sonar_search = torch.randn(2, 1, 256, 256)
 
         outputs = multimodal_backbone(rgb_template, rgb_search,
                                      sonar_template, sonar_search)
@@ -287,30 +298,35 @@ class TestBackboneIntegration:
     """Integration tests for backbone compatibility."""
 
     def test_rgb_sonar_feature_compatibility(self):
-        """Test that RGB and Sonar backbones produce compatible features."""
+        """Test that RGB and Sonar backbones produce compatible features (OSTrack-256 standard)."""
         rgb_backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
-            in_channels=3)
+            in_channels=3,
+            template_size=128,  # OSTrack-256 standard
+            search_size=256)    # OSTrack-256 standard
 
         sonar_backbone = ViTBackbone(
             model_name='vit_tiny_patch16_224',
             pretrained=False,
-            in_channels=1)
+            in_channels=1,
+            template_size=128,  # OSTrack-256 standard
+            search_size=256)    # OSTrack-256 standard
 
-        # Test with same spatial size
-        template = torch.randn(2, 3, 224, 224)
-        search = torch.randn(2, 3, 224, 224)
+        # Test with OSTrack-256 standard sizes
+        template = torch.randn(2, 3, 128, 128)  # OSTrack-256 standard
+        search = torch.randn(2, 3, 256, 256)    # OSTrack-256 standard
 
-        sonar_template = torch.randn(2, 1, 224, 224)
-        sonar_search = torch.randn(2, 1, 224, 224)
+        sonar_template = torch.randn(2, 1, 128, 128)
+        sonar_search = torch.randn(2, 1, 256, 256)
 
-        rgb_out = rgb_backbone(template, search)
-        sonar_out = sonar_backbone(sonar_template, sonar_search)
+        # New ViT backbone returns tuple (feat_template, feat_search)
+        rgb_feat_template, rgb_feat_search = rgb_backbone(template, search)
+        sonar_feat_template, sonar_feat_search = sonar_backbone(sonar_template, sonar_search)
 
-        # Features should have same dimension (except batch concat)
-        assert rgb_out['template_features'].shape[1:] == sonar_out['template_features'].shape[1:]
-        assert rgb_out['search_features'].shape[1:] == sonar_out['search_features'].shape[1:]
+        # Features should have same dimension
+        assert rgb_feat_template.shape[1:] == sonar_feat_template.shape[1:]
+        assert rgb_feat_search.shape[1:] == sonar_feat_search.shape[1:]
 
     def test_shared_architecture_different_inputs(self):
         """Test that same ViT architecture works for different input channels."""

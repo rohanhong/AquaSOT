@@ -36,15 +36,15 @@ class DummyBackbone(nn.Module):
 
     Args:
         output_dim: Feature dimension to output (D)
-        num_patches_template: Number of template patches (N_z, default: 256)
-        num_patches_search: Number of search patches (N_x, default: 1024)
+        num_patches_template: Number of template patches (N_z, default: 64 for 128/16)
+        num_patches_search: Number of search patches (N_x, default: 256 for 256/16)
     """
 
     def __init__(
         self,
         output_dim: int = 384,
-        num_patches_template: int = 256,
-        num_patches_search: int = 1024
+        num_patches_template: int = 64,   # OSTrack-256: (128/16)^2 = 64
+        num_patches_search: int = 256     # OSTrack-256: (256/16)^2 = 256
     ):
         super().__init__()
         self.output_dim = output_dim
@@ -228,8 +228,8 @@ class BackboneFactory:
         if backbone_type is None or backbone_type == 'null':
             # Create dummy backbone with configurable dimensions
             output_dim = config.get('output_dim', 384)
-            num_patches_template = config.get('num_patches_template', 256)
-            num_patches_search = config.get('num_patches_search', 1024)
+            num_patches_template = config.get('num_patches_template', 64)   # OSTrack-256
+            num_patches_search = config.get('num_patches_search', 256)      # OSTrack-256
             logger.info(
                 f"Creating DummyBackbone for testing: output_dim={output_dim}, "
                 f"num_patches_template={num_patches_template}, num_patches_search={num_patches_search}"
@@ -289,13 +289,13 @@ class MultiModalBackbone(nn.Module):
         sonar_config: Configuration dict for Sonar encoder (required)
 
     Example:
-        >>> rgb_config = {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512}
-        >>> sonar_config = {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512}
+        >>> rgb_config = {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 128, 'search_size': 256}
+        >>> sonar_config = {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 128, 'search_size': 256}
         >>> backbone = MultiModalBackbone(rgb_config, sonar_config)
-        >>> rgb_template = torch.randn(4, 3, 256, 256)
-        >>> rgb_search = torch.randn(4, 3, 512, 512)
-        >>> sonar_template = torch.randn(4, 1, 256, 256)
-        >>> sonar_search = torch.randn(4, 1, 512, 512)
+        >>> rgb_template = torch.randn(4, 3, 128, 128)    # OSTrack-256 standard
+        >>> rgb_search = torch.randn(4, 3, 256, 256)      # OSTrack-256 standard
+        >>> sonar_template = torch.randn(4, 1, 128, 128)  # OSTrack-256 standard
+        >>> sonar_search = torch.randn(4, 1, 256, 256)    # OSTrack-256 standard
         >>> outputs = backbone(rgb_template, rgb_search, sonar_template, sonar_search)
     """
 

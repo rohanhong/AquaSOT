@@ -37,7 +37,7 @@ class RadialProfileExtractor(BaseModule):
         feature_dim: Dimensionality of input feature maps
         learnable_weights: Whether to use learnable aggregation weights
         default_target_size: Default letterbox target size for stride estimation
-                            when metadata is incomplete (default: 512 for search)
+                            when metadata is incomplete (default: 256 for search, OSTrack-256)
     """
 
     def __init__(
@@ -45,7 +45,7 @@ class RadialProfileExtractor(BaseModule):
         num_bins: int = 50,
         feature_dim: int = 256,
         learnable_weights: bool = True,
-        default_target_size: int = 512
+        default_target_size: int = 256  # OSTrack-256 standard
     ):
         super().__init__()
         self.num_bins = num_bins
@@ -233,11 +233,11 @@ class RadialProfileExtractor(BaseModule):
                 # Letterbox target size (square): typically scale * original + padding fills to target
                 # A robust estimate: target_size = new_h + pad_top + pad_bottom
                 # Since letterbox makes square, if pad_top exists, total padding is distributed
-                # For letterbox: target_size is fixed (e.g., 512). We can compute as:
+                # For letterbox: target_size is fixed (e.g., 256 for OSTrack-256). We can compute as:
                 # target_size ≈ new_h + 2 * pad_top (assuming symmetric, though may not be exact)
                 # Better: infer from scale and original: if scale < 1, padding added to reach target
-                # Most robust: use fixed target_size assumption (512 for search, 256 for template)
-                # Since we're processing search features here, target_size = 512 is typical
+                # Most robust: use fixed target_size assumption (256 for search, 128 for template)
+                # Since we're processing search features here, target_size = 256 is typical (OSTrack-256)
                 target_size = new_h + 2 * pad_top  # Approximation (may over/underestimate)
                 stride = target_size / H  # pixels per feature cell
             elif meta is not None and 'scale' in meta:

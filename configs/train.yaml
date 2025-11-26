@@ -17,10 +17,15 @@ data:
   val_sequences: [uuv3, uuv6, uuv10]
   train_root: null                # Override train data root
   val_root: null                  # Override val data root
-  visibility_policy: all          # Frame filtering: all=zero/single/dual modality
-  template_size: 256              # Template frame size (pixels)
-  search_size: 512                # Search frame size (pixels)
+  visibility_policy: all          # Frame filtering: all/any/both
+  template_size: 128              # Template frame size
+  search_size: 256                # Search frame size
   template_search_gap_range: [1, 200]  # Gap range for template-search pairs
+  search_area_factor: 4.0         # Search region = sqrt(w*h) * factor
+  template_area_factor: 2.0       # Template region = sqrt(w*h) * factor
+  center_jitter_factor: 0.25      # Training center jitter
+  scale_jitter_factor: 0.25       # Training scale jitter
+  use_attention_mask: true        # Enable attention mask for padded regions
   template_update_policy: mixformer    # Template update: mixformer/first/recent
   quality_threshold_rgb: 0.7      # RGB quality threshold for template update
   quality_threshold_sonar: 0.7    # Sonar quality threshold for template update
@@ -55,17 +60,25 @@ data:
 model:
   backbone:
     rgb:
-      type: vit_rgb               # RGB backbone type
+      type: vit_rgb                     # RGB backbone type
       model_name: vit_base_patch16_224  # ViT model variant
-      pretrained: true            # Use ImageNet pretrained weights
-      output_dim: 768             # Output feature dimension
+      pretrained: true                  # Use ImageNet pretrained weights
+      pretrained_path: null             # Custom pretrained path
+      freeze_backbone: false            # Freeze backbone parameters
+      in_channels: 3                    # Input channels
+      embed_dim: 768                    # Embedding dimension
+      template_size: 128                # Template size
+      search_size: 256                  # Search size
     sonar:
-      type: vit_sonar             # Sonar backbone type
+      type: vit_sonar                   # Sonar backbone type
       model_name: vit_base_patch16_224  # ViT model variant
-      pretrained: true            # Use ImageNet pretrained weights
-      in_channels: 1              # Input channels (grayscale sonar)
-      img_size: 512               # Input image size
-      output_dim: 768             # Output feature dimension
+      pretrained: true                  # Use ImageNet pretrained weights
+      pretrained_path: null             # Custom pretrained path
+      freeze_backbone: false            # Freeze backbone parameters
+      in_channels: 1                    # Input channels (grayscale)
+      embed_dim: 768                    # Embedding dimension
+      template_size: 128                # Template size
+      search_size: 256                  # Search size
 
   fusion:
     type: conditional_g2_dcma     # Conditional G2-DCMA fusion module
@@ -82,16 +95,16 @@ model:
       hidden_dim: 256             # Hidden layer dimension
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0       # Confidence loss weight
-      loss_weight_l1: 5.0         # L1 regression loss weight (OSTrack standard)
-      loss_weight_iou: 2.0        # GIoU/CIoU loss weight (OSTrack standard)
+      loss_weight_l1: 5.0         # L1 regression loss weight
+      loss_weight_iou: 2.0        # GIoU loss weight
     sonar_box:
       type: BoxHead               # Box prediction head type
       in_channels: 768            # Input feature channels
       hidden_dim: 256             # Hidden layer dimension
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0       # Confidence loss weight
-      loss_weight_l1: 5.0         # L1 regression loss weight (OSTrack standard)
-      loss_weight_iou: 2.0        # GIoU/CIoU loss weight (OSTrack standard)
+      loss_weight_l1: 5.0         # L1 regression loss weight
+      loss_weight_iou: 2.0        # GIoU loss weight
 
 training:
   num_epochs: 100                 # Total training epochs [🚀A4000: 100]
@@ -112,7 +125,7 @@ training:
 
   grad_clip:
     enabled: true                 # Enable gradient clipping
-    max_norm: 0.1                 # Max gradient norm (SOTFormer standard)
+    max_norm: 0.1                 # Max gradient norm
     norm_type: 2                  # Gradient norm type
 
   loss_weights:

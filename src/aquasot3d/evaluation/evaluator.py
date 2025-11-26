@@ -277,42 +277,34 @@ class TrackingEvaluator:
         pad_x: int = 0,
         pad_y: int = 0,
         original_size: tuple = None,
-        output_format: str = 'xywh'
+        output_format: str = 'xywh',
+        # CRITICAL FIX (Audit 2025112603): Support target-centered cropping
+        crop_x1: int = None,
+        crop_y1: int = None,
+        resize_factor: float = None
     ) -> np.ndarray:
         """
         Convert normalized bbox [cx, cy, w, h] in [0,1] to PHYSICAL pixel coordinates.
 
-        CRITICAL FIX (Audit 2025111409 Finding 1 & 2):
-        - Properly reconstruct physical coordinates by undoing letterbox padding and per-axis scaling
-        - Convert output to [x, y, w, h] format to match ground truth (Finding 2)
+        CRITICAL FIX (Audit 2025112603): Now supports both letterbox and target-centered cropping.
+        - Letterbox mode: Uses scale_x, scale_y, pad_x, pad_y
+        - Target-centered crop mode: Uses crop_x1, crop_y1, resize_factor
 
         Args:
             bbox: Bounding box in normalized coordinates [cx, cy, w, h] in [0, 1]
-            image_size: Resized image size (e.g., 255, 256)
-            scale_x: X-axis scale factor (target_size / original_width), if None uses image_size
-            scale_y: Y-axis scale factor (target_size / original_height), if None uses image_size
-            pad_x: Left padding offset from letterbox (pixels)
-            pad_y: Top padding offset from letterbox (pixels)
+            image_size: Resized image size (e.g., 256)
+            scale_x: X-axis scale factor (letterbox mode)
+            scale_y: Y-axis scale factor (letterbox mode)
+            pad_x: Left padding offset (letterbox mode)
+            pad_y: Top padding offset (letterbox mode)
             original_size: Original image size (H, W) for final reconstruction
-            output_format: Output format - 'xywh' (top-left x, y, width, height) or
-                          'cxcywh' (center x, y, width, height). Default: 'xywh' to match
-                          ground truth format from dataset
+            output_format: Output format - 'xywh' or 'cxcywh'
+            crop_x1: Crop origin X (target-centered crop mode, can be negative)
+            crop_y1: Crop origin Y (target-centered crop mode, can be negative)
+            resize_factor: output_size / crop_sz (target-centered crop mode)
 
         Returns:
-            Bounding box in PHYSICAL pixel coordinates [x, y, w, h] (default) or [cx, cy, w, h]
-
-        Example:
-            >>> # Sonar 682×376 → letterbox to 256×256 (scale=0.375, pad_top=115, pad_left=0)
-            >>> # Then normalized to [0, 1] during collation
-            >>> # Prediction: [0.5, 0.6, 0.15, 0.12] in [0, 1]
-            >>> bbox_phys = _denormalize_bbox(
-            ...     np.array([0.5, 0.6, 0.15, 0.12]),
-            ...     image_size=256,
-            ...     scale_x=0.375, scale_y=0.375,
-            ...     pad_x=0, pad_y=115,
-            ...     original_size=(376, 682)
-            ... )
-            >>> # Result: physical coordinates in 682×376 space
+            Bounding box in PHYSICAL pixel coordinates [x, y, w, h] or [cx, cy, w, h]
         """
         if bbox is None:
             return None
@@ -322,50 +314,53 @@ class TrackingEvaluator:
             # Already in pixel coordinates
             return bbox
 
-        # Step 1: Denormalize from [0, 1] to resized image coordinates
-        # [cx, cy, w, h] in [0,1] → [cx, cy, w, h] in pixels (0 to image_size)
-        bbox_resized = bbox * image_size
+        # Step 1: Denormalize from [0, 1] to output image coordinates
+        bbox_output = bbox * image_size  # [cx, cy, w, h] in output pixels
 
-        # Step 2: Remove letterbox padding offsets
-        # Subtract padding to get coordinates in the scaled (but not padded) image
-        cx_scaled = bbox_resized[0] - pad_x
-        cy_scaled = bbox_resized[1] - pad_y
-        w_scaled = bbox_resized[2]  # Width/height not affected by padding offset
-        h_scaled = bbox_resized[3]
+        # CRITICAL FIX (Audit 2025112603): Detect target-centered crop mode
+        # If crop_x1/crop_y1/resize_factor are provided, use target-centered crop logic
+        if crop_x1 is not None and crop_y1 is not None and resize_factor is not None:
+            # Target-centered cropping mode
+            # bbox_output is in crop pixel coordinates (0 to output_size)
+            # Convert back to original image coordinates:
+            # x_orig = x_crop / resize_factor + crop_x1
+            cx_orig = bbox_output[0] / resize_factor + crop_x1
+            cy_orig = bbox_output[1] / resize_factor + crop_y1
+            w_orig = bbox_output[2] / resize_factor
+            h_orig = bbox_output[3] / resize_factor
+        else:
+            # Legacy letterbox mode
+            # Step 2: Remove letterbox padding offsets
+            cx_scaled = bbox_output[0] - pad_x
+            cy_scaled = bbox_output[1] - pad_y
+            w_scaled = bbox_output[2]
+            h_scaled = bbox_output[3]
 
-        # Step 3: Undo per-axis scaling to reconstruct original resolution
-        # If scale factors not provided, assume isotropic scaling
-        if scale_x is None:
-            scale_x = 1.0
-        if scale_y is None:
-            scale_y = 1.0
+            # Step 3: Undo per-axis scaling
+            if scale_x is None:
+                scale_x = 1.0
+            if scale_y is None:
+                scale_y = 1.0
 
-        # Inverse scaling: divide by scale factor
-        # (scaled * scale_factor = resized) → (scaled / scale_factor = original)
-        cx_orig = cx_scaled / scale_x
-        cy_orig = cy_scaled / scale_y
-        w_orig = w_scaled / scale_x
-        h_orig = h_scaled / scale_y
+            cx_orig = cx_scaled / scale_x
+            cy_orig = cy_scaled / scale_y
+            w_orig = w_scaled / scale_x
+            h_orig = h_scaled / scale_y
 
         # Step 4: Clip to original image boundaries (if provided)
         if original_size is not None:
             orig_h, orig_w = original_size
-            # Clamp center and dimensions
             cx_orig = np.clip(cx_orig, 0, orig_w)
             cy_orig = np.clip(cy_orig, 0, orig_h)
             w_orig = np.clip(w_orig, 0, orig_w)
             h_orig = np.clip(h_orig, 0, orig_h)
 
         # Step 5: Convert to requested output format
-        # CRITICAL FIX (Audit 2025111409 Finding 2):
-        # Convert to [x, y, w, h] format to match ground truth from dataset
         if output_format == 'xywh':
-            # Convert from [cx, cy, w, h] to [x, y, w, h]
             x = cx_orig - w_orig / 2
             y = cy_orig - h_orig / 2
             return np.array([x, y, w_orig, h_orig], dtype=np.float32)
         elif output_format == 'cxcywh':
-            # Keep center format
             return np.array([cx_orig, cy_orig, w_orig, h_orig], dtype=np.float32)
         else:
             raise ValueError(f"Unknown output_format: {output_format}. Expected 'xywh' or 'cxcywh'")
@@ -503,7 +498,11 @@ class TrackingEvaluator:
                     original_size=(
                         rgb_metadata_list[i].get('original_height'),
                         rgb_metadata_list[i].get('original_width')
-                    ) if i < len(rgb_metadata_list) else None
+                    ) if i < len(rgb_metadata_list) else None,
+                    # CRITICAL FIX (Audit 2025112603): Pass target-centered crop params
+                    crop_x1=rgb_metadata_list[i].get('crop_x1') if i < len(rgb_metadata_list) else None,
+                    crop_y1=rgb_metadata_list[i].get('crop_y1') if i < len(rgb_metadata_list) else None,
+                    resize_factor=rgb_metadata_list[i].get('resize_factor') if i < len(rgb_metadata_list) else None
                 )
                 for i in range(len(rgb_boxes_np))
             ]
@@ -527,7 +526,11 @@ class TrackingEvaluator:
                     original_size=(
                         sonar_metadata_list[i].get('original_height'),
                         sonar_metadata_list[i].get('original_width')
-                    ) if i < len(sonar_metadata_list) else None
+                    ) if i < len(sonar_metadata_list) else None,
+                    # CRITICAL FIX (Audit 2025112603): Pass target-centered crop params
+                    crop_x1=sonar_metadata_list[i].get('crop_x1') if i < len(sonar_metadata_list) else None,
+                    crop_y1=sonar_metadata_list[i].get('crop_y1') if i < len(sonar_metadata_list) else None,
+                    resize_factor=sonar_metadata_list[i].get('resize_factor') if i < len(sonar_metadata_list) else None
                 )
                 for i in range(len(sonar_boxes_np))
             ]
@@ -568,7 +571,11 @@ class TrackingEvaluator:
                         original_size=(
                             rgb_metadata_list[i].get('original_height'),
                             rgb_metadata_list[i].get('original_width')
-                        ) if i < len(rgb_metadata_list) else None
+                        ) if i < len(rgb_metadata_list) else None,
+                        # CRITICAL FIX (Audit 2025112603): Pass target-centered crop params
+                        crop_x1=rgb_metadata_list[i].get('crop_x1') if i < len(rgb_metadata_list) else None,
+                        crop_y1=rgb_metadata_list[i].get('crop_y1') if i < len(rgb_metadata_list) else None,
+                        resize_factor=rgb_metadata_list[i].get('resize_factor') if i < len(rgb_metadata_list) else None
                     )
                     for i in range(len(rgb_gt))
                 ]
@@ -596,7 +603,11 @@ class TrackingEvaluator:
                         original_size=(
                             sonar_metadata_list[i].get('original_height'),
                             sonar_metadata_list[i].get('original_width')
-                        ) if i < len(sonar_metadata_list) else None
+                        ) if i < len(sonar_metadata_list) else None,
+                        # CRITICAL FIX (Audit 2025112603): Pass target-centered crop params
+                        crop_x1=sonar_metadata_list[i].get('crop_x1') if i < len(sonar_metadata_list) else None,
+                        crop_y1=sonar_metadata_list[i].get('crop_y1') if i < len(sonar_metadata_list) else None,
+                        resize_factor=sonar_metadata_list[i].get('resize_factor') if i < len(sonar_metadata_list) else None
                     )
                     for i in range(len(sonar_gt))
                 ]

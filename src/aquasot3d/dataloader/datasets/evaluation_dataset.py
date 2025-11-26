@@ -6,10 +6,16 @@ sequences frame-by-frame following standard tracking evaluation protocols
 (e.g., RGBS50, VOT). Unlike training datasets that use random pair sampling,
 evaluation datasets maintain temporal order for reproducible benchmarking.
 
+CRITICAL FIX (Audit 2025112602): Updated for target-centered search cropping
+consistency with training. Both training and evaluation now use OSTrack-style
+target-centered cropping with search_area_factor.
+
 Author: AquaSOT-3D Team
 Date: 2025-01-07
+Updated: 2025-11-26 (Audit 2025112602 - Target-centered search cropping)
 """
 
+import math
 import torch
 import numpy as np
 import cv2
@@ -39,8 +45,8 @@ class EvaluationSequenceDataset(Dataset):
 
     Args:
         base_dataset: RGBSonarDataset instance
-        template_size: Template image size (default: 128)
-        search_size: Search image size (default: 256)
+        template_size: Template image size (default: 128, OSTrack-256 standard)
+        search_size: Search image size (default: 256, OSTrack-256 standard)
         template_frame: Template frame mode:
             - 'first': Use first valid frame as template (default, RGBS50 protocol)
             - 'init': Alias for 'first'
@@ -72,14 +78,18 @@ class EvaluationSequenceDataset(Dataset):
     def __init__(
         self,
         base_dataset: RGBSonarDataset,
-        template_size: int = 128,
-        search_size: int = 256,
+        template_size: int = 128,  # OSTrack-256 standard
+        search_size: int = 256,    # OSTrack-256 standard
         template_frame: str = 'first',
         enable_update: bool = False,
         update_interval: int = 10,
         normalization_config: Optional[Dict] = None,
         template_visibility_policy: str = 'any',
-        context_factor: float = 2.0
+        context_factor: float = 2.0,
+        # CRITICAL FIX (Audit 2025112602): Target-centered search cropping
+        search_area_factor: float = 4.0,      # Search = sqrt(w*h) * 4.0
+        template_area_factor: float = 2.0,    # Template = sqrt(w*h) * 2.0
+        use_attention_mask: bool = True,
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
@@ -87,6 +97,11 @@ class EvaluationSequenceDataset(Dataset):
         self.enable_update = enable_update
         self.update_interval = update_interval
         self.context_factor = context_factor
+
+        # CRITICAL FIX (Audit 2025112602): Target-centered cropping parameters
+        self.search_area_factor = search_area_factor
+        self.template_area_factor = template_area_factor
+        self.use_attention_mask = use_attention_mask
 
         # CRITICAL FIX (Audit 2025112402 Finding 3):
         # Load normalization parameters from config instead of hardcoding
@@ -258,10 +273,11 @@ class EvaluationSequenceDataset(Dataset):
         is_sonar: bool = False
     ) -> Tuple[torch.Tensor, Dict]:
         """
-        Crop template region around target bbox using letterbox (resize+pad).
+        Crop template region around target bbox using OSTrack methodology.
 
-        This follows mainstream SOT methods (OSTrack/TransT) where template
-        is a target-centered crop with context padding.
+        CRITICAL FIX (Audit 2025112602): Consistent with training dataset.
+        Uses sqrt(w*h) * template_area_factor instead of max(w,h) * context_factor.
+        Uses boundary padding instead of clamping.
 
         Args:
             image: Input image [H, W, C] or [H, W] numpy array
@@ -277,6 +293,9 @@ class EvaluationSequenceDataset(Dataset):
             num_channels = 1 if is_sonar else 3
             dummy_metadata = {
                 'crop_x1': 0, 'crop_y1': 0,
+                'crop_sz': crop_size, 'resize_factor': 1.0,
+                'pad_left': 0, 'pad_top': 0,
+                # Legacy keys for backward compatibility
                 'crop_width': crop_size, 'crop_height': crop_size,
                 'letterbox_scale': 1.0,
                 'letterbox_pad_left': 0, 'letterbox_pad_top': 0,
@@ -302,54 +321,100 @@ class EvaluationSequenceDataset(Dataset):
             else:
                 image_np = image_np.astype(np.uint8)
 
+        H, W = image_np.shape[:2]
         x, y, w, h = bbox
 
-        # Compute crop region (centered on bbox with context padding)
-        cx, cy = x + w / 2, y + h / 2
-        crop_sz = max(w, h) * self.context_factor
+        # Handle degenerate bbox
+        if w <= 0 or h <= 0:
+            w = max(w, 10)
+            h = max(h, 10)
 
-        # Clamp to image boundaries
-        H, W = image_np.shape[:2]
-        x1 = max(0, int(cx - crop_sz / 2))
-        y1 = max(0, int(cy - crop_sz / 2))
-        x2 = min(W, int(cx + crop_sz / 2))
-        y2 = min(H, int(cy + crop_sz / 2))
+        # Compute bbox center
+        cx = x + w / 2
+        cy = y + h / 2
 
-        # Crop
-        crop = image_np[y1:y2, x1:x2]
+        # CRITICAL FIX (Audit 2025112602):
+        # Use OSTrack formula: sqrt(w*h) * template_area_factor
+        # NOT: max(w,h) * context_factor (inconsistent with search)
+        target_sz = math.sqrt(w * h)
+        crop_sz = int(math.ceil(target_sz * self.template_area_factor))
+        crop_sz = max(crop_sz, 1)
 
-        # Store crop metadata
+        # Compute crop boundaries (may extend beyond image)
+        x1 = int(round(cx - crop_sz / 2))
+        y1 = int(round(cy - crop_sz / 2))
+        x2 = x1 + crop_sz
+        y2 = y1 + crop_sz
+
+        # CRITICAL FIX: Compute padding amounts for boundary handling (NOT clamping!)
+        x1_pad = max(0, -x1)
+        x2_pad = max(0, x2 - W)
+        y1_pad = max(0, -y1)
+        y2_pad = max(0, y2 - H)
+
+        # Clamp to valid image region
+        x1_valid = max(0, x1)
+        x2_valid = min(W, x2)
+        y1_valid = max(0, y1)
+        y2_valid = min(H, y2)
+
+        # Extract valid region and pad
+        if x2_valid <= x1_valid or y2_valid <= y1_valid:
+            # Completely out of bounds
+            if image_np.ndim == 2:
+                crop_padded = np.full((crop_sz, crop_sz), 127, dtype=np.uint8)
+            else:
+                avg_color = image_np.mean(axis=(0, 1)).astype(np.uint8)
+                crop_padded = np.full((crop_sz, crop_sz, image_np.shape[2]), avg_color, dtype=np.uint8)
+        else:
+            crop = image_np[y1_valid:y2_valid, x1_valid:x2_valid]
+
+            # Compute padding color (image mean)
+            if image_np.ndim == 2:
+                pad_value = int(image_np.mean())
+            else:
+                pad_value = tuple(int(c) for c in image_np.mean(axis=(0, 1)))
+
+            # Pad to full crop size
+            crop_padded = cv2.copyMakeBorder(
+                crop,
+                y1_pad, y2_pad, x1_pad, x2_pad,
+                cv2.BORDER_CONSTANT,
+                value=pad_value
+            )
+
+        # Resize to crop_size
+        resize_factor = crop_size / crop_sz
+        crop_resized = cv2.resize(
+            crop_padded,
+            (crop_size, crop_size),
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        # Store metadata (consistent with training)
         crop_metadata = {
             'crop_x1': x1,
             'crop_y1': y1,
-            'crop_width': x2 - x1,
-            'crop_height': y2 - y1,
+            'crop_sz': crop_sz,
+            'resize_factor': resize_factor,
+            'pad_left': x1_pad,
+            'pad_top': y1_pad,
+            # Legacy keys for backward compatibility
+            'crop_width': crop_sz,
+            'crop_height': crop_sz,
+            'letterbox_scale': resize_factor,
+            'letterbox_pad_left': int(x1_pad * resize_factor),
+            'letterbox_pad_top': int(y1_pad * resize_factor),
             'original_height': H,
             'original_width': W,
         }
 
-        # Handle empty crops (degenerate bbox)
-        if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
-            if is_sonar or image_np.ndim == 2:
-                crop = np.zeros((crop_size, crop_size), dtype=np.uint8)
-            else:
-                crop = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
-            letterbox_meta = {'scale': 1.0, 'pad_left': 0, 'pad_top': 0}
-        else:
-            # Apply letterbox preprocessing
-            crop, letterbox_meta = self._letterbox(crop, crop_size)
-
-        # Merge letterbox metadata
-        crop_metadata['letterbox_scale'] = letterbox_meta['scale']
-        crop_metadata['letterbox_pad_left'] = letterbox_meta['pad_left']
-        crop_metadata['letterbox_pad_top'] = letterbox_meta['pad_top']
-
         # Convert to tensor and normalize
-        if crop.ndim == 2:
-            crop_tensor = torch.from_numpy(crop).unsqueeze(0).float() / 255.0
+        if crop_resized.ndim == 2:
+            crop_tensor = torch.from_numpy(crop_resized).unsqueeze(0).float() / 255.0
             crop_tensor = (crop_tensor - self.sonar_mean) / self.sonar_std
         else:
-            crop_tensor = torch.from_numpy(crop).permute(2, 0, 1).float() / 255.0
+            crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float() / 255.0
             crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
 
         return crop_tensor, crop_metadata
@@ -410,6 +475,175 @@ class EvaluationSequenceDataset(Dataset):
 
         return img_letterboxed, metadata
 
+    def _crop_search_region(
+        self,
+        image: np.ndarray,
+        bbox: np.ndarray,
+        output_size: int,
+        area_factor: float,
+        is_sonar: bool = False
+    ) -> Tuple[torch.Tensor, np.ndarray, Dict]:
+        """
+        Crop search region centered on target bbox following OSTrack methodology.
+
+        CRITICAL FIX (Audit 2025112602): Consistent with training dataset.
+        For evaluation, we use GT bbox as crop center (offline evaluation mode).
+        For online tracking, use OnlineTracker which uses predicted bbox.
+
+        Args:
+            image: Input image [H, W, C] or [H, W] numpy array
+            bbox: Target bbox [x, y, w, h] in XYWH pixel format
+            output_size: Output crop size (e.g., 256)
+            area_factor: Crop size multiplier (e.g., 4.0 for search)
+            is_sonar: Whether this is a sonar image
+
+        Returns:
+            Tuple of (crop_tensor, attention_mask, metadata)
+        """
+        if image is None:
+            num_channels = 1 if is_sonar else 3
+            crop_tensor = torch.zeros(num_channels, output_size, output_size)
+            # CRITICAL FIX (Audit 2025112603): None image should have all-ZERO mask
+            # (all invalid), not all-ones. This prevents model from attending to fake pixels.
+            att_mask = np.zeros((output_size, output_size), dtype=np.float32)
+            metadata = {
+                'crop_center': (0, 0), 'crop_sz': output_size,
+                'resize_factor': 1.0, 'crop_x1': 0, 'crop_y1': 0,
+                'pad_left': 0, 'pad_top': 0,
+                'original_size': (output_size, output_size),
+                'output_size': output_size
+            }
+            return crop_tensor, att_mask, metadata
+
+        # Convert tensor to numpy if needed
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3 and image.shape[0] in [1, 3]:
+                image = image.permute(1, 2, 0).cpu().numpy()
+            elif image.dim() == 2:
+                image = image.cpu().numpy()
+            if image.max() <= 1.0:
+                image = (image * 255).astype(np.uint8)
+
+        H, W = image.shape[:2]
+        x, y, w, h = bbox
+
+        # Handle degenerate bbox
+        if w <= 0 or h <= 0:
+            w = max(w, 10)
+            h = max(h, 10)
+
+        # Compute bbox center
+        cx = x + w / 2
+        cy = y + h / 2
+
+        # Compute crop size: sqrt(w*h) * area_factor
+        target_sz = math.sqrt(w * h)
+        crop_sz = int(math.ceil(target_sz * area_factor))
+        crop_sz = max(crop_sz, 1)
+
+        # Compute crop boundaries
+        x1 = int(round(cx - crop_sz / 2))
+        y1 = int(round(cy - crop_sz / 2))
+        x2 = x1 + crop_sz
+        y2 = y1 + crop_sz
+
+        # Compute padding amounts
+        x1_pad = max(0, -x1)
+        x2_pad = max(0, x2 - W)
+        y1_pad = max(0, -y1)
+        y2_pad = max(0, y2 - H)
+
+        # Clamp to valid region
+        x1_valid = max(0, x1)
+        x2_valid = min(W, x2)
+        y1_valid = max(0, y1)
+        y2_valid = min(H, y2)
+
+        # Extract valid region
+        if x2_valid <= x1_valid or y2_valid <= y1_valid:
+            if image.ndim == 2:
+                crop_padded = np.full((crop_sz, crop_sz), 127, dtype=np.uint8)
+            else:
+                avg_color = image.mean(axis=(0, 1)).astype(np.uint8)
+                crop_padded = np.full((crop_sz, crop_sz, image.shape[2]), avg_color, dtype=np.uint8)
+        else:
+            crop = image[y1_valid:y2_valid, x1_valid:x2_valid]
+
+            if image.ndim == 2:
+                pad_value = int(image.mean())
+            else:
+                pad_value = tuple(int(c) for c in image.mean(axis=(0, 1)))
+
+            crop_padded = cv2.copyMakeBorder(
+                crop, y1_pad, y2_pad, x1_pad, x2_pad,
+                cv2.BORDER_CONSTANT, value=pad_value
+            )
+
+        # Create attention mask
+        att_mask_full = np.ones((crop_sz, crop_sz), dtype=np.float32)
+        if y1_pad > 0:
+            att_mask_full[:y1_pad, :] = 0
+        if y2_pad > 0:
+            att_mask_full[-y2_pad:, :] = 0
+        if x1_pad > 0:
+            att_mask_full[:, :x1_pad] = 0
+        if x2_pad > 0:
+            att_mask_full[:, -x2_pad:] = 0
+
+        # Resize
+        resize_factor = output_size / crop_sz
+        crop_resized = cv2.resize(
+            crop_padded, (output_size, output_size),
+            interpolation=cv2.INTER_LINEAR
+        )
+        att_mask_resized = cv2.resize(
+            att_mask_full, (output_size, output_size),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        # Convert to tensor and normalize
+        if crop_resized.ndim == 2:
+            crop_tensor = torch.from_numpy(crop_resized).unsqueeze(0).float() / 255.0
+            crop_tensor = (crop_tensor - self.sonar_mean) / self.sonar_std
+        else:
+            crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float() / 255.0
+            crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
+
+        metadata = {
+            'crop_center': (cx, cy),
+            'crop_sz': crop_sz,
+            'resize_factor': resize_factor,
+            'crop_x1': x1,
+            'crop_y1': y1,
+            'pad_left': x1_pad,
+            'pad_top': y1_pad,
+            'original_size': (H, W),
+            'output_size': output_size,
+        }
+
+        return crop_tensor, att_mask_resized, metadata
+
+    def _transform_bbox_to_crop(
+        self,
+        bbox_xywh: np.ndarray,
+        crop_metadata: Dict
+    ) -> np.ndarray:
+        """Transform bbox from original image to crop coordinates."""
+        x, y, w, h = bbox_xywh
+        crop_x1 = crop_metadata['crop_x1']
+        crop_y1 = crop_metadata['crop_y1']
+        resize_factor = crop_metadata['resize_factor']
+
+        x_rel = x - crop_x1
+        y_rel = y - crop_y1
+
+        x_out = x_rel * resize_factor
+        y_out = y_rel * resize_factor
+        w_out = w * resize_factor
+        h_out = h * resize_factor
+
+        return np.array([x_out, y_out, w_out, h_out], dtype=np.float32)
+
     def __len__(self) -> int:
         """Return total number of frames in sequence."""
         return self.num_frames
@@ -454,40 +688,29 @@ class EvaluationSequenceDataset(Dataset):
         # Get current (search) frame
         search_data = self.base_dataset._get_frame_data(index)
 
-        # Prepare search images and get transformation metadata
-        rgb_search, rgb_search_metadata = self._prepare_image(
+        # CRITICAL FIX (Audit 2025112602): Use target-centered cropping for search
+        # Consistent with training dataset - crop centered on GT bbox
+        rgb_search, rgb_att_mask, rgb_search_metadata = self._crop_search_region(
             search_data['rgb_img'],
-            self.search_size,
+            search_data['rgb_bbox'],
+            output_size=self.search_size,
+            area_factor=self.search_area_factor,
             is_sonar=False
         )
-        sonar_search, sonar_search_metadata = self._prepare_image(
+        sonar_search, sonar_att_mask, sonar_search_metadata = self._crop_search_region(
             search_data['sonar_img'],
-            self.search_size,
+            search_data['sonar_bbox'],
+            output_size=self.search_size,
+            area_factor=self.search_area_factor,
             is_sonar=True
         )
 
-        # CRITICAL FIX (Audit 2025112401 Finding 9):
-        # Apply letterbox transform to GT bboxes to get pixel-space coordinates
-        # in letterboxed image space (consistent with training)
-        def apply_letterbox_to_bbox(bbox_xywh, metadata):
-            """Apply letterbox transform to bbox coordinates."""
-            x, y, w, h = bbox_xywh
-            scale = metadata['scale']
-            pad_left = metadata['pad_left']
-            pad_top = metadata['pad_top']
-
-            x_new = x * scale + pad_left
-            y_new = y * scale + pad_top
-            w_new = w * scale
-            h_new = h * scale
-
-            return np.array([x_new, y_new, w_new, h_new], dtype=np.float32)
-
-        search_bbox_rgb_pixels = apply_letterbox_to_bbox(
+        # CRITICAL FIX (Audit 2025112602): Transform GT bboxes to crop coordinates
+        search_bbox_rgb_pixels = self._transform_bbox_to_crop(
             search_data['rgb_bbox'],
             rgb_search_metadata
         )
-        search_bbox_sonar_pixels = apply_letterbox_to_bbox(
+        search_bbox_sonar_pixels = self._transform_bbox_to_crop(
             search_data['sonar_bbox'],
             sonar_search_metadata
         )
@@ -510,10 +733,14 @@ class EvaluationSequenceDataset(Dataset):
             'search_bbox_rgb': search_data['rgb_bbox'],
             'search_bbox_sonar': search_data['sonar_bbox'],
 
-            # CRITICAL FIX (Audit 2025112401 Finding 9):
-            # Pixel-space boxes in letterboxed coordinates for evaluation
+            # CRITICAL FIX (Audit 2025112602):
+            # Pixel-space boxes in crop coordinates for evaluation
             'search_bbox_rgb_pixels': search_bbox_rgb_pixels,
             'search_bbox_sonar_pixels': search_bbox_sonar_pixels,
+
+            # CRITICAL FIX (Audit 2025112602): Attention masks for padded regions
+            'rgb_att_mask': rgb_att_mask,
+            'sonar_att_mask': sonar_att_mask,
 
             # Aliases for trainer/evaluator compatibility
             'rgb_boxes': search_data['rgb_bbox'],

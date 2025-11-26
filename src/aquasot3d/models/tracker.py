@@ -50,15 +50,15 @@ class AquaSOT3DTracker(BaseModule):
     - Uncertainty-aware fusion for robust multi-modal tracking
 
     Args:
-        rgb_backbone_config: Configuration for RGB backbone (must include template_size=256, search_size=512)
-        sonar_backbone_config: Configuration for Sonar backbone (must include template_size=256, search_size=512)
+        rgb_backbone_config: Configuration for RGB backbone (template_size=128, search_size=256 for OSTrack-256)
+        sonar_backbone_config: Configuration for Sonar backbone (template_size=128, search_size=256 for OSTrack-256)
         fusion_config: Configuration for G2-DCMA fusion module
         box_head_config: Configuration for 2D box prediction heads
 
     Example:
         >>> config = {
-        ...     'rgb_backbone': {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512},
-        ...     'sonar_backbone': {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 256, 'search_size': 512},
+        ...     'rgb_backbone': {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 128, 'search_size': 256},
+        ...     'sonar_backbone': {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 128, 'search_size': 256},
         ...     'fusion': {'type': 'g2_dcma', 'rgb_dim': 768, 'sonar_dim': 768},
         ... }
         >>> tracker = build_tracker('AquaSOT3DTracker', **config)
@@ -615,10 +615,10 @@ class AquaSOT3DTracker(BaseModule):
         These flags distinguish "no object" from "object at [0,0,0,0]".
 
         Args:
-            rgb_template: RGB template frame, shape (B, 3, 256, 256)
-            rgb_search: RGB search frame, shape (B, 3, 512, 512)
-            sonar_template: Sonar template frame, shape (B, 1, 256, 256)
-            sonar_search: Sonar search frame, shape (B, 1, 512, 512)
+            rgb_template: RGB template frame, shape (B, 3, 128, 128) OSTrack-256
+            rgb_search: RGB search frame, shape (B, 3, 256, 256) OSTrack-256
+            sonar_template: Sonar template frame, shape (B, 1, 128, 128) OSTrack-256
+            sonar_search: Sonar search frame, shape (B, 1, 256, 256) OSTrack-256
             gt_boxes: Optional ground truth boxes for loss computation
                 Expected format: {'rgb': (B, 4), 'sonar': (B, 4)}
             is_rgb_valid: Optional [B] boolean tensor, True if RGB has valid target
