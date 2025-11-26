@@ -99,6 +99,8 @@ model:
       output_format: cxcywh   # Box format: center-x, center-y, width, height
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0   # Confidence loss weight
+      loss_weight_l1: 5.0     # L1 regression loss weight (OSTrack standard)
+      loss_weight_iou: 2.0    # GIoU/CIoU loss weight (OSTrack standard)
 
     sonar_box:
       type: BoxHead           # Box prediction head type
@@ -108,6 +110,8 @@ model:
       output_format: cxcywh   # Box format: center-x, center-y, width, height
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0   # Confidence loss weight
+      loss_weight_l1: 5.0     # L1 regression loss weight (OSTrack standard)
+      loss_weight_iou: 2.0    # GIoU/CIoU loss weight (OSTrack standard)
 
 training:
   init_backbones:

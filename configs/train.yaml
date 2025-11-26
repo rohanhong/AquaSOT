@@ -82,12 +82,16 @@ model:
       hidden_dim: 256             # Hidden layer dimension
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0       # Confidence loss weight
+      loss_weight_l1: 5.0         # L1 regression loss weight (OSTrack standard)
+      loss_weight_iou: 2.0        # GIoU/CIoU loss weight (OSTrack standard)
     sonar_box:
       type: BoxHead               # Box prediction head type
       in_channels: 768            # Input feature channels
       hidden_dim: 256             # Hidden layer dimension
       use_confidence_head: true   # Objectness confidence prediction
       loss_weight_conf: 1.0       # Confidence loss weight
+      loss_weight_l1: 5.0         # L1 regression loss weight (OSTrack standard)
+      loss_weight_iou: 2.0        # GIoU/CIoU loss weight (OSTrack standard)
 
 training:
   num_epochs: 100                 # Total training epochs [🚀A4000: 100]

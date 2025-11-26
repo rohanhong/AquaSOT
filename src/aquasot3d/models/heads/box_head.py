@@ -477,8 +477,8 @@ class BoxHead(BaseHead):
         use_quality_focal: bool = True,
         iou_loss_type: Literal['giou', 'ciou'] = 'giou',
         loss_weight_cls: float = 1.0,
-        loss_weight_l1: float = 2.0,  # Following mainstream trackers (MixFormer, OSTrack)
-        loss_weight_iou: float = 5.0,  # Following mainstream trackers (MixFormer, OSTrack)
+        loss_weight_l1: float = 5.0,  # OSTrack/MixFormer standard: dense gradient for fast convergence
+        loss_weight_iou: float = 2.0,  # OSTrack/MixFormer standard: refinement signal for bbox quality
         use_confidence_head: bool = True,
         loss_weight_conf: float = 1.0,
         **kwargs

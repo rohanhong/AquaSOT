@@ -1,10 +1,14 @@
 """
 Unit Tests for 2D Box Prediction Heads
 
-Tests for BoxHead, RGBBoxHead, SonarBoxHead, FusionBoxHead, and related utilities.
+Tests for BoxHead, RGBBoxHead, SonarBoxHead and related utilities.
+
+ARCHITECTURE UPDATE (Audit 2025112313): FusionBoxHead removed (dual-view fusion architecture).
+CRITICAL FIX (Audit 2025112601): Loss weights corrected to match OSTrack (L1=5.0, GIoU=2.0).
 
 Author: AquaSOT-3D Team
 Date: 2025-11-10
+Updated: 2025-11-26
 """
 
 import pytest
@@ -16,7 +20,6 @@ from aquasot3d.models.heads import (
     BoxHead,
     RGBBoxHead,
     SonarBoxHead,
-    FusionBoxHead,
     build_box_head,
     GIoULoss,
     CIoULoss,
@@ -66,8 +69,11 @@ class TestBoxUtilities:
 
     def test_box_conversion_inverse(self):
         """Test that converting back and forth preserves boxes."""
-        original = torch.rand(10, 4) * 100
-        original[:, 2:] = original[:, 2:] + 10  # Ensure positive width/height
+        # Generate valid xyxy boxes where x2 > x1 and y2 > y1
+        x1y1 = torch.rand(10, 2) * 50  # x1, y1 in [0, 50]
+        wh = torch.rand(10, 2) * 50 + 10  # w, h in [10, 60]
+        x2y2 = x1y1 + wh  # x2 = x1 + w, y2 = y1 + h
+        original = torch.cat([x1y1, x2y2], dim=1)  # [x1, y1, x2, y2]
 
         converted = box_cxcywh_to_xyxy(box_xyxy_to_cxcywh(original))
         assert torch.allclose(converted, original, atol=1e-4)
@@ -357,7 +363,8 @@ class TestBoxHead:
         )
 
         assert not head.use_quality_focal
-        assert isinstance(head.cls_loss_fn, nn.BCELoss)
+        # CRITICAL FIX: Uses BCEWithLogitsLoss for AMP safety
+        assert isinstance(head.cls_loss_fn, nn.BCEWithLogitsLoss)
 
     def test_box_head_loss_weights(self):
         """Test BoxHead with custom loss weights."""
@@ -372,6 +379,16 @@ class TestBoxHead:
         assert head.loss_weight_cls == 2.0
         assert head.loss_weight_l1 == 10.0
         assert head.loss_weight_iou == 5.0
+
+    def test_box_head_default_loss_weights_match_ostrack(self):
+        """Test BoxHead default loss weights match OSTrack/MixFormer standard.
+
+        CRITICAL FIX (Audit 2025112601): Verify L1=5.0, GIoU=2.0.
+        """
+        head = BoxHead(in_channels=768, hidden_dim=256)
+
+        assert head.loss_weight_l1 == 5.0, f"L1 weight should be 5.0, got {head.loss_weight_l1}"
+        assert head.loss_weight_iou == 2.0, f"GIoU weight should be 2.0, got {head.loss_weight_iou}"
 
     def test_box_head_gradient_flow(self, box_head):
         """Test that gradients flow properly through BoxHead."""
@@ -390,7 +407,10 @@ class TestBoxHead:
 
 
 class TestSpecializedBoxHeads:
-    """Tests for specialized box head variants."""
+    """Tests for specialized box head variants.
+
+    ARCHITECTURE UPDATE (Audit 2025112313): FusionBoxHead removed.
+    """
 
     def test_rgb_box_head(self):
         """Test RGBBoxHead initialization and forward."""
@@ -418,22 +438,12 @@ class TestSpecializedBoxHeads:
         assert 'pred_boxes' in outputs
         assert 'pred_scores' in outputs
 
-    def test_fusion_box_head(self):
-        """Test FusionBoxHead initialization and forward."""
-        head = FusionBoxHead(in_channels=512, hidden_dim=256)
-
-        assert isinstance(head, FusionBoxHead)
-        assert isinstance(head, BoxHead)
-
-        features = torch.randn(4, 512)
-        outputs = head(features)
-
-        assert 'pred_boxes' in outputs
-        assert 'pred_scores' in outputs
-
 
 class TestBoxHeadFactory:
-    """Tests for build_box_head factory function."""
+    """Tests for build_box_head factory function.
+
+    ARCHITECTURE UPDATE (Audit 2025112313): FusionBoxHead removed.
+    """
 
     def test_build_rgb_box_head(self):
         """Test building RGB box head."""
@@ -445,20 +455,18 @@ class TestBoxHeadFactory:
         head = build_box_head('sonar', in_channels=384, hidden_dim=256)
         assert isinstance(head, SonarBoxHead)
 
-    def test_build_fusion_box_head(self):
-        """Test building Fusion box head."""
-        head = build_box_head('fusion', in_channels=512, hidden_dim=256)
-        assert isinstance(head, FusionBoxHead)
-
     def test_build_base_box_head(self):
         """Test building base box head."""
         head = build_box_head('base', in_channels=768, hidden_dim=256)
         assert isinstance(head, BoxHead)
-        assert not isinstance(head, (RGBBoxHead, SonarBoxHead, FusionBoxHead))
+        assert not isinstance(head, (RGBBoxHead, SonarBoxHead))
 
 
 class TestBoxHeadIntegration:
-    """Integration tests for BoxHead with other modules."""
+    """Integration tests for BoxHead with other modules.
+
+    ARCHITECTURE UPDATE (Audit 2025112313): FusionBoxHead removed.
+    """
 
     def test_box_head_with_vit_features(self):
         """Test BoxHead with ViT-like features."""
@@ -488,22 +496,19 @@ class TestBoxHeadIntegration:
         assert outputs['pred_scores'].shape == (batch_size,)
 
     def test_multi_head_setup(self):
-        """Test using multiple box heads together."""
+        """Test using multiple box heads together (RGB + Sonar)."""
         rgb_head = build_box_head('rgb', in_channels=768)
         sonar_head = build_box_head('sonar', in_channels=384)
-        fusion_head = build_box_head('fusion', in_channels=512)
 
         # Simulate features from different modalities
         rgb_feat = torch.randn(4, 768)
         sonar_feat = torch.randn(4, 384)
-        fusion_feat = torch.randn(4, 512)
 
         rgb_out = rgb_head(rgb_feat)
         sonar_out = sonar_head(sonar_feat)
-        fusion_out = fusion_head(fusion_feat)
 
-        assert all('pred_boxes' in out for out in [rgb_out, sonar_out, fusion_out])
-        assert all('pred_scores' in out for out in [rgb_out, sonar_out, fusion_out])
+        assert all('pred_boxes' in out for out in [rgb_out, sonar_out])
+        assert all('pred_scores' in out for out in [rgb_out, sonar_out])
 
 
 if __name__ == '__main__':
