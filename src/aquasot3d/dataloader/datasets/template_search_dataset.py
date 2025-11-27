@@ -957,14 +957,21 @@ class TemplateSearchDataset(Dataset):
         crop_sz = max(crop_sz, 1)  # Ensure positive
 
         # Apply jitter for training (center and scale)
+        # CRITICAL FIX (Audit 2025112703): Align with OSTrack jitter implementation
+        # OSTrack uses: offset = sqrt(w*h) * center_jitter_factor (not w/h separately)
+        # This allows target to appear anywhere in search region, not just near center
+        # Reference: https://github.com/botaoye/OSTrack (CENTER_JITTER=3, SCALE_JITTER=0.25)
         if center_jitter_factor > 0:
-            # Jitter center within bbox dimensions
-            cx += (random.random() - 0.5) * 2 * center_jitter_factor * w
-            cy += (random.random() - 0.5) * 2 * center_jitter_factor * h
+            # Jitter center proportional to target size (OSTrack style)
+            # max_offset = target_sz * center_jitter_factor
+            max_offset = target_sz * center_jitter_factor
+            cx += (random.random() - 0.5) * 2 * max_offset
+            cy += (random.random() - 0.5) * 2 * max_offset
 
         if scale_jitter_factor > 0:
-            # Jitter scale (multiplicative)
-            scale_jitter = 1.0 + (random.random() - 0.5) * 2 * scale_jitter_factor
+            # Jitter scale using exponential (OSTrack style: exp(randn * factor))
+            # This ensures scale is always positive and symmetric in log-space
+            scale_jitter = math.exp((random.random() - 0.5) * 2 * scale_jitter_factor)
             crop_sz = int(crop_sz * scale_jitter)
             crop_sz = max(crop_sz, 1)
 

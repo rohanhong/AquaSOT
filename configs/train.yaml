@@ -23,8 +23,8 @@ data:
   template_search_gap_range: [1, 200]  # Gap range for template-search pairs
   search_area_factor: 4.0         # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0       # Template region = sqrt(w*h) * factor
-  center_jitter_factor: 0.25      # Training center jitter
-  scale_jitter_factor: 0.25       # Training scale jitter
+  center_jitter_factor: 3.0       # Training center jitter (OSTrack default: 3.0)
+  scale_jitter_factor: 0.25       # Training scale jitter (OSTrack default: 0.25)
   use_attention_mask: true        # Enable attention mask for padded regions
   template_update_policy: mixformer    # Template update: mixformer/first/recent
   quality_threshold_rgb: 0.7      # RGB quality threshold for template update

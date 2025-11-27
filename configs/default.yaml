@@ -33,8 +33,8 @@ data:
   template_search_gap_range: [1, 200]  # Gap range for template-search pairs
   search_area_factor: 4.0     # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0   # Template region = sqrt(w*h) * factor
-  center_jitter_factor: 0.0   # Center jitter for training
-  scale_jitter_factor: 0.0    # Scale jitter for training
+  center_jitter_factor: 0.0   # Center jitter for training (OSTrack: 3.0, 0=disabled)
+  scale_jitter_factor: 0.0    # Scale jitter for training (OSTrack: 0.25, 0=disabled)
   use_attention_mask: true    # Enable attention mask for padded regions
 
   augmentation:
