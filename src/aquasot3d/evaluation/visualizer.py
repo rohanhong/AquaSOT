@@ -535,9 +535,19 @@ class TrackingVisualizer:
         if len(bbox) != 4:
             return frame
 
-        # Auto-detect normalized coordinates (values in [0, 1] range)
         bbox_copy = bbox.copy() if isinstance(bbox, np.ndarray) else np.array(bbox)
-        is_normalized = auto_detect_normalized and np.all((bbox_copy >= 0) & (bbox_copy <= 1.5))
+
+        # CRITICAL FIX: Skip occlusion marker [0, 0, 0, 0]
+        if np.all(bbox_copy == 0):
+            return frame
+
+        # Auto-detect normalized coordinates (values in [0, 1] range)
+        # Exclude all-zero case (already handled above) and require at least one non-zero value
+        is_normalized = (
+            auto_detect_normalized and
+            np.all((bbox_copy >= 0) & (bbox_copy <= 1.5)) and
+            np.any(bbox_copy > 0)  # Must have at least one positive value
+        )
 
         if is_normalized:
             # Bbox appears to be normalized - denormalize to pixel coordinates

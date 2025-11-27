@@ -29,7 +29,7 @@ import cv2
 from aquasot3d.utils.config import load_config, save_config, setup_config_logging
 from aquasot3d.dataloader import create_dataloader
 from aquasot3d.models.tracker import AquaSOT3DTracker
-from aquasot3d.evaluation import TrackingEvaluator, TrackingVisualizer
+from aquasot3d.evaluation import TrackingEvaluator, TrackingVisualizer, OnlineTrackingEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ def main():
     )
 
     if use_multi_sequence:
-        # Multi-sequence evaluation mode
+        # Multi-sequence evaluation mode with ONLINE TRACKING PROTOCOL
         data_root = cfg.data.get('data_root', 'data')
         test_sequences = cfg.data.test_sequences
 
@@ -233,68 +233,38 @@ def main():
         if isinstance(test_sequences, str):
             test_sequences = [test_sequences]
 
-        logger.info(f"Multi-sequence evaluation mode: data_root={data_root}")
+        logger.info(f"Multi-sequence ONLINE evaluation mode: data_root={data_root}")
         logger.info(f"Test sequences: {test_sequences}")
+        logger.info("NOTE: Using STANDARD online tracking protocol (search centered on PREDICTION, not GT)")
 
-        # Build evaluation dataset for each sequence
-        eval_datasets = []
+        # Build base datasets for each sequence
+        # CRITICAL: For online evaluation, we only need base_dataset (no EvaluationSequenceDataset)
+        # OnlineTrackingEvaluator handles template/search cropping internally
+        seq_name_to_base_dataset = {}
         total_frames = 0
 
         for seq_name in test_sequences:
-            # CRITICAL FIX (Audit 2025112504 Finding 2):
-            # Create base dataset with return_occluded=True to include all frames for evaluation,
-            # but EvaluationSequenceDataset will use template_visibility_policy='any' to ensure
-            # template is selected from frames with at least one modality visible
             seq_base_dataset = RGBSonarDataset(
                 data_root=data_root,
                 sequence_name=seq_name,
                 return_occluded=True  # Include all frames for evaluation (even 0000)
             )
 
-            # CRITICAL FIX (Audit 2025111703 Finding 4): Read template_update config
-            template_update_enabled = cfg.evaluation.get('template_update', {}).get('enabled', False)
-            template_update_interval = cfg.evaluation.get('template_update', {}).get('interval', 10)
-
-            # CRITICAL FIX (Audit 2025112504 Finding 2): Read template_visibility_policy
-            # Default to 'any' to prevent template selection from 0000 frames
-            template_visibility_policy = cfg.evaluation.get('template', {}).get('visibility_policy', 'any')
-
-            # Create evaluation dataset for this sequence
-            # CRITICAL FIX (Audit 2025112601): Pass context_factor for bbox-based template cropping
-            seq_eval_dataset = EvaluationSequenceDataset(
-                base_dataset=seq_base_dataset,
-                template_size=cfg.data.get('template_size', 128),  # OSTrack-256 standard
-                search_size=cfg.data.get('search_size', 256),      # OSTrack-256 standard
-                template_frame='first',
-                enable_update=template_update_enabled,
-                update_interval=template_update_interval,
-                normalization_config=cfg.data.normalize,
-                template_visibility_policy=template_visibility_policy,
-                context_factor=cfg.data.get('context_factor', 2.0)
-            )
-
-            eval_datasets.append(seq_eval_dataset)
+            seq_name_to_base_dataset[seq_name] = seq_base_dataset
             seq_info = seq_base_dataset.get_sequence_info()
-            total_frames += len(seq_eval_dataset)
+            total_frames += seq_base_dataset.num_frames
 
             logger.info(
-                f"  Sequence '{seq_name}': {len(seq_eval_dataset)} frames, "
+                f"  Sequence '{seq_name}': {seq_base_dataset.num_frames} frames, "
                 f"RGB {seq_info['rgb_resolution']}, Sonar {seq_info['sonar_resolution']}"
             )
 
-        # Concatenate all sequence datasets
-        eval_dataset = ConcatDataset(eval_datasets)
-
         logger.info(f"Total evaluation frames across {len(test_sequences)} sequences: {total_frames}")
-        logger.info(f"Using sequential evaluation (template=first frame per sequence)")
-        if template_update_enabled:
-            logger.info(f"Template update: ENABLED (interval={template_update_interval} frames)")
-        else:
-            logger.info(f"Template update: DISABLED (fixed template)")
 
     else:
         # Legacy single-sequence evaluation mode (backward compatibility)
-        logger.info("Single-sequence evaluation mode (legacy)")
+        logger.info("Single-sequence ONLINE evaluation mode (legacy)")
+        logger.info("NOTE: Using STANDARD online tracking protocol (search centered on PREDICTION, not GT)")
 
         test_path = PathLib(cfg.data.test_root)
         if test_path.is_absolute():
@@ -315,90 +285,43 @@ def main():
         logger.info(f"Data root: {data_root}")
         logger.info(f"Sequence name: {sequence_name}")
 
-        # CRITICAL FIX (Audit 2025112504 Finding 2):
-        # Create base dataset with return_occluded=True to include all frames for evaluation,
-        # but EvaluationSequenceDataset will use template_visibility_policy='any' to ensure
-        # template is selected from frames with at least one modality visible
+        # Create base dataset for online evaluation
         eval_base_dataset = RGBSonarDataset(
             data_root=data_root,
             sequence_name=sequence_name,
             return_occluded=True  # Include all frames for evaluation (even 0000)
         )
 
-        # CRITICAL FIX (Audit 2025111703 Finding 4): Read template_update config
-        template_update_enabled = cfg.evaluation.get('template_update', {}).get('enabled', False)
-        template_update_interval = cfg.evaluation.get('template_update', {}).get('interval', 10)
+        # Create mapping from sequence_name to base_dataset
+        seq_name_to_base_dataset = {
+            sequence_name: eval_base_dataset
+        }
 
-        # CRITICAL FIX (Audit 2025112504 Finding 2): Read template_visibility_policy
-        # Default to 'any' to prevent template selection from 0000 frames
-        template_visibility_policy = cfg.evaluation.get('template', {}).get('visibility_policy', 'any')
+        logger.info(f"Evaluation dataset: {eval_base_dataset.num_frames} frames")
 
-        # Use EvaluationSequenceDataset for sequential evaluation (not random sampling)
-        # This ensures reproducible, protocol-compliant evaluation
-        # CRITICAL FIX (Audit 2025112601): Pass context_factor for bbox-based template cropping
-        eval_dataset = EvaluationSequenceDataset(
-            base_dataset=eval_base_dataset,
-            template_size=cfg.data.get('template_size', 128),  # OSTrack-256 standard
-            search_size=cfg.data.get('search_size', 256),      # OSTrack-256 standard
-            template_frame='first',  # Use first frame as template (RGBS50 protocol)
-            enable_update=template_update_enabled,
-            update_interval=template_update_interval,
-            normalization_config=cfg.data.normalize,
-            template_visibility_policy=template_visibility_policy,
-            context_factor=cfg.data.get('context_factor', 2.0)
-        )
-
-        logger.info(f"Evaluation dataset: {len(eval_dataset)} frames")
-        logger.info(f"Using sequential evaluation (template=first frame)")
-        if template_update_enabled:
-            logger.info(f"Template update: ENABLED (interval={template_update_interval} frames)")
-        else:
-            logger.info(f"Template update: DISABLED (fixed template)")
-
-    # Create dataloader
-    eval_loader = create_dataloader(
-        dataset=eval_dataset,
-        batch_size=cfg.evaluation.batch_size,
-        shuffle=False,  # CRITICAL: No shuffle for evaluation
-        num_workers=cfg.data.num_workers,
-        pin_memory=cfg.data.pin_memory,
-        collate_fn=collate_fn_template_search,
-        distributed=False
-    )
-
-    logger.info(f"Evaluation batches: {len(eval_loader)}")
-
-    # Parse additional metrics from config
-    additional_metrics = []
-    if hasattr(cfg.evaluation, 'metrics') and cfg.evaluation.metrics:
-        # Extract non-standard metrics from config
-        standard_metrics = {'success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5'}
-        for metric_name in cfg.evaluation.metrics:
-            if metric_name not in standard_metrics:
-                additional_metrics.append(metric_name)
-
-    logger.info(f"Standard metrics will be computed")
-    if additional_metrics:
-        logger.info(f"Additional metrics: {additional_metrics}")
-
-    # Create evaluator
-    evaluator = TrackingEvaluator(
+    # === Create ONLINE Tracking Evaluator ===
+    # CRITICAL: This evaluator uses STANDARD online tracking protocol:
+    # - Template: Initialized from first frame GT
+    # - Search region: Centered on PREVIOUS PREDICTION (not GT!)
+    # This properly evaluates tracking robustness including drift recovery
+    # CRITICAL FIX (Audit 2025112702): Use correct config key 'template_area_factor' instead of 'context_factor'
+    # The previous 'context_factor' key was incorrect and could cause evaluation/training mismatch
+    evaluator = OnlineTrackingEvaluator(
         model=model,
-        dataloader=eval_loader,
         device=device,
-        output_dir=cfg.evaluation.output_dir,
-        save_predictions=cfg.evaluation.save_predictions,
-        verbose=True,
+        template_size=cfg.data.get('template_size', 128),
         search_size=cfg.data.get('search_size', 256),
-        additional_metrics=additional_metrics
+        template_area_factor=cfg.data.get('template_area_factor', 2.0),
+        search_area_factor=cfg.data.get('search_area_factor', 4.0),
+        normalization_config=cfg.data.normalize
     )
-    
+
     # Run evaluation
     logger.info("="*70)
-    logger.info("Starting evaluation")
+    logger.info("Starting ONLINE Tracking Evaluation")
     logger.info("="*70)
-    
-    results = evaluator.evaluate()
+
+    results = evaluator.evaluate_all_sequences(seq_name_to_base_dataset, verbose=True)
     
     # Print results
     logger.info("="*70)
@@ -414,7 +337,19 @@ def main():
             logger.info(f"  Precision@20:     {metrics.get('precision_20_mean', 0.0):.4f}")
             logger.info(f"  Avg Center Error: {metrics.get('avg_center_error_mean', 0.0):.2f} px")
             logger.info(f"  Mean IoU:         {metrics.get('mean_iou_mean', 0.0):.4f}")
-    
+
+    # Save metrics and predictions
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if cfg.evaluation.get('save_metrics', True):
+        logger.info("\nSaving evaluation metrics...")
+        evaluator.save_metrics(cfg.evaluation.output_dir, timestamp=timestamp)
+
+    if cfg.evaluation.get('save_predictions', True):
+        logger.info("Saving raw predictions...")
+        evaluator.save_predictions(cfg.evaluation.output_dir, timestamp=timestamp)
+
     # Visualization
     if cfg.evaluation.visualization.enabled:
         logger.info("\n"+"="*70)
@@ -488,121 +423,168 @@ def main():
         for name, auc in worst_sequences:
             logger.info(f"  {name}: {auc:.4f}")
 
-        # Frame-level visualization with bounding boxes
+        # Frame-level visualization with bounding boxes on ORIGINAL full-resolution images
+        # CRITICAL FIX: Previously used search crop (256x256), now uses original images
         if cfg.evaluation.visualization.get('save_failure_cases', True):
-            logger.info("\nGenerating frame visualizations with bounding boxes...")
+            logger.info("\nGenerating frame visualizations on ORIGINAL images...")
 
-            # Denormalization parameters (ImageNet for RGB, 0.5 for Sonar)
-            rgb_mean = np.array(cfg.data.normalize.get('rgb_mean', [0.485, 0.456, 0.406]))
-            rgb_std = np.array(cfg.data.normalize.get('rgb_std', [0.229, 0.224, 0.225]))
-            sonar_mean = cfg.data.normalize.get('sonar_mean', [0.5])[0]
-            sonar_std = cfg.data.normalize.get('sonar_std', [0.5])[0]
+            from tqdm import tqdm
 
-            for seq_name, seq_data in results['sequences'].items():
+            # Visualization output scale (for speed optimization)
+            # 0.5 = half resolution, 1.0 = original resolution
+            vis_scale = cfg.evaluation.visualization.get('output_scale', 0.5)
+
+            seq_items = list(results['sequences'].items())
+            for seq_name, seq_data in tqdm(seq_items, desc="Sequences", unit="seq"):
                 seq_vis_dir = Path(cfg.evaluation.visualization.save_dir) / 'frames' / seq_name
                 seq_vis_dir.mkdir(parents=True, exist_ok=True)
 
                 preds = seq_data.get('predictions', {})
                 rgb_preds = preds.get('rgb_pred', [])
                 sonar_preds = preds.get('sonar_pred', [])
+                # CRITICAL FIX: Use GT from predictions (already in original coordinates)
                 rgb_gts = preds.get('rgb_gt', [])
                 sonar_gts = preds.get('sonar_gt', [])
 
-                # Re-iterate through dataset to get frames for this sequence
-                seq_frames_rgb = []
-                seq_frames_sonar = []
+                # Get base dataset for this sequence to load original images
+                if seq_name not in seq_name_to_base_dataset:
+                    logger.warning(f"No base dataset found for sequence '{seq_name}', skipping visualization")
+                    continue
 
-                for i, sample in enumerate(eval_dataset):
-                    if sample.get('sequence_name', '') != seq_name:
-                        continue
-                    if i >= len(rgb_preds):
-                        break
+                base_dataset = seq_name_to_base_dataset[seq_name]
+                num_frames = min(len(rgb_preds), base_dataset.num_frames)
 
-                    # Denormalize RGB image
-                    rgb_img = sample['rgb_search'].numpy()  # [3, H, W]
-                    rgb_img = rgb_img.transpose(1, 2, 0)  # [H, W, 3]
-                    rgb_img = rgb_img * rgb_std + rgb_mean
-                    rgb_img = (rgb_img * 255).clip(0, 255).astype(np.uint8)
+                # Get sequence info once for placeholder dimensions
+                seq_info = base_dataset.get_sequence_info()
+                rgb_w, rgb_h = seq_info['rgb_resolution']  # (width, height)
+                sonar_w, sonar_h = seq_info['sonar_resolution']  # (width, height)
 
-                    # Denormalize Sonar image
-                    sonar_img = sample['sonar_search'].numpy()  # [1, H, W]
-                    sonar_img = sonar_img.squeeze(0)  # [H, W]
-                    sonar_img = sonar_img * sonar_std + sonar_mean
-                    sonar_img = (sonar_img * 255).clip(0, 255).astype(np.uint8)
-                    sonar_img = cv2.cvtColor(sonar_img, cv2.COLOR_GRAY2RGB)
+                # Helper to filter out occlusion marker [0,0,0,0]
+                def is_valid_bbox(bbox):
+                    """Check if bbox is valid (not None and not all zeros)."""
+                    if bbox is None:
+                        return False
+                    bbox_arr = np.asarray(bbox)
+                    return not np.all(bbox_arr == 0)
 
-                    # Get predictions and GT (in letterbox space for visualization)
-                    rgb_pred = preds.get('rgb_pred', [None])[i] if i < len(preds.get('rgb_pred', [])) else None
-                    sonar_pred = preds.get('sonar_pred', [None])[i] if i < len(preds.get('sonar_pred', [])) else None
-                    rgb_gt_pixels = sample.get('search_bbox_rgb_pixels')
-                    sonar_gt_pixels = sample.get('search_bbox_sonar_pixels')
+                # Helper to scale image and bbox for visualization output
+                def scale_image_and_bbox(img, bbox, scale_factor):
+                    """Scale image and bbox by scale_factor (e.g., 0.5 = half size)."""
+                    if scale_factor is None or scale_factor <= 0 or scale_factor >= 1.0:
+                        return img, bbox
+                    cur_h, cur_w = img.shape[:2]
+                    new_h = int(cur_h * scale_factor)
+                    new_w = int(cur_w * scale_factor)
+                    img_scaled = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    if bbox is not None:
+                        bbox_scaled = np.array(bbox) * scale_factor
+                    else:
+                        bbox_scaled = None
+                    return img_scaled, bbox_scaled
 
-                    # Convert GT to numpy if tensor
-                    if rgb_gt_pixels is not None and hasattr(rgb_gt_pixels, 'numpy'):
-                        rgb_gt_pixels = rgb_gt_pixels.numpy()
-                    if sonar_gt_pixels is not None and hasattr(sonar_gt_pixels, 'numpy'):
-                        sonar_gt_pixels = sonar_gt_pixels.numpy()
+                seq_frames_combined = []
 
-                    # Transform predictions to letterbox space for visualization
-                    rgb_meta = sample.get('rgb_search_metadata', {})
-                    sonar_meta = sample.get('sonar_search_metadata', {})
+                for frame_idx in tqdm(range(num_frames), desc=f"  {seq_name}", unit="frame", leave=False):
+                    # Load ORIGINAL full-resolution images from base dataset
+                    frame_data = base_dataset._get_frame_data(frame_idx)
 
-                    def transform_to_letterbox(bbox_orig, meta):
-                        if bbox_orig is None:
-                            return None
-                        x, y, w, h = bbox_orig
-                        scale = meta.get('scale', 1.0)
-                        pad_left = meta.get('pad_left', 0)
-                        pad_top = meta.get('pad_top', 0)
-                        return np.array([
-                            x * scale + pad_left,
-                            y * scale + pad_top,
-                            w * scale,
-                            h * scale
-                        ])
+                    # Get RGB image (original resolution, e.g., 1920x1080)
+                    # NOTE: _load_image already converts BGR to RGB, so no conversion needed
+                    rgb_img = frame_data['rgb_img']
+                    if rgb_img is None:
+                        # Create placeholder for occluded frames
+                        rgb_img = np.zeros((rgb_h, rgb_w, 3), dtype=np.uint8)
 
-                    rgb_pred_lb = transform_to_letterbox(rgb_pred, rgb_meta)
-                    sonar_pred_lb = transform_to_letterbox(sonar_pred, sonar_meta)
+                    # Get Sonar image (original resolution, e.g., 682x376)
+                    # NOTE: _load_image returns sonar as (H, W, 1), need to convert to RGB
+                    sonar_img = frame_data['sonar_img']
+                    if sonar_img is not None:
+                        # Convert grayscale (H, W, 1) to RGB for visualization
+                        if len(sonar_img.shape) == 3 and sonar_img.shape[2] == 1:
+                            sonar_img = cv2.cvtColor(sonar_img.squeeze(-1), cv2.COLOR_GRAY2RGB)
+                        elif len(sonar_img.shape) == 2:
+                            sonar_img = cv2.cvtColor(sonar_img, cv2.COLOR_GRAY2RGB)
+                    else:
+                        # Create placeholder for occluded frames
+                        sonar_img = np.zeros((sonar_h, sonar_w, 3), dtype=np.uint8)
 
-                    # Draw RGB frame
+                    # Get predictions (already in ORIGINAL image coordinates)
+                    rgb_pred = rgb_preds[frame_idx] if frame_idx < len(rgb_preds) else None
+                    sonar_pred = sonar_preds[frame_idx] if frame_idx < len(sonar_preds) else None
+
+                    # Get GT (already in ORIGINAL image coordinates from evaluator)
+                    rgb_gt = rgb_gts[frame_idx] if frame_idx < len(rgb_gts) else None
+                    sonar_gt = sonar_gts[frame_idx] if frame_idx < len(sonar_gts) else None
+
+                    # Filter out occlusion markers [0,0,0,0]
+                    # When GT is occlusion marker, also skip pred (no target to evaluate)
+                    rgb_gt_valid = is_valid_bbox(rgb_gt)
+                    sonar_gt_valid = is_valid_bbox(sonar_gt)
+
+                    rgb_pred = rgb_pred if (rgb_gt_valid and is_valid_bbox(rgb_pred)) else None
+                    sonar_pred = sonar_pred if (sonar_gt_valid and is_valid_bbox(sonar_pred)) else None
+                    rgb_gt = rgb_gt if rgb_gt_valid else None
+                    sonar_gt = sonar_gt if sonar_gt_valid else None
+
+                    # Downscale images and bboxes for faster visualization output
+                    # This does NOT affect evaluation metrics (computed in original coordinates)
+                    rgb_img, rgb_pred = scale_image_and_bbox(rgb_img, rgb_pred, vis_scale)
+                    rgb_img, rgb_gt = scale_image_and_bbox(rgb_img, rgb_gt, None)  # img already scaled
+                    if rgb_gt is not None and vis_scale and 0 < vis_scale < 1.0:
+                        rgb_gt = np.array(rgb_gt) * vis_scale
+
+                    sonar_img, sonar_pred = scale_image_and_bbox(sonar_img, sonar_pred, vis_scale)
+                    sonar_img, sonar_gt = scale_image_and_bbox(sonar_img, sonar_gt, None)  # img already scaled
+                    if sonar_gt is not None and vis_scale and 0 < vis_scale < 1.0:
+                        sonar_gt = np.array(sonar_gt) * vis_scale
+
+                    # Draw RGB frame with predictions and GT
                     rgb_vis = visualizer.draw_tracking_result(
                         rgb_img.copy(),
-                        pred_box=rgb_pred_lb,
-                        gt_box=rgb_gt_pixels,
-                        frame_id=i,
+                        pred_box=rgb_pred,
+                        gt_box=rgb_gt,
+                        frame_id=frame_idx,
                         pred_format='xywh',
                         gt_format='xywh'
                     )
 
-                    # Draw Sonar frame
+                    # Draw Sonar frame with predictions and GT
                     sonar_vis = visualizer.draw_tracking_result(
                         sonar_img.copy(),
-                        pred_box=sonar_pred_lb,
-                        gt_box=sonar_gt_pixels,
-                        frame_id=i,
+                        pred_box=sonar_pred,
+                        gt_box=sonar_gt,
+                        frame_id=frame_idx,
                         pred_format='xywh',
                         gt_format='xywh'
                     )
+
+                    # Resize sonar to match RGB height for side-by-side display
+                    vis_rgb_h_cur, vis_rgb_w_cur = rgb_vis.shape[:2]
+                    vis_sonar_h_cur, vis_sonar_w_cur = sonar_vis.shape[:2]
+                    if vis_sonar_h_cur != vis_rgb_h_cur:
+                        scale = vis_rgb_h_cur / vis_sonar_h_cur
+                        new_sonar_w = int(vis_sonar_w_cur * scale)
+                        sonar_vis = cv2.resize(sonar_vis, (new_sonar_w, vis_rgb_h_cur), interpolation=cv2.INTER_LINEAR)
 
                     # Combine RGB and Sonar side by side
                     combined = np.hstack([rgb_vis, sonar_vis])
-                    seq_frames_rgb.append(combined)
+                    seq_frames_combined.append(combined)
 
                     # Save frame
-                    frame_path = seq_vis_dir / f'frame_{i:04d}.png'
+                    frame_path = seq_vis_dir / f'frame_{frame_idx:04d}.png'
                     cv2.imwrite(str(frame_path), cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
 
                 # Create video if frames exist
-                if cfg.evaluation.visualization.get('create_videos', False) and len(seq_frames_rgb) > 0:
+                if cfg.evaluation.visualization.get('create_videos', False) and len(seq_frames_combined) > 0:
                     video_path = visualizer.create_video_from_frames(
-                        seq_frames_rgb,
+                        seq_frames_combined,
                         f'{seq_name}_tracking.mp4',
                         fps=cfg.evaluation.visualization.get('video_fps', 10)
                     )
                     if video_path:
                         logger.info(f"  Video saved: {video_path}")
 
-                logger.info(f"  Saved {len(seq_frames_rgb)} frames for {seq_name}")
+                logger.info(f"  Saved {len(seq_frames_combined)} frames for {seq_name}")
 
     logger.info("\n"+"="*70)
     logger.info("Evaluation completed successfully")

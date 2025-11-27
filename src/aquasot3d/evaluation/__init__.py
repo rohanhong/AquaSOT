@@ -25,6 +25,10 @@ from aquasot3d.evaluation.evaluator import (
     evaluate_model
 )
 
+from aquasot3d.evaluation.online_evaluator import (
+    OnlineTrackingEvaluator
+)
+
 from aquasot3d.evaluation.visualizer import (
     TrackingVisualizer
 )
@@ -41,9 +45,12 @@ __all__ = [
     'aggregate_metrics',
     'format_metrics_report',
 
-    # Evaluator
+    # Evaluator (offline - uses GT for search center, for debugging)
     'TrackingEvaluator',
     'evaluate_model',
+
+    # Online Evaluator (standard protocol - uses prediction for search center)
+    'OnlineTrackingEvaluator',
 
     # Visualizer
     'TrackingVisualizer'

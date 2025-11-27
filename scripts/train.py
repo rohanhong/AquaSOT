@@ -359,15 +359,29 @@ def build_dataloaders(cfg):
     # Convert list to tuple for TemplateSearchDataset
     gap_tuple = tuple(template_search_gap_range) if isinstance(template_search_gap_range, list) else template_search_gap_range
 
+    # CRITICAL FIX (Audit 2025112701): Pass center_jitter_factor for online tracking
+    # Without jitter, model learns to always predict center (0.5, 0.5), causing
+    # evaluation failure when using previous prediction as search center
+    center_jitter = cfg.data.get('center_jitter_factor', 0.25)  # OSTrack default: 0.25
+    scale_jitter = cfg.data.get('scale_jitter_factor', 0.25)
+    search_area_factor = cfg.data.get('search_area_factor', 4.0)
+    template_area_factor = cfg.data.get('template_area_factor', 2.0)
+
     train_dataset = TemplateSearchDataset(
         base_dataset=train_base_dataset,
         template_size=template_size,
         search_size=search_size,
         template_search_gap=gap_tuple,  # Fixed: correct parameter name
         template_update_policy=template_update_policy,
+        search_area_factor=search_area_factor,
+        template_area_factor=template_area_factor,
+        center_jitter_factor=center_jitter,  # CRITICAL: Enable training jitter
+        scale_jitter_factor=scale_jitter,
         augmentation=train_augmentation,
         normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
     )
+
+    logger.info(f"Training jitter enabled: center_jitter={center_jitter}, scale_jitter={scale_jitter}")
 
     logger.info(f"Template-search training: template={template_size}x{template_size}, "
                 f"search={search_size}x{search_size}, gap_range={template_search_gap_range}, "
@@ -390,11 +404,16 @@ def build_dataloaders(cfg):
     # Only create validation dataset/loader if base dataset exists
     if val_base_dataset is not None:
         # ARCHITECTURE CHANGE (Audit 2025112104): Template-search validation
+        # NOTE: Validation uses no jitter (center_jitter=0) to evaluate on centered targets
         val_dataset = TemplateSearchDataset(
             base_dataset=val_base_dataset,
             template_size=template_size,
             search_size=search_size,
             template_search_gap=gap_tuple,  # Fixed: correct parameter name
+            search_area_factor=search_area_factor,
+            template_area_factor=template_area_factor,
+            center_jitter_factor=0.0,  # No jitter for validation
+            scale_jitter_factor=0.0,
             augmentation=None,  # No augmentation for validation
             normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
         )

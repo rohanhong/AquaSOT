@@ -12,8 +12,8 @@ data:
   data_root: data                   # Dataset root directory
   test_sequences: [uuv3, uuv6, uuv10]
   test_root: null                   # Override test data root
-  num_workers: 12                   # DataLoader workers [A4000: 48]
-  prefetch_factor: 4                # Prefetch batches per worker [A4000: 8]
+  num_workers: 12                   # DataLoader workers [🚀A4000: 48]
+  prefetch_factor: 4                # Prefetch batches per worker [🚀A4000: 8]
 
 evaluation:
   mode: test                        # Evaluation mode: val/test
@@ -47,6 +47,7 @@ evaluation:
     save_failure_cases: true        # Save frame sequences with bboxes
     num_best: 5                     # Number of best cases to save
     num_worst: 5                    # Number of worst cases to save
+    output_scale: 0.5               # Output scale factor (0.5=half, 1.0=original)
 
   save_predictions: true            # Save prediction results
   save_metrics: true                # Save computed metrics
