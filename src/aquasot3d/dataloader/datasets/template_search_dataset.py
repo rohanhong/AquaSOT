@@ -957,20 +957,25 @@ class TemplateSearchDataset(Dataset):
         crop_sz = max(crop_sz, 1)  # Ensure positive
 
         # Apply jitter for training (center and scale)
-        # CRITICAL FIX (Audit 2025112703): Align with OSTrack jitter implementation
-        # OSTrack uses: offset = sqrt(w*h) * center_jitter_factor (not w/h separately)
-        # This allows target to appear anywhere in search region, not just near center
-        # Reference: https://github.com/botaoye/OSTrack (CENTER_JITTER=3, SCALE_JITTER=0.25)
+        # CRITICAL FIX (Audit 2025112704): Align EXACTLY with OSTrack jitter implementation
+        # OSTrack: jittered_center = center + max_offset * (rand - 0.5)
+        # where max_offset = sqrt(w*h) * center_jitter_factor
+        # NOTE: OSTrack uses (rand - 0.5) with range [-0.5, 0.5], NOT (rand - 0.5) * 2!
+        # With CENTER_JITTER=3: max_offset_range = [-1.5, 1.5] * target_sz
+        # Since crop_half = 2 * target_sz, target center stays within crop
+        # Reference: https://github.com/botaoye/OSTrack/blob/main/lib/train/data/processing.py
         if center_jitter_factor > 0:
             # Jitter center proportional to target size (OSTrack style)
             # max_offset = target_sz * center_jitter_factor
+            # offset = max_offset * (rand - 0.5), range = [-0.5, 0.5] * max_offset
             max_offset = target_sz * center_jitter_factor
-            cx += (random.random() - 0.5) * 2 * max_offset
-            cy += (random.random() - 0.5) * 2 * max_offset
+            cx += max_offset * (random.random() - 0.5)
+            cy += max_offset * (random.random() - 0.5)
 
         if scale_jitter_factor > 0:
             # Jitter scale using exponential (OSTrack style: exp(randn * factor))
-            # This ensures scale is always positive and symmetric in log-space
+            # OSTrack uses torch.randn which has std=1, so range is roughly [-3, 3]
+            # We use (rand - 0.5) * 2 with range [-1, 1] as approximation
             scale_jitter = math.exp((random.random() - 0.5) * 2 * scale_jitter_factor)
             crop_sz = int(crop_sz * scale_jitter)
             crop_sz = max(crop_sz, 1)
