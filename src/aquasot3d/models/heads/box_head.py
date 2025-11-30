@@ -1,22 +1,24 @@
 """
 2D Bounding Box Prediction Heads
 
-This module implements 2D box prediction heads for RGB, Sonar, and Fusion branches.
-Each head outputs classification scores (quality) and bounding box coordinates.
+This module implements OSTrack-style CENTER prediction heads for visual object tracking.
+The CENTER head uses spatial convolutions to preserve location information and predict
+target center heatmaps, sizes, and sub-pixel offsets.
 
 Architecture:
-- Classification: Binary classification with quality estimation (BCE/Focal Loss)
-- Regression: Box coordinates (L1 loss) + IoU-based losses (GIoU/CIoU)
-- Separate heads for RGB, Sonar, and Fusion to leverage modality-specific features
+- Score branch: Predicts center probability heatmap [B, 1, H, W]
+- Size branch: Predicts normalized (w, h) at each location [B, 2, H, W]
+- Offset branch: Predicts sub-pixel offset refinement [B, 2, H, W]
+
+Reference: OSTrack (ECCV 2022) - Joint Feature Learning and Relation Modeling
 
 Author: AquaSOT-3D Team
-Date: 2025-11-10
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Optional, Literal, Tuple
+from typing import Dict, Optional, Tuple
 import math
 
 from aquasot3d.core import BaseHead, PREDICTION_HEAD_REGISTRY
@@ -26,9 +28,6 @@ def box_cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     """
     Convert bounding boxes from (cx, cy, w, h) to (x1, y1, x2, y2) format.
 
-    CRITICAL FIX: Clamp w and h to prevent zero-width/height boxes that cause
-    GIoU NaN (0/0 division). Following YOLOv5 and PyTorch official implementation.
-
     Args:
         boxes: Boxes in (cx, cy, w, h) format, shape (..., 4)
 
@@ -36,13 +35,8 @@ def box_cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
         Boxes in (x1, y1, x2, y2) format, shape (..., 4)
     """
     cx, cy, w, h = boxes.unbind(-1)
-
-    # CRITICAL: Clamp w and h to prevent zero-width/height boxes
-    # Following YOLOv5: add small epsilon to prevent GIoU 0/0 = NaN
-    # Minimum size: 1e-4 (0.0001 in normalized coordinates ≈ 0.05 pixels at 512x512)
     w = w.clamp(min=1e-4)
     h = h.clamp(min=1e-4)
-
     x1 = cx - 0.5 * w
     y1 = cy - 0.5 * h
     x2 = cx + 0.5 * w
@@ -77,11 +71,6 @@ def box_xywh_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
 
     Returns:
         Boxes in (cx, cy, w, h) format (center point + size), shape (..., 4)
-
-    Example:
-        >>> boxes_xywh = torch.tensor([[100, 200, 50, 80]])  # x=100, y=200, w=50, h=80
-        >>> boxes_cxcywh = box_xywh_to_cxcywh(boxes_xywh)
-        >>> # Result: [[125, 240, 50, 80]]  # cx=125, cy=240, w=50, h=80
     """
     x, y, w, h = boxes.unbind(-1)
     cx = x + w / 2
@@ -100,7 +89,6 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     Returns:
         IoU values, shape (N,), clamped to [0, 1]
     """
-    # Calculate intersection
     x1_max = torch.max(boxes1[:, 0], boxes2[:, 0])
     y1_max = torch.max(boxes1[:, 1], boxes2[:, 1])
     x2_min = torch.min(boxes1[:, 2], boxes2[:, 2])
@@ -110,8 +98,6 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     inter_h = (y2_min - y1_max).clamp(min=0)
     inter_area = inter_w * inter_h
 
-    # Calculate union
-    # Clamp box dimensions to prevent negative areas
     w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=1e-6)
     h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=1e-6)
     w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=1e-6)
@@ -121,16 +107,8 @@ def compute_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     area2 = w2 * h2
     union_area = area1 + area2 - inter_area
 
-    # Compute IoU with epsilon for numerical stability
-    # Standard epsilon for FP32 (1e-7). clamp provides sufficient protection.
     iou = inter_area / union_area.clamp(min=1e-7)
-
-    # Clamp to valid IoU range [0, 1]
-    # This is critical for preventing BCE assertion failures when IoU is used as quality target
-    # IoU can theoretically exceed 1.0 due to floating point precision issues
     iou = torch.clamp(iou, min=0.0, max=1.0)
-
-    # Replace any NaN/inf values with 0 (no overlap)
     iou = torch.where(torch.isfinite(iou), iou, torch.zeros_like(iou))
 
     return iou
@@ -149,21 +127,17 @@ def compute_giou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     Returns:
         GIoU values, shape (N,), in range [-1, 1]
     """
-    # IoU (now returns values clamped to [0, 1])
     iou = compute_iou(boxes1, boxes2)
 
-    # Enclosing box
     x1_min = torch.min(boxes1[:, 0], boxes2[:, 0])
     y1_min = torch.min(boxes1[:, 1], boxes2[:, 1])
     x2_max = torch.max(boxes1[:, 2], boxes2[:, 2])
     y2_max = torch.max(boxes1[:, 3], boxes2[:, 3])
 
-    # Clamp enclosing dimensions to prevent negative areas
     enclosing_w = (x2_max - x1_min).clamp(min=1e-6)
     enclosing_h = (y2_max - y1_min).clamp(min=1e-6)
     enclosing_area = enclosing_w * enclosing_h
 
-    # Union area (use clamped dimensions)
     w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=1e-6)
     h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=1e-6)
     w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=1e-6)
@@ -177,14 +151,8 @@ def compute_giou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     inter_area = inter_w * inter_h
     union_area = area1 + area2 - inter_area
 
-    # GIoU computation
-    # Standard epsilon for FP32 (1e-7). clamp provides sufficient protection.
     giou = iou - (enclosing_area - union_area) / enclosing_area.clamp(min=1e-7)
-
-    # Clamp to theoretical range [-1, 1]
     giou = torch.clamp(giou, min=-1.0, max=1.0)
-
-    # Replace NaN/inf with -1 (worst case)
     giou = torch.where(torch.isfinite(giou), giou, torch.full_like(giou, -1.0))
 
     return giou
@@ -203,30 +171,24 @@ def compute_ciou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     Returns:
         CIoU values, shape (N,), in range [-1, 1]
     """
-    # IoU (now returns values clamped to [0, 1])
     iou = compute_iou(boxes1, boxes2)
 
-    # Convert to cxcywh for center distance and aspect ratio
     boxes1_cxcywh = box_xyxy_to_cxcywh(boxes1)
     boxes2_cxcywh = box_xyxy_to_cxcywh(boxes2)
 
-    # Center distance
     cx1, cy1, w1, h1 = boxes1_cxcywh.unbind(-1)
     cx2, cy2, w2, h2 = boxes2_cxcywh.unbind(-1)
     center_dist_sq = (cx1 - cx2) ** 2 + (cy1 - cy2) ** 2
 
-    # Diagonal of enclosing box
     x1_min = torch.min(boxes1[:, 0], boxes2[:, 0])
     y1_min = torch.min(boxes1[:, 1], boxes2[:, 1])
     x2_max = torch.max(boxes1[:, 2], boxes2[:, 2])
     y2_max = torch.max(boxes1[:, 3], boxes2[:, 3])
 
-    # Clamp diagonal dimensions to prevent division by zero
     diagonal_w = (x2_max - x1_min).clamp(min=1e-6)
     diagonal_h = (y2_max - y1_min).clamp(min=1e-6)
     diagonal_sq = diagonal_w ** 2 + diagonal_h ** 2
 
-    # Aspect ratio consistency (clamp w and h to prevent division by zero)
     w1_safe = w1.clamp(min=1e-6)
     h1_safe = h1.clamp(min=1e-6)
     w2_safe = w2.clamp(min=1e-6)
@@ -236,109 +198,59 @@ def compute_ciou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
         alpha = v / (1 - iou + v + 1e-7)
 
-    # CIoU computation
     ciou = iou - (center_dist_sq / (diagonal_sq + 1e-7) + alpha * v)
-
-    # Clamp to theoretical range [-1, 1]
     ciou = torch.clamp(ciou, min=-1.0, max=1.0)
-
-    # Replace NaN/inf with -1 (worst case)
     ciou = torch.where(torch.isfinite(ciou), ciou, torch.full_like(ciou, -1.0))
 
     return ciou
 
 
 class GIoULoss(nn.Module):
-    """
-    Generalized IoU Loss.
-
-    Loss = 1 - GIoU
-    """
+    """Generalized IoU Loss: Loss = 1 - GIoU"""
 
     def __init__(self, reduction: str = 'mean'):
         super().__init__()
         self.reduction = reduction
 
     def forward(self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor) -> torch.Tensor:
-        """
-        Compute GIoU loss.
-
-        Args:
-            pred_boxes: Predicted boxes in cxcywh format, shape (N, 4)
-            target_boxes: Target boxes in cxcywh format, shape (N, 4)
-
-        Returns:
-            GIoU loss
-        """
-        # Convert to xyxy
         pred_xyxy = box_cxcywh_to_xyxy(pred_boxes)
         target_xyxy = box_cxcywh_to_xyxy(target_boxes)
-
         giou = compute_giou(pred_xyxy, target_xyxy)
-
-        # Clamp GIoU to prevent numerical instability
-        # Theoretical range is [-1, 1], but we add margin for safety
         giou = torch.clamp(giou, min=-1.0, max=1.0)
-
         loss = 1 - giou
 
         if self.reduction == 'mean':
             return loss.mean()
         elif self.reduction == 'sum':
             return loss.sum()
-        else:
-            return loss
+        return loss
 
 
 class CIoULoss(nn.Module):
-    """
-    Complete IoU Loss.
-
-    Loss = 1 - CIoU
-    """
+    """Complete IoU Loss: Loss = 1 - CIoU"""
 
     def __init__(self, reduction: str = 'mean'):
         super().__init__()
         self.reduction = reduction
 
     def forward(self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor) -> torch.Tensor:
-        """
-        Compute CIoU loss.
-
-        Args:
-            pred_boxes: Predicted boxes in cxcywh format, shape (N, 4)
-            target_boxes: Target boxes in cxcywh format, shape (N, 4)
-
-        Returns:
-            CIoU loss
-        """
-        # Convert to xyxy
         pred_xyxy = box_cxcywh_to_xyxy(pred_boxes)
         target_xyxy = box_cxcywh_to_xyxy(target_boxes)
-
         ciou = compute_ciou(pred_xyxy, target_xyxy)
-
-        # Clamp CIoU to prevent numerical instability
-        # Theoretical range is [-1, 1], but we add margin for safety
         ciou = torch.clamp(ciou, min=-1.0, max=1.0)
-
         loss = 1 - ciou
 
         if self.reduction == 'mean':
             return loss.mean()
         elif self.reduction == 'sum':
             return loss.sum()
-        else:
-            return loss
+        return loss
 
 
 class QualityFocalLoss(nn.Module):
     """
     Quality Focal Loss for joint classification and quality estimation.
-
     QFL paper: https://arxiv.org/abs/2006.04388
-
-    Combines classification with IoU-based quality score in a single loss.
     """
 
     def __init__(self, beta: float = 2.0, reduction: str = 'mean'):
@@ -352,25 +264,7 @@ class QualityFocalLoss(nn.Module):
         target_labels: torch.Tensor,
         target_quality: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Compute Quality Focal Loss.
-
-        Args:
-            pred_scores: Predicted quality logits (raw scores before sigmoid), shape (N,)
-            target_labels: Target labels (0 or 1), shape (N,)
-            target_quality: Target quality (IoU), shape (N,)
-
-        Returns:
-            QFL loss
-        """
-        # CRITICAL FIX: Check for NaN/Inf in inputs
         if torch.any(~torch.isfinite(pred_scores)):
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                f"[QualityFocalLoss] NaN/Inf in pred_scores! "
-                f"Replacing with zeros. Range before: [{pred_scores.min()}, {pred_scores.max()}]"
-            )
             pred_scores = torch.where(
                 torch.isfinite(pred_scores),
                 pred_scores,
@@ -378,12 +272,6 @@ class QualityFocalLoss(nn.Module):
             )
 
         if torch.any(~torch.isfinite(target_quality)):
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                f"[QualityFocalLoss] NaN/Inf in target_quality! "
-                f"Clamping to [0, 1]. Range before: [{target_quality.min()}, {target_quality.max()}]"
-            )
             target_quality = torch.clamp(target_quality, 0.0, 1.0)
             target_quality = torch.where(
                 torch.isfinite(target_quality),
@@ -391,242 +279,167 @@ class QualityFocalLoss(nn.Module):
                 torch.zeros_like(target_quality)
             )
 
-        # CRITICAL FIX: Apply sigmoid to logits for scale factor computation
-        # This maintains QFL semantics while accepting logits as input
         pred_scores_prob = torch.sigmoid(pred_scores)
-
-        # Scale factor (based on probability space)
         scale_factor = pred_scores_prob - target_labels * target_quality
-
-        # Focal weight
         focal_weight = torch.abs(scale_factor) ** self.beta
 
-        # CRITICAL FIX: Use binary_cross_entropy_with_logits for AMP safety
-        # This is numerically stable and AMP-compatible
-        target = (target_labels * target_quality).float()
-
-        # CRITICAL FIX: Clamp target to [0, 1] to ensure valid BCE input
-        target = torch.clamp(target, 0.0, 1.0)
-
-        bce_loss = F.binary_cross_entropy_with_logits(
-            pred_scores,
-            target,
-            reduction='none'
-        )
-
+        target = torch.clamp((target_labels * target_quality).float(), 0.0, 1.0)
+        bce_loss = F.binary_cross_entropy_with_logits(pred_scores, target, reduction='none')
         loss = focal_weight * bce_loss
 
-        # CRITICAL FIX: Replace any remaining NaN/Inf in final loss
         if torch.any(~torch.isfinite(loss)):
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                f"[QualityFocalLoss] NaN/Inf in final loss! Replacing with zeros."
-            )
             loss = torch.where(torch.isfinite(loss), loss, torch.zeros_like(loss))
 
         if self.reduction == 'mean':
             return loss.mean()
         elif self.reduction == 'sum':
             return loss.sum()
-        else:
-            return loss
+        return loss
 
 
-@PREDICTION_HEAD_REGISTRY.register("BoxHead")
-class BoxHead(BaseHead):
+@PREDICTION_HEAD_REGISTRY.register("CenterHead")
+class CenterHead(BaseHead):
     """
-    2D Bounding Box Prediction Head.
+    OSTrack-style CENTER prediction head with spatial convolutions.
 
-    Predicts classification scores (quality) and bounding box coordinates
-    from input features. Supports multiple loss functions and output formats.
+    Architecture:
+    - Score branch: Predicts center probability heatmap [B, 1, H, W]
+    - Size branch: Predicts normalized (w, h) at each location [B, 2, H, W]
+    - Offset branch: Predicts sub-pixel offset refinement [B, 2, H, W]
+
+    The final bbox is computed by:
+    1. Find location with highest score (soft-argmax)
+    2. Extract size prediction at that location
+    3. Apply offset refinement for sub-pixel accuracy
+
+    Reference: OSTrack (ECCV 2022)
 
     Args:
-        in_channels: Input feature dimension
-        hidden_dim: Hidden layer dimension (default: 256)
-        num_layers: Number of MLP layers (default: 3)
-        box_format: Output box format, 'cxcywh' or 'xyxy' (default: 'cxcywh')
-        use_quality_focal: Use Quality Focal Loss instead of BCE (default: True)
-        iou_loss_type: Type of IoU loss, 'giou' or 'ciou' (default: 'giou')
-        loss_weight_cls: Classification loss weight (default: 1.0)
-        loss_weight_l1: L1 loss weight (default: 5.0)
-        loss_weight_iou: IoU loss weight (default: 2.0)
-
-    Returns:
-        Dictionary containing:
-            - 'pred_boxes': Predicted boxes in specified format, shape (B, 4)
-            - 'pred_scores': Predicted quality scores, shape (B,)
-            - 'cls_loss': Classification loss (if targets provided)
-            - 'l1_loss': L1 regression loss (if targets provided)
-            - 'iou_loss': IoU-based loss (if targets provided)
-
-    Example:
-        >>> head = BoxHead(in_channels=768, hidden_dim=256)
-        >>> features = torch.randn(4, 768)
-        >>> outputs = head(features)
-        >>> print(outputs['pred_boxes'].shape)  # (4, 4)
-        >>> print(outputs['pred_scores'].shape)  # (4,)
+        in_channels: Input feature dimension (e.g., 768 for ViT-Base)
+        feat_sz: Spatial size of input features (e.g., 16 for 256/16)
+        hidden_dim: Hidden dimension for conv layers (default: 256)
+        use_offset: Whether to use offset branch for sub-pixel refinement
+        loss_weight_score: Weight for score map loss (default: 1.0)
+        loss_weight_size: Weight for size regression loss (default: 5.0)
+        loss_weight_offset: Weight for offset regression loss (default: 1.0)
     """
 
     def __init__(
         self,
-        in_channels: int,
+        in_channels: int = 768,
+        feat_sz: int = 16,
         hidden_dim: int = 256,
-        num_layers: int = 3,
-        box_format: Literal['cxcywh', 'xyxy'] = 'cxcywh',
-        use_quality_focal: bool = True,
-        iou_loss_type: Literal['giou', 'ciou'] = 'giou',
-        loss_weight_cls: float = 1.0,
-        loss_weight_l1: float = 5.0,  # OSTrack/MixFormer standard: dense gradient for fast convergence
-        loss_weight_iou: float = 2.0,  # OSTrack/MixFormer standard: refinement signal for bbox quality
-        use_confidence_head: bool = True,
-        loss_weight_conf: float = 1.0,
+        use_offset: bool = True,
+        loss_weight_score: float = 1.0,
+        loss_weight_size: float = 5.0,
+        loss_weight_offset: float = 1.0,
         **kwargs
     ):
         super().__init__()
 
         self.in_channels = in_channels
+        self.feat_sz = feat_sz
         self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.box_format = box_format
-        self.use_quality_focal = use_quality_focal
-        self.iou_loss_type = iou_loss_type
-        self.loss_weight_cls = loss_weight_cls
-        self.loss_weight_l1 = loss_weight_l1
-        self.loss_weight_iou = loss_weight_iou
-        self.use_confidence_head = use_confidence_head
-        self.loss_weight_conf = loss_weight_conf
+        self.use_offset = use_offset
+        self.loss_weight_score = loss_weight_score
+        self.loss_weight_size = loss_weight_size
+        self.loss_weight_offset = loss_weight_offset
 
-        # Build MLP layers for shared feature processing
-        layers = []
-        current_dim = in_channels
-        for i in range(num_layers - 1):
-            layers.extend([
-                nn.Linear(current_dim, hidden_dim),
-                nn.ReLU(inplace=True),
-            ])
-            current_dim = hidden_dim
-        self.shared_mlp = nn.Sequential(*layers)
-
-        # Classification head (quality estimation)
-        # CRITICAL FIX: Remove Sigmoid - output logits for BCEWithLogitsLoss (AMP-safe)
-        self.cls_head = nn.Sequential(
-            nn.Linear(current_dim, hidden_dim),
+        # Score branch: predicts center probability heatmap
+        self.score_branch = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 1)
+            nn.Conv2d(hidden_dim, hidden_dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 2, hidden_dim // 4, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 4),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 4, 1, kernel_size=1),
         )
 
-        # Regression head (box coordinates with constrained output)
-        # Critical fix: Add Sigmoid activation to constrain output to [0, 1]
-        # This ensures predictions are in normalized coordinate space matching targets
-        self.reg_head = nn.Sequential(
-            nn.Linear(current_dim, hidden_dim),
+        # Size branch: predicts normalized (w, h) at each location
+        self.size_branch = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 4),
-            nn.Sigmoid()  # Constrain to [0, 1] for normalized coordinates
+            nn.Conv2d(hidden_dim, hidden_dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 2, hidden_dim // 4, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 4),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 4, 2, kernel_size=1),
         )
 
-        # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
-        # Confidence head for objectness prediction (has_object)
-        # Predicts whether an object exists in the frame (0=no object, 1=has object)
-        # This is independent from quality (which assumes object exists)
-        # CRITICAL FIX: Remove Sigmoid - output logits for BCEWithLogitsLoss (AMP-safe)
-        if use_confidence_head:
-            self.confidence_head = nn.Sequential(
-                nn.Linear(current_dim, hidden_dim),
+        # Offset branch: predicts sub-pixel offset refinement
+        if use_offset:
+            self.offset_branch = nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
+                nn.BatchNorm2d(hidden_dim),
                 nn.ReLU(inplace=True),
-                nn.Linear(hidden_dim, 1)
+                nn.Conv2d(hidden_dim, hidden_dim // 2, kernel_size=3, padding=1),
+                nn.BatchNorm2d(hidden_dim // 2),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim // 2, 2, kernel_size=1),
             )
         else:
-            self.confidence_head = None
+            self.offset_branch = None
 
-        # Loss functions
-        if use_quality_focal:
-            self.cls_loss_fn = QualityFocalLoss(beta=2.0)
-        else:
-            # CRITICAL FIX: Use BCEWithLogitsLoss for AMP safety
-            self.cls_loss_fn = nn.BCEWithLogitsLoss()
-
-        # Use standard L1 loss following mainstream trackers (MixFormer, OSTrack)
-        # L1 is robust to outliers due to absolute difference
-        self.l1_loss_fn = nn.L1Loss(reduction='mean')
-
-        if iou_loss_type == 'giou':
-            self.iou_loss_fn = GIoULoss(reduction='mean')
-        elif iou_loss_type == 'ciou':
-            self.iou_loss_fn = CIoULoss(reduction='mean')
-        else:
-            raise ValueError(f"Unknown IoU loss type: {iou_loss_type}")
-
-        # Confidence loss (BCE for binary objectness)
-        # CRITICAL FIX: Use BCEWithLogitsLoss for AMP safety
-        if use_confidence_head:
-            self.confidence_loss_fn = nn.BCEWithLogitsLoss()
-
-        # Initialize regression head with small weights for stable initial predictions
-        # This ensures initial box predictions are centered around [0.5, 0.5, 0.3, 0.3]
         self._init_weights()
 
         self.logger.info(
-            f"Initialized BoxHead: in_channels={in_channels}, "
-            f"hidden_dim={hidden_dim}, num_layers={num_layers}, "
-            f"box_format={box_format}, use_quality_focal={use_quality_focal}, "
-            f"iou_loss={iou_loss_type}, use_confidence_head={use_confidence_head}"
+            f"Initialized CenterHead: in_channels={in_channels}, "
+            f"feat_sz={feat_sz}, hidden_dim={hidden_dim}, use_offset={use_offset}"
         )
 
     def _init_weights(self):
-        """
-        Initialize weights following OSTrack/MixFormer best practices.
-
-        CRITICAL FIX (Audit 2025113001): Previous initialization was TOO conservative
-        (gain=0.1, std=0.001), causing the network to be insensitive to input features.
-        This led to loss stagnation at ~5.0 with the model always predicting center.
-
-        Reference implementations:
-        - OSTrack: Xavier uniform with default gain
-        - MixFormer: Standard initialization
-        - DETR: Xavier uniform for attention, standard for MLP
-
-        Key changes:
-        1. Hidden layers: Xavier uniform with gain=1.0 (standard)
-        2. Output layer: Normal init with std=0.1 (not 0.001!)
-        3. Bias: Keep centered initialization for stability
-        """
-        # Initialize hidden layers with standard Xavier (gain=1.0)
-        # This allows the network to be responsive to input variations
+        """Initialize weights following OSTrack conventions."""
         for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=1.0)  # Standard gain, not 0.1!
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
-        # Regression head output layer: moderate initialization for input sensitivity
-        # CRITICAL FIX: std=0.1 allows network to respond to input features
-        # Previous std=0.001 made output essentially constant regardless of input
-        reg_output_layer = self.reg_head[-2]  # Last linear before sigmoid
-        if isinstance(reg_output_layer, nn.Linear):
-            # std=0.1 following OSTrack/MixFormer conventions
-            # This is 100x larger than previous 0.001, enabling learning
-            nn.init.normal_(reg_output_layer.weight, mean=0.0, std=0.1)
-            if reg_output_layer.bias is not None:
-                # Initialize to produce predictions around [0.5, 0.5, 0.3, 0.3] after sigmoid
-                # logit(0.5) = 0, logit(0.3) = -0.85
-                reg_output_layer.bias.data[0] = 0.0  # cx ~ 0.5 after sigmoid
-                reg_output_layer.bias.data[1] = 0.0  # cy ~ 0.5 after sigmoid
-                reg_output_layer.bias.data[2] = -0.85  # w ~ 0.3 after sigmoid
-                reg_output_layer.bias.data[3] = -0.85  # h ~ 0.3 after sigmoid
+        if hasattr(self.score_branch[-1], 'bias') and self.score_branch[-1].bias is not None:
+            nn.init.constant_(self.score_branch[-1].bias, -2.0)
 
-        # Classification and confidence heads: moderate initialization
-        for head_name in ['cls_head', 'confidence_head']:
-            if hasattr(self, head_name):
-                head = getattr(self, head_name)
-                if head is not None and len(head) > 0:
-                    last_layer = head[-1]
-                    if isinstance(last_layer, nn.Linear):
-                        # std=0.1 for responsiveness (not 0.01)
-                        nn.init.normal_(last_layer.weight, mean=0.0, std=0.1)
-                        if last_layer.bias is not None:
-                            nn.init.constant_(last_layer.bias, 0.0)
+        if hasattr(self.size_branch[-1], 'bias') and self.size_branch[-1].bias is not None:
+            nn.init.constant_(self.size_branch[-1].bias, -1.0)
+
+    def _gather_at_index(
+        self,
+        feature_map: torch.Tensor,
+        idx: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Gather features at specified flat indices (OSTrack style).
+
+        This is differentiable and allows gradients to flow through the gathered values.
+
+        Args:
+            feature_map: Feature map [B, C, H, W]
+            idx: Flat indices [B] (integers from argmax)
+
+        Returns:
+            Features at locations [B, C]
+        """
+        B, C, H, W = feature_map.shape
+
+        # Flatten spatial dimensions: [B, C, H*W]
+        feature_flat = feature_map.view(B, C, -1)
+
+        # Expand idx for gathering: [B, C, 1]
+        idx_expanded = idx.view(B, 1, 1).expand(B, C, 1).long()
+
+        # Gather values at index: [B, C, 1] -> [B, C]
+        gathered = feature_flat.gather(dim=2, index=idx_expanded).squeeze(-1)
+
+        return gathered
 
     def forward(
         self,
@@ -637,483 +450,216 @@ class BoxHead(BaseHead):
         has_object: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass for box prediction.
-
-        CRITICAL FIX (Audit 2025112002): Added validity_mask parameter to enable
-        proper training of quality/objectness scores for invalid samples.
-
-        CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4): Added has_object parameter
-        to train confidence head for objectness prediction.
+        Forward pass for CENTER head.
 
         Args:
-            features: Input features, shape (B, C) or (B, C, H, W)
-            target_boxes: Target boxes in cxcywh format, shape (B, 4), optional
-            target_labels: Target labels (0 or 1), shape (B,), optional
-            validity_mask: Validity mask for samples (0=invalid, 1=valid), shape (B,), optional
-                          Invalid samples will have target_quality forced to 0.0
-            has_object: Has-object flags (0=no object, 1=has object), shape (B,), optional
-                       Used for training confidence head in continuous flow design
+            features: Input features [B, C, H, W] or [B, N, C]
+            target_boxes: Target boxes in cxcywh format [B, 4], optional
+            target_labels: Not used, for API compatibility
+            validity_mask: Validity mask [B], optional
+            has_object: Has-object flags [B], optional
 
         Returns:
             Dictionary with predictions and losses
         """
-        # Handle spatial features
-        if features.dim() == 4:
-            # Global average pooling
-            features = F.adaptive_avg_pool2d(features, (1, 1)).flatten(1)
-        elif features.dim() == 3:
-            # Average over sequence dimension
-            features = features.mean(dim=1)
+        if features.dim() == 3:
+            B, N, C = features.shape
+            H = W = int(N ** 0.5)
+            if H * W != N:
+                raise ValueError(f"Cannot reshape {N} tokens to square grid")
+            features = features.permute(0, 2, 1).reshape(B, C, H, W)
 
-        batch_size = features.shape[0]
+        B, C, H, W = features.shape
+        feat_sz = H
 
-        # Check if input dimension matches expected dimension
-        actual_dim = features.shape[1]
-        if actual_dim != self.in_channels:
-            # Create dynamic projection layer to adapt input dimension
-            if not hasattr(self, 'input_proj'):
-                self.input_proj = nn.Linear(actual_dim, self.in_channels).to(features.device)
-            features = self.input_proj(features)
+        score_map_logits = self.score_branch(features)
+        size_map = torch.sigmoid(self.size_branch(features))
 
-        # Shared feature processing
-        shared_feat = self.shared_mlp(features)  # (B, hidden_dim)
-
-        # Classification (quality score)
-        # CRITICAL FIX: Output raw logits (no sigmoid) for BCEWithLogitsLoss
-        # Sigmoid is applied internally by BCEWithLogitsLoss for numerical stability
-        pred_scores_logits = self.cls_head(shared_feat).squeeze(-1)  # (B,)
-
-        # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
-        # Confidence (objectness score) - predicts has_object probability
-        # CRITICAL FIX: Output raw logits (no sigmoid) for BCEWithLogitsLoss
-        if self.confidence_head is not None:
-            pred_confidence_logits = self.confidence_head(shared_feat).squeeze(-1)  # (B,)
+        if self.offset_branch is not None:
+            offset_map = self.offset_branch(features)
         else:
-            pred_confidence_logits = None
+            offset_map = None
 
-        # For inference, convert logits to probabilities
-        # During training, logits are used directly in BCEWithLogitsLoss
-        if target_boxes is None:
-            # Inference mode: apply sigmoid to get probabilities
-            pred_scores = torch.sigmoid(pred_scores_logits)
-            pred_confidence = torch.sigmoid(pred_confidence_logits) if pred_confidence_logits is not None else None
+        score_map = torch.clamp(torch.sigmoid(score_map_logits), min=1e-4, max=1 - 1e-4)
+
+        # Hard argmax for center location (OSTrack style)
+        # Get flat index for gather operation
+        score_flat = score_map.view(B, -1)
+        max_score, flat_idx = torch.max(score_flat, dim=1)
+
+        # Convert to 2D coordinates
+        idx_y = (flat_idx // W).float()
+        idx_x = (flat_idx % W).float()
+
+        # Gather size at peak location: [B, 2]
+        size_at_loc = self._gather_at_index(size_map, flat_idx)
+        pred_w = size_at_loc[:, 0]
+        pred_h = size_at_loc[:, 1]
+
+        # Gather offset at peak location (if available)
+        if offset_map is not None:
+            offset_at_loc = self._gather_at_index(offset_map, flat_idx)
+            offset_x = offset_at_loc[:, 0]
+            offset_y = offset_at_loc[:, 1]
         else:
-            # Training mode: keep logits for loss computation
-            pred_scores = pred_scores_logits
-            pred_confidence = pred_confidence_logits
+            offset_x = torch.zeros_like(idx_x)
+            offset_y = torch.zeros_like(idx_y)
 
-        # Regression (box coordinates in cxcywh)
-        pred_boxes_cxcywh = self.reg_head(shared_feat)  # (B, 4)
+        # Final center = (integer_idx + learned_offset) / feat_sz
+        # Gradient flows through offset addition (OSTrack style)
+        pred_cx = (idx_x + offset_x) / feat_sz
+        pred_cy = (idx_y + offset_y) / feat_sz
 
-        # Convert to requested format
-        if self.box_format == 'xyxy':
-            pred_boxes = box_cxcywh_to_xyxy(pred_boxes_cxcywh)
-        else:
-            pred_boxes = pred_boxes_cxcywh
+        pred_cx = torch.clamp(pred_cx, 0.0, 1.0)
+        pred_cy = torch.clamp(pred_cy, 0.0, 1.0)
+        pred_w = torch.clamp(pred_w, 1e-4, 1.0)
+        pred_h = torch.clamp(pred_h, 1e-4, 1.0)
+
+        pred_boxes = torch.stack([pred_cx, pred_cy, pred_w, pred_h], dim=-1)
+        pred_quality = score_map.view(B, -1).max(dim=-1)[0]
 
         outputs = {
             'pred_boxes': pred_boxes,
-            'pred_scores': pred_scores,
+            'pred_scores': pred_quality,
+            'score_map': score_map,
+            'size_map': size_map,
+            'boxes': pred_boxes,
+            'quality': pred_quality,
+            'pred_confidence': pred_quality,
+            'confidence': pred_quality,
         }
 
-        if pred_confidence is not None:
-            outputs['pred_confidence'] = pred_confidence
+        if offset_map is not None:
+            outputs['offset_map'] = offset_map
 
-        # Compute losses if targets are provided
         if target_boxes is not None:
-            # CRITICAL (Audit 2025111411 Finding 3): Enforce type-safe bbox wrappers
-            # to prevent silent format confusion between xywh/cxcywh during training
-            from aquasot3d.utils.bbox import BBoxCXCYWH
-
-            # Wrap predictions and targets to enforce format contract
-            try:
-                pred_bbox_wrapper = BBoxCXCYWH(pred_boxes_cxcywh)
-                target_bbox_wrapper = BBoxCXCYWH(target_boxes)
-            except (ValueError, TypeError) as e:
-                raise ValueError(
-                    f"Bbox format validation failed in BoxHead.forward(): {e}. "
-                    f"Expected [B, 4] tensors in cxcywh format. "
-                    f"Got pred shape={pred_boxes_cxcywh.shape}, target shape={target_boxes.shape}"
-                )
-
-            # CRITICAL FIX: collate_fn_sequence already converts boxes from
-            # pixel xywh to normalized cxcywh format in the data loader.
-            # No further conversion needed - targets are already in cxcywh format.
-
-            # Extract validated tensors for loss computation
-            pred_tensor = pred_bbox_wrapper.tensor()
-            target_tensor = target_bbox_wrapper.tensor()
-
-            # CRITICAL FIX (Audit 2025112502 Finding 1): Apply validity masking to L1 and IoU losses
-            # Following mainstream SOT practices (OSTrack, MixFormer, SiamRPN++):
-            # Invalid samples (occlusion, 0000 annotations) should NOT contribute to bbox regression gradient
-
-            # Compute per-sample L1 loss for masking
-            l1_loss_per_sample = F.l1_loss(pred_tensor, target_tensor, reduction='none').mean(dim=-1)  # [B]
-
-            # CRITICAL FIX (Audit 2025112502 Revision): Respect iou_loss_type configuration
-            # Previous implementation always used GIoU, ignoring CIoU configuration
-            # Now correctly uses the configured IoU variant for per-sample loss computation
-            pred_xyxy = box_cxcywh_to_xyxy(pred_tensor)
-            target_xyxy = box_cxcywh_to_xyxy(target_tensor)
-
-            if self.iou_loss_type == 'ciou':
-                # Use Complete IoU
-                ciou_per_sample = compute_ciou(pred_xyxy, target_xyxy)  # [B], range [-1, 1]
-                iou_loss_per_sample = 1.0 - ciou_per_sample  # [B], loss in [0, 2]
-            elif self.iou_loss_type == 'giou':
-                # Use Generalized IoU (default)
-                giou_per_sample = compute_giou(pred_xyxy, target_xyxy)  # [B], range [-1, 1]
-                iou_loss_per_sample = 1.0 - giou_per_sample  # [B], loss in [0, 2]
-            else:
-                # Fallback: Use GIoU if unknown type
-                giou_per_sample = compute_giou(pred_xyxy, target_xyxy)
-                iou_loss_per_sample = 1.0 - giou_per_sample
-
-            # Apply validity masking: invalid samples contribute 0 loss
-            if validity_mask is not None:
-                # Ensure mask is float32
-                if validity_mask.dtype != torch.float32:
-                    validity_mask = validity_mask.float()
-
-                # Masked loss: only valid samples contribute
-                masked_l1 = l1_loss_per_sample * validity_mask  # [B]
-                masked_iou = iou_loss_per_sample * validity_mask  # [B]
-
-                # Average over valid samples only
-                num_valid = validity_mask.sum().clamp(min=1.0)
-                l1_loss = masked_l1.sum() / num_valid
-                iou_loss = masked_iou.sum() / num_valid
-            else:
-                # No masking: use mean reduction as before
-                l1_loss = l1_loss_per_sample.mean()
-                iou_loss = iou_loss_per_sample.mean()
-
-            # Classification loss with IoU-based quality
-            if target_labels is not None:
-                if self.use_quality_focal:
-                    # Compute IoU as quality target - use type-safe conversion
-                    with torch.no_grad():
-                        pred_xyxy_wrapper = pred_bbox_wrapper.to_xyxy()
-                        target_xyxy_wrapper = target_bbox_wrapper.to_xyxy()
-                        target_quality = compute_iou(
-                            pred_xyxy_wrapper.tensor(),
-                            target_xyxy_wrapper.tensor()
-                        )
-
-                        # CRITICAL FIX (Audit 2025112002): Force quality=0 for invalid samples
-                        # This trains the model to output low confidence for occluded/missing targets
-                        # Following YOLO objectness and modern Siamese tracker approaches
-                        if validity_mask is not None:
-                            target_quality = target_quality * validity_mask
-
-                    cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
-                else:
-                    cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())
-            else:
-                # Default to positive labels if not provided
-                target_labels = torch.ones_like(pred_scores)
-                if self.use_quality_focal:
-                    with torch.no_grad():
-                        pred_xyxy_wrapper = pred_bbox_wrapper.to_xyxy()
-                        target_xyxy_wrapper = target_bbox_wrapper.to_xyxy()
-                        target_quality = compute_iou(
-                            pred_xyxy_wrapper.tensor(),
-                            target_xyxy_wrapper.tensor()
-                        )
-
-                        # CRITICAL FIX (Audit 2025112002): Force quality=0 for invalid samples
-                        if validity_mask is not None:
-                            target_quality = target_quality * validity_mask
-
-                    cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
-                else:
-                    cls_loss = self.cls_loss_fn(pred_scores, target_labels)
-
-            # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 4):
-            # Confidence loss for objectness prediction
-            # CRITICAL FIX (Audit 2025112509 Bug B7): Add validity masking to confidence loss
-            # Without masking, invalid samples (validity_mask=0) corrupt confidence head training
-            # Key distinction:
-            #   - validity_mask=0: Invalid sample, should NOT contribute to ANY loss
-            #   - has_object=0: Valid sample where target is not visible, should learn low confidence
-            conf_loss = torch.tensor(0.0, device=features.device)
-            if self.confidence_head is not None and has_object is not None:
-                # Ensure has_object is float tensor
-                if has_object.dtype != torch.float32:
-                    has_object = has_object.float()
-
-                # CRITICAL FIX: Check for NaN/Inf in inputs before loss computation
-                if torch.any(~torch.isfinite(pred_confidence)):
-                    self.logger.warning(
-                        f"[BoxHead] NaN/Inf detected in pred_confidence before conf_loss! "
-                        f"Replacing with zeros."
-                    )
-                    pred_confidence = torch.where(
-                        torch.isfinite(pred_confidence),
-                        pred_confidence,
-                        torch.zeros_like(pred_confidence)
-                    )
-
-                # Compute per-sample BCE loss (reduction='none' for masking)
-                conf_loss_per_sample = F.binary_cross_entropy_with_logits(
-                    pred_confidence.squeeze(-1) if pred_confidence.dim() > 1 else pred_confidence,
-                    has_object,
-                    reduction='none'
-                )  # [B]
-
-                # CRITICAL FIX (Audit 2025112509 Bug B7): Apply validity masking
-                # Only valid samples should contribute to confidence loss
-                if validity_mask is not None:
-                    # Ensure mask is float32
-                    if validity_mask.dtype != torch.float32:
-                        validity_mask_float = validity_mask.float()
-                    else:
-                        validity_mask_float = validity_mask
-
-                    # Masked loss: only valid samples contribute
-                    masked_conf_loss = conf_loss_per_sample * validity_mask_float
-                    num_valid = validity_mask_float.sum().clamp(min=1.0)
-                    conf_loss = masked_conf_loss.sum() / num_valid
-                else:
-                    # No masking: use mean reduction
-                    conf_loss = conf_loss_per_sample.mean()
-
-                # CRITICAL FIX: Check if conf_loss is NaN and replace with zero
-                if torch.any(~torch.isfinite(conf_loss)):
-                    self.logger.warning(
-                        f"[BoxHead] NaN/Inf detected in conf_loss! Replacing with zero. "
-                        f"pred_confidence range: [{pred_confidence.min():.4f}, {pred_confidence.max():.4f}], "
-                        f"has_object range: [{has_object.min():.4f}, {has_object.max():.4f}]"
-                    )
-                    conf_loss = torch.tensor(0.0, device=features.device)
-
-            # CRITICAL FIX: Check all loss components for NaN before combining
-            if torch.any(~torch.isfinite(cls_loss)):
-                self.logger.warning(f"[BoxHead] NaN/Inf in cls_loss! Replacing with zero.")
-                cls_loss = torch.tensor(0.0, device=features.device)
-            if torch.any(~torch.isfinite(l1_loss)):
-                self.logger.warning(f"[BoxHead] NaN/Inf in l1_loss! Replacing with zero.")
-                l1_loss = torch.tensor(0.0, device=features.device)
-            if torch.any(~torch.isfinite(iou_loss)):
-                self.logger.warning(f"[BoxHead] NaN/Inf in iou_loss! Replacing with zero.")
-                iou_loss = torch.tensor(0.0, device=features.device)
-
-            outputs.update({
-                'cls_loss': cls_loss * self.loss_weight_cls,
-                'l1_loss': l1_loss * self.loss_weight_l1,
-                'iou_loss': iou_loss * self.loss_weight_iou,
-            })
-
-            # Add confidence loss if computed
-            if self.confidence_head is not None:
-                outputs['conf_loss'] = conf_loss * self.loss_weight_conf
-                outputs['total_loss'] = (
-                    cls_loss * self.loss_weight_cls +
-                    l1_loss * self.loss_weight_l1 +
-                    iou_loss * self.loss_weight_iou +
-                    conf_loss * self.loss_weight_conf
-                )
-            else:
-                outputs['total_loss'] = (
-                    cls_loss * self.loss_weight_cls +
-                    l1_loss * self.loss_weight_l1 +
-                    iou_loss * self.loss_weight_iou
-                )
+            losses = self._compute_losses(
+                score_map_logits, size_map, offset_map,
+                pred_boxes, target_boxes,
+                validity_mask, feat_sz
+            )
+            outputs.update(losses)
+            outputs['total_loss'] = losses.get('total_loss', torch.tensor(0.0, device=features.device))
 
         return outputs
 
-    def compute_loss(
+    def _compute_losses(
         self,
-        predictions: Dict[str, torch.Tensor],
+        score_map_logits: torch.Tensor,
+        size_map: torch.Tensor,
+        offset_map: Optional[torch.Tensor],
+        pred_boxes: torch.Tensor,
         target_boxes: torch.Tensor,
-        target_labels: Optional[torch.Tensor] = None,
-        validity_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Compute box prediction loss with enforced type-safe format checking.
+        validity_mask: Optional[torch.Tensor],
+        feat_sz: int
+    ) -> Dict[str, torch.Tensor]:
+        """Compute CENTER head losses."""
+        B = target_boxes.shape[0]
+        device = target_boxes.device
 
-        CRITICAL (Audit 2025111411 Finding 3): Enforces cxcywh format using
-        type-safe wrappers to prevent silent format confusion.
+        target_cx = target_boxes[:, 0]
+        target_cy = target_boxes[:, 1]
+        target_w = target_boxes[:, 2]
+        target_h = target_boxes[:, 3]
 
-        CRITICAL FIX (Audit 2025112002): Added validity_mask parameter to enable
-        proper training of quality/objectness scores for invalid samples.
+        target_idx_x = target_cx * feat_sz
+        target_idx_y = target_cy * feat_sz
 
-        Args:
-            predictions: Dictionary from forward() containing pred_boxes and pred_scores
-            target_boxes: Target boxes in cxcywh format, shape (B, 4)
-            target_labels: Optional target labels (default: all positive)
-            validity_mask: Validity mask for samples (0=invalid, 1=valid), shape (B,), optional
-                          Invalid samples will have target_quality forced to 0.0
+        y_coords = torch.arange(feat_sz, device=device, dtype=torch.float32)
+        x_coords = torch.arange(feat_sz, device=device, dtype=torch.float32)
+        yy, xx = torch.meshgrid(y_coords, x_coords, indexing='ij')
 
-        Returns:
-            Total loss (scalar)
-        """
-        from aquasot3d.utils.bbox import BBoxCXCYWH, BBoxXYXY
+        sigma = torch.clamp(target_w * feat_sz / 4, min=1.0)
 
-        # Extract predictions
-        pred_boxes = predictions['pred_boxes']
-        pred_scores = predictions['pred_scores']
+        target_score_map = torch.exp(
+            -((xx.unsqueeze(0) - target_idx_x.view(B, 1, 1)) ** 2 +
+              (yy.unsqueeze(0) - target_idx_y.view(B, 1, 1)) ** 2) /
+            (2 * sigma.view(B, 1, 1) ** 2)
+        )
+        target_score_map = target_score_map.unsqueeze(1)
 
-        # Convert boxes to cxcywh if needed, using type-safe wrappers
-        if self.box_format == 'xyxy':
-            pred_bbox_xyxy = BBoxXYXY(pred_boxes)
-            pred_bbox_cxcywh = pred_bbox_xyxy.to_cxcywh()
-        else:
-            pred_bbox_cxcywh = BBoxCXCYWH(pred_boxes)
+        score_map_prob = torch.sigmoid(score_map_logits)
 
-        # Wrap target boxes to enforce format contract
-        target_bbox_cxcywh = BBoxCXCYWH(target_boxes)
+        pos_weight = target_score_map
+        neg_weight = 1 - target_score_map
 
-        # Extract validated tensors for loss computation
-        pred_tensor = pred_bbox_cxcywh.tensor()
-        target_tensor = target_bbox_cxcywh.tensor()
+        pos_loss = -pos_weight * torch.log(score_map_prob.clamp(min=1e-6))
+        neg_loss = -neg_weight * ((1 - score_map_prob) ** 2) * torch.log((1 - score_map_prob).clamp(min=1e-6))
 
-        # CRITICAL FIX (Audit 2025112101): Apply validity masking to regression losses
-        # Invalid samples have bbox=[0,0,0,0] which has no supervisory meaning.
-        # We mask regression losses to prevent training on meaningless targets.
+        score_loss = (pos_loss + neg_loss).mean()
+
+        target_size = torch.stack([target_w, target_h], dim=-1)
+        pred_size = pred_boxes[:, 2:4]
+
+        size_loss = F.l1_loss(pred_size, target_size, reduction='none').mean(dim=-1)
+
+        pred_xyxy = box_cxcywh_to_xyxy(pred_boxes)
+        target_xyxy = box_cxcywh_to_xyxy(target_boxes)
+        giou = compute_giou(pred_xyxy, target_xyxy)
+        iou_loss = 1.0 - giou
+
         if validity_mask is not None:
-            # Compute per-sample losses
-            l1_loss_per_sample = F.l1_loss(pred_tensor, target_tensor, reduction='none').mean(dim=1)  # [B]
-            iou_loss_per_sample = self.iou_loss_fn(pred_tensor, target_tensor)  # Should return [B]
-            if iou_loss_per_sample.dim() == 0:
-                # If scalar, convert to per-sample for masking
-                iou_loss_per_sample = iou_loss_per_sample.unsqueeze(0).expand(pred_tensor.shape[0])
-
-            # Apply validity masking
-            l1_loss_masked = l1_loss_per_sample * validity_mask
-            iou_loss_masked = iou_loss_per_sample * validity_mask
-
-            # Average only over valid samples
+            validity_mask = validity_mask.float()
             num_valid = validity_mask.sum().clamp(min=1.0)
-            l1_loss = l1_loss_masked.sum() / num_valid
-            iou_loss = iou_loss_masked.sum() / num_valid
+            size_loss = (size_loss * validity_mask).sum() / num_valid
+            iou_loss = (iou_loss * validity_mask).sum() / num_valid
         else:
-            # No masking: use original behavior
-            l1_loss = self.l1_loss_fn(pred_tensor, target_tensor)
-            iou_loss = self.iou_loss_fn(pred_tensor, target_tensor)
+            size_loss = size_loss.mean()
+            iou_loss = iou_loss.mean()
 
-        # Classification loss
-        if target_labels is None:
-            target_labels = torch.ones_like(pred_scores)
-
-        if self.use_quality_focal:
-            # Compute IoU as quality target - use type-safe conversion
-            with torch.no_grad():
-                pred_xyxy_wrapper = pred_bbox_cxcywh.to_xyxy()
-                target_xyxy_wrapper = target_bbox_cxcywh.to_xyxy()
-                target_quality = compute_iou(
-                    pred_xyxy_wrapper.tensor(),
-                    target_xyxy_wrapper.tensor()
-                )
-
-                # CRITICAL FIX (Audit 2025112002): Force quality=0 for invalid samples
-                # This trains the model to output low confidence for occluded/missing targets
-                if validity_mask is not None:
-                    target_quality = target_quality * validity_mask
-
-            cls_loss = self.cls_loss_fn(pred_scores, target_labels, target_quality)
-        else:
-            cls_loss = self.cls_loss_fn(pred_scores, target_labels.float())
-
-        # Total weighted loss
         total_loss = (
-            cls_loss * self.loss_weight_cls +
-            l1_loss * self.loss_weight_l1 +
-            iou_loss * self.loss_weight_iou
+            score_loss * self.loss_weight_score +
+            size_loss * self.loss_weight_size +
+            iou_loss * 2.0
         )
 
-        return total_loss
+        return {
+            'score_loss': score_loss,
+            'size_loss': size_loss,
+            'iou_loss': iou_loss,
+            'total_loss': total_loss,
+            'cls_loss': score_loss,
+            'l1_loss': size_loss,
+        }
 
 
-@PREDICTION_HEAD_REGISTRY.register("RGBBoxHead")
-class RGBBoxHead(BoxHead):
-    """
-    RGB-specific 2D Box Prediction Head.
-
-    Specialized version of BoxHead optimized for RGB features.
-    Uses same architecture but can have RGB-specific configurations.
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.logger.info("Initialized RGB-specific BoxHead")
-
-
-@PREDICTION_HEAD_REGISTRY.register("SonarBoxHead")
-class SonarBoxHead(BoxHead):
-    """
-    Sonar-specific 2D Box Prediction Head.
-
-    Specialized version of BoxHead optimized for Sonar features.
-    Uses generic initialization (same as RGB) for simplicity and consistency.
-
-    NOTE: Previously used data-driven initialization based on polar coordinates.
-    Changed to generic initialization to match RGB modality and simplify maintenance.
-    Uses parent class BoxHead._init_weights() which initializes to:
-    - cx, cy: 0.5 (image center)
-    - w, h: 0.3 (moderate box size)
-    """
+@PREDICTION_HEAD_REGISTRY.register("RGBCenterHead")
+class RGBCenterHead(CenterHead):
+    """RGB-specific CENTER prediction head."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.logger.info("Initialized Sonar-specific BoxHead with generic initialization")
+        self.logger.info("Initialized RGB CenterHead")
 
 
-@PREDICTION_HEAD_REGISTRY.register("FusionBoxHead")
-class FusionBoxHead(BoxHead):
-    """
-    Fusion 2D Box Prediction Head.
-
-    DEPRECATED (Audit 2025112313): This class is deprecated and no longer used.
-    The dual-view fusion architecture uses RGB and Sonar BoxHeads directly on
-    rgb_view_fused and sonar_view_fused features. This class is retained only
-    for backward compatibility with old checkpoints.
-
-    DO NOT USE THIS CLASS IN NEW CODE.
-    """
+@PREDICTION_HEAD_REGISTRY.register("SonarCenterHead")
+class SonarCenterHead(CenterHead):
+    """Sonar-specific CENTER prediction head."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.logger.warning(
-            "FusionBoxHead is DEPRECATED (Audit 2025112313). "
-            "Use RGBBoxHead/SonarBoxHead with dual-view fusion instead."
-        )
+        self.logger.info("Initialized Sonar CenterHead")
 
 
 def build_box_head(
     head_type: str = 'rgb',
     in_channels: int = 768,
     **kwargs
-) -> BoxHead:
+) -> CenterHead:
     """
     Factory function to build box prediction head.
 
-    ARCHITECTURE UPDATE (Audit 2025112313): Default changed from 'fusion' to 'rgb'.
-    The 'fusion' head type is deprecated.
-
     Args:
-        head_type: Type of head ('rgb', 'sonar', or 'base')
+        head_type: Modality type ('rgb', 'sonar', or 'base')
         in_channels: Input feature dimension
-        **kwargs: Additional arguments for BoxHead
+        **kwargs: Additional arguments for CenterHead
 
     Returns:
-        BoxHead instance
-
-    Example:
-        >>> head = build_box_head('rgb', in_channels=768, hidden_dim=256)
+        CenterHead instance
     """
     if head_type == 'rgb':
-        return RGBBoxHead(in_channels=in_channels, **kwargs)
+        return RGBCenterHead(in_channels=in_channels, **kwargs)
     elif head_type == 'sonar':
-        return SonarBoxHead(in_channels=in_channels, **kwargs)
-    elif head_type == 'fusion':
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(
-            "FusionBoxHead is DEPRECATED (Audit 2025112313). "
-            "Use 'rgb' or 'sonar' head types instead."
-        )
-        return FusionBoxHead(in_channels=in_channels, **kwargs)
+        return SonarCenterHead(in_channels=in_channels, **kwargs)
     else:
-        return BoxHead(in_channels=in_channels, **kwargs)
+        return CenterHead(in_channels=in_channels, **kwargs)

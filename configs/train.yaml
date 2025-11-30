@@ -90,21 +90,19 @@ model:
 
   heads:
     rgb_box:
-      type: BoxHead               # Box prediction head type
+      type: CenterHead            # OSTrack-style CENTER prediction head
       in_channels: 768            # Input feature channels
       hidden_dim: 256             # Hidden layer dimension
-      use_confidence_head: true   # Objectness confidence prediction
-      loss_weight_conf: 1.0       # Confidence loss weight
-      loss_weight_l1: 5.0         # L1 regression loss weight
-      loss_weight_iou: 2.0        # GIoU loss weight
+      use_offset: true            # Enable sub-pixel offset refinement
+      loss_weight_score: 1.0      # Score map loss weight
+      loss_weight_size: 5.0       # Size regression loss weight
     sonar_box:
-      type: BoxHead               # Box prediction head type
+      type: CenterHead            # OSTrack-style CENTER prediction head
       in_channels: 768            # Input feature channels
       hidden_dim: 256             # Hidden layer dimension
-      use_confidence_head: true   # Objectness confidence prediction
-      loss_weight_conf: 1.0       # Confidence loss weight
-      loss_weight_l1: 5.0         # L1 regression loss weight
-      loss_weight_iou: 2.0        # GIoU loss weight
+      use_offset: true            # Enable sub-pixel offset refinement
+      loss_weight_score: 1.0      # Score map loss weight
+      loss_weight_size: 5.0       # Size regression loss weight
 
 training:
   num_epochs: 100                 # Total training epochs [🚀A4000: 100]

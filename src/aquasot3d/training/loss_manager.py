@@ -207,19 +207,25 @@ class LossManager(nn.Module):
 
         loss_dict = {}
 
-        # Priority 1.1: Extract model-internal losses (consistency losses)
-        # CRITICAL FIX: Only store raw values here, weighting happens in section 5
-        # Previous bug: losses were weighted here AND in section 5 (double weighting)
+        # Priority 1.1: Extract model-internal losses
+        # CenterHead returns total_loss which includes: score_loss + size_loss*5 + iou_loss*2
+        # This is critical for training the center heatmap and size regression!
         model_losses = predictions.get('losses', {})
         if model_losses:
-            consistency_loss_map = {
+            # Map model loss keys to config weight keys
+            model_loss_map = {
+                # Box losses from CenterHead (includes score_loss on heatmap!)
+                'rgb_box_loss': 'rgb_box',
+                'sonar_box_loss': 'sonar_box',
+                # Consistency losses
                 'geometric_consistency': 'geometric_consistency',
                 'representation_consistency': 'representation_consistency',
                 'view_consistency': 'view_consistency',
+                # Auxiliary losses
                 'aux_rgb_loss': 'aux_rgb',
                 'aux_sonar_loss': 'aux_sonar',
             }
-            for model_key, config_key in consistency_loss_map.items():
+            for model_key, config_key in model_loss_map.items():
                 if model_key in model_losses and model_losses[model_key] is not None:
                     loss_value = model_losses[model_key]
                     if isinstance(loss_value, torch.Tensor):
@@ -245,60 +251,56 @@ class LossManager(nn.Module):
         )
 
         # ============================================
-        # 1. RGB Branch Losses
+        # 1. RGB Branch Losses (fallback only if model didn't provide)
         # ============================================
-        # Support multiple key forms: rgb_box, rgb_boxes, search_bbox_rgb (from dataset)
-        rgb_box_pred = None
-        for key in ['rgb_box', 'rgb_boxes']:
-            if key in predictions and predictions[key] is not None:
-                rgb_box_pred = predictions[key]
-                break
+        # Prefer model-provided loss (CenterHead total_loss with score+size+iou)
+        # Only compute external GIoU loss as fallback for backward compatibility
+        if 'rgb_box' not in loss_dict:
+            rgb_box_pred = None
+            for key in ['rgb_box', 'rgb_boxes']:
+                if key in predictions and predictions[key] is not None:
+                    rgb_box_pred = predictions[key]
+                    break
 
-        rgb_box_target = None
-        for key in ['rgb_box', 'rgb_boxes', 'search_bbox_rgb']:
-            if key in targets and targets[key] is not None:
-                rgb_box_target = targets[key]
-                break
+            rgb_box_target = None
+            for key in ['rgb_box', 'rgb_boxes', 'search_bbox_rgb']:
+                if key in targets and targets[key] is not None:
+                    rgb_box_target = targets[key]
+                    break
 
-        if rgb_box_pred is not None and rgb_box_target is not None:
-            # CRITICAL (Audit 2025111903 Phase 4): Pass RGB validity mask to loss computation
-            rgb_box_loss = self._compute_box_loss(
-                rgb_box_pred,
-                rgb_box_target,
-                validity_mask=is_valid_rgb
-            )
-            loss_dict['rgb_box'] = rgb_box_loss
-
-        # ARCHITECTURE UPDATE (Audit 2025112313): Classification loss removed
-        # Single-class tracking does not require classification loss
+            if rgb_box_pred is not None and rgb_box_target is not None:
+                rgb_box_loss = self._compute_box_loss(
+                    rgb_box_pred,
+                    rgb_box_target,
+                    validity_mask=is_valid_rgb
+                )
+                loss_dict['rgb_box'] = rgb_box_loss
 
         # ============================================
-        # 2. Sonar Branch Losses
+        # 2. Sonar Branch Losses (fallback only if model didn't provide)
         # ============================================
-        # Support multiple key forms: sonar_box, sonar_boxes, search_bbox_sonar (from dataset)
-        sonar_box_pred = None
-        for key in ['sonar_box', 'sonar_boxes']:
-            if key in predictions and predictions[key] is not None:
-                sonar_box_pred = predictions[key]
-                break
+        # Prefer model-provided loss (CenterHead total_loss with score+size+iou)
+        # Only compute external GIoU loss as fallback for backward compatibility
+        if 'sonar_box' not in loss_dict:
+            sonar_box_pred = None
+            for key in ['sonar_box', 'sonar_boxes']:
+                if key in predictions and predictions[key] is not None:
+                    sonar_box_pred = predictions[key]
+                    break
 
-        sonar_box_target = None
-        for key in ['sonar_box', 'sonar_boxes', 'search_bbox_sonar']:
-            if key in targets and targets[key] is not None:
-                sonar_box_target = targets[key]
-                break
+            sonar_box_target = None
+            for key in ['sonar_box', 'sonar_boxes', 'search_bbox_sonar']:
+                if key in targets and targets[key] is not None:
+                    sonar_box_target = targets[key]
+                    break
 
-        if sonar_box_pred is not None and sonar_box_target is not None:
-            # CRITICAL (Audit 2025111903 Phase 4): Pass Sonar validity mask to loss computation
-            sonar_box_loss = self._compute_box_loss(
-                sonar_box_pred,
-                sonar_box_target,
-                validity_mask=is_valid_sonar
-            )
-            loss_dict['sonar_box'] = sonar_box_loss
-
-        # ARCHITECTURE UPDATE (Audit 2025112313): Classification loss removed
-        # Single-class tracking does not require classification loss
+            if sonar_box_pred is not None and sonar_box_target is not None:
+                sonar_box_loss = self._compute_box_loss(
+                    sonar_box_pred,
+                    sonar_box_target,
+                    validity_mask=is_valid_sonar
+                )
+                loss_dict['sonar_box'] = sonar_box_loss
 
         # ============================================
         # 3. Consistency Losses

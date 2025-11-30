@@ -570,13 +570,10 @@ class AquaSOT3DTracker(BaseModule):
             if 'conf_loss' in rgb_box_outputs:
                 outputs['rgb_conf_loss'] = rgb_box_outputs['conf_loss']
 
-            # CRITICAL FIX (Audit 2025112407): Extract bbox regression losses
-            # BoxHead returns 'l1_loss' and 'iou_loss', we need to combine them
-            # into 'rgb_box_loss' for the loss manager
+            # Extract total loss from CenterHead (includes score + size + iou losses)
             if gt_boxes is not None and 'rgb' in gt_boxes:
-                if 'l1_loss' in rgb_box_outputs and 'iou_loss' in rgb_box_outputs:
-                    # Combine L1 and GIoU losses into bbox regression loss
-                    outputs['rgb_box_loss'] = rgb_box_outputs['l1_loss'] + rgb_box_outputs['iou_loss']
+                if 'total_loss' in rgb_box_outputs:
+                    outputs['rgb_box_loss'] = rgb_box_outputs['total_loss']
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Sonar box prediction now uses Sonar-view fused features instead of original features
@@ -609,13 +606,10 @@ class AquaSOT3DTracker(BaseModule):
             if 'conf_loss' in sonar_box_outputs:
                 outputs['sonar_conf_loss'] = sonar_box_outputs['conf_loss']
 
-            # CRITICAL FIX (Audit 2025112407): Extract bbox regression losses
-            # BoxHead returns 'l1_loss' and 'iou_loss', we need to combine them
-            # into 'sonar_box_loss' for the loss manager
+            # Extract total loss from CenterHead (includes score + size + iou losses)
             if gt_boxes is not None and 'sonar' in gt_boxes:
-                if 'l1_loss' in sonar_box_outputs and 'iou_loss' in sonar_box_outputs:
-                    # Combine L1 and GIoU losses into bbox regression loss
-                    outputs['sonar_box_loss'] = sonar_box_outputs['l1_loss'] + sonar_box_outputs['iou_loss']
+                if 'total_loss' in sonar_box_outputs:
+                    outputs['sonar_box_loss'] = sonar_box_outputs['total_loss']
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion box prediction REMOVED. Primary tracking output now comes from:
