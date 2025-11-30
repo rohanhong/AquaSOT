@@ -189,17 +189,22 @@ class AquaSOT3DTracker(BaseModule):
         # Add lightweight auxiliary heads that predict from original features (pre-fusion).
         # This prevents backbone feature degradation by providing direct gradient flow.
         # These heads are ONLY used during training, not inference.
+        #
+        # CRITICAL FIX (Audit 2025113001): Add Sigmoid activation to constrain output to [0,1]
+        # Without Sigmoid, outputs are unbounded while GT is normalized to [0,1], causing
+        # large loss values and inconsistent gradients.
         self.aux_rgb_head = None
         self.aux_sonar_head = None
         if self.backbone.rgb_backbone is not None and self.backbone.sonar_encoder is not None:
-            # Very lightweight: just adaptive pooling + linear layers
+            # Very lightweight: adaptive pooling + MLP + Sigmoid
             self.aux_rgb_head = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),  # [B, C, H, W] -> [B, C, 1, 1]
                 nn.Flatten(),  # [B, C, 1, 1] -> [B, C]
                 nn.Linear(self.rgb_feat_dim, 256),
                 nn.ReLU(inplace=True),
                 nn.Dropout(0.1),
-                nn.Linear(256, 4)  # Predict bbox [cx, cy, w, h]
+                nn.Linear(256, 4),  # Predict bbox [cx, cy, w, h]
+                nn.Sigmoid()  # CRITICAL: Constrain to [0, 1] for normalized coords
             )
             self.aux_sonar_head = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
@@ -207,8 +212,12 @@ class AquaSOT3DTracker(BaseModule):
                 nn.Linear(self.sonar_feat_dim, 256),
                 nn.ReLU(inplace=True),
                 nn.Dropout(0.1),
-                nn.Linear(256, 4)
+                nn.Linear(256, 4),
+                nn.Sigmoid()  # CRITICAL: Constrain to [0, 1] for normalized coords
             )
+            # CRITICAL FIX (Audit 2025113001): Initialize auxiliary heads properly
+            # Following BoxHead conventions for input sensitivity and centered initial predictions
+            self._init_aux_heads()
             logger.info("Initialized auxiliary heads for feature degradation prevention")
         else:
             logger.info("Auxiliary heads disabled (single-modal training)")
@@ -225,6 +234,41 @@ class AquaSOT3DTracker(BaseModule):
             f"fused_dim={self.fused_feat_dim}"
         )
 
+    def _init_aux_heads(self):
+        """
+        Initialize auxiliary heads following BoxHead conventions.
+
+        CRITICAL FIX (Audit 2025113001): Proper initialization is essential for:
+        1. Input sensitivity: Network must respond to different inputs
+        2. Centered initial predictions: Start with [0.5, 0.5, 0.3, 0.3]
+        3. Consistent gradient magnitudes: Avoid exploding/vanishing gradients
+
+        Reference: OSTrack/MixFormer weight initialization standards.
+        """
+        for head in [self.aux_rgb_head, self.aux_sonar_head]:
+            if head is None:
+                continue
+
+            # Initialize all Linear layers with standard Xavier
+            for m in head.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight, gain=1.0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+
+            # Special initialization for output layer (Linear before Sigmoid)
+            # This produces initial predictions around [0.5, 0.5, 0.3, 0.3]
+            output_layer = head[-2]  # Linear layer before Sigmoid
+            if isinstance(output_layer, nn.Linear):
+                # std=0.1 for input sensitivity (following BoxHead fix)
+                nn.init.normal_(output_layer.weight, mean=0.0, std=0.1)
+                if output_layer.bias is not None:
+                    # Initialize bias to produce centered predictions after Sigmoid
+                    # sigmoid(0) = 0.5, sigmoid(-0.85) ~ 0.3
+                    output_layer.bias.data[0] = 0.0   # cx ~ 0.5 after sigmoid
+                    output_layer.bias.data[1] = 0.0   # cy ~ 0.5 after sigmoid
+                    output_layer.bias.data[2] = -0.85  # w ~ 0.3 after sigmoid
+                    output_layer.bias.data[3] = -0.85  # h ~ 0.3 after sigmoid
 
     def detect_modality_availability(
         self,

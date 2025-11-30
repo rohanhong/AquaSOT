@@ -197,16 +197,38 @@ class LossManager(nn.Module):
         # Update weights if using scheduling
         weights = self._get_current_weights()
 
-        # Priority 1.1: Check if model provided pre-computed losses
-        if 'losses' in predictions and len(predictions.get('losses', {})) > 0:
-            # Use model-internal losses directly with name mapping
-            return self._compute_from_model_losses(predictions['losses'], epoch)
+        # CRITICAL FIX (Audit 2025113001 Issue 5): Always compute box losses externally
+        # Previous bug: When model provided internal losses (consistency), we returned early
+        # and NEVER computed box losses, causing training to stagnate at ~5.0.
+        #
+        # New design: Merge model-internal losses with externally computed box losses.
+        # Model provides: consistency losses (geometric, representation, view)
+        # LossManager computes: box losses (rgb_box, sonar_box, rgb_conf, sonar_conf)
+
+        loss_dict = {}
+
+        # Priority 1.1: Extract model-internal losses (consistency losses)
+        # CRITICAL FIX: Only store raw values here, weighting happens in section 5
+        # Previous bug: losses were weighted here AND in section 5 (double weighting)
+        model_losses = predictions.get('losses', {})
+        if model_losses:
+            consistency_loss_map = {
+                'geometric_consistency': 'geometric_consistency',
+                'representation_consistency': 'representation_consistency',
+                'view_consistency': 'view_consistency',
+                'aux_rgb_loss': 'aux_rgb',
+                'aux_sonar_loss': 'aux_sonar',
+            }
+            for model_key, config_key in consistency_loss_map.items():
+                if model_key in model_losses and model_losses[model_key] is not None:
+                    loss_value = model_losses[model_key]
+                    if isinstance(loss_value, torch.Tensor):
+                        # Store RAW value only - weighting happens in section 5
+                        loss_dict[config_key] = loss_value
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion GT fallback REMOVED. Fusion box head no longer exists.
         # RGB and Sonar BoxHeads now use dual-view fused features with separate GT.
-
-        loss_dict = {}
 
         # CRITICAL (Audit 2025111903 Phase 4): Extract validity masks from targets
         # These masks propagate from dataset → augmentation → collate → here
@@ -225,9 +247,19 @@ class LossManager(nn.Module):
         # ============================================
         # 1. RGB Branch Losses
         # ============================================
-        # Support both singular and plural forms (avoid tensor boolean ambiguity)
-        rgb_box_pred = predictions.get('rgb_box') if 'rgb_box' in predictions else predictions.get('rgb_boxes')
-        rgb_box_target = targets.get('rgb_box') if 'rgb_box' in targets else targets.get('rgb_boxes')
+        # Support multiple key forms: rgb_box, rgb_boxes, search_bbox_rgb (from dataset)
+        rgb_box_pred = None
+        for key in ['rgb_box', 'rgb_boxes']:
+            if key in predictions and predictions[key] is not None:
+                rgb_box_pred = predictions[key]
+                break
+
+        rgb_box_target = None
+        for key in ['rgb_box', 'rgb_boxes', 'search_bbox_rgb']:
+            if key in targets and targets[key] is not None:
+                rgb_box_target = targets[key]
+                break
+
         if rgb_box_pred is not None and rgb_box_target is not None:
             # CRITICAL (Audit 2025111903 Phase 4): Pass RGB validity mask to loss computation
             rgb_box_loss = self._compute_box_loss(
@@ -243,8 +275,19 @@ class LossManager(nn.Module):
         # ============================================
         # 2. Sonar Branch Losses
         # ============================================
-        sonar_box_pred = predictions.get('sonar_box') if 'sonar_box' in predictions else predictions.get('sonar_boxes')
-        sonar_box_target = targets.get('sonar_box') if 'sonar_box' in targets else targets.get('sonar_boxes')
+        # Support multiple key forms: sonar_box, sonar_boxes, search_bbox_sonar (from dataset)
+        sonar_box_pred = None
+        for key in ['sonar_box', 'sonar_boxes']:
+            if key in predictions and predictions[key] is not None:
+                sonar_box_pred = predictions[key]
+                break
+
+        sonar_box_target = None
+        for key in ['sonar_box', 'sonar_boxes', 'search_bbox_sonar']:
+            if key in targets and targets[key] is not None:
+                sonar_box_target = targets[key]
+                break
+
         if sonar_box_pred is not None and sonar_box_target is not None:
             # CRITICAL (Audit 2025111903 Phase 4): Pass Sonar validity mask to loss computation
             sonar_box_loss = self._compute_box_loss(

@@ -118,14 +118,14 @@ training:
 
   scheduler:
     type: cosine                  # LR scheduler type
-    warmup_epochs: 10             # Warmup epochs [🚀A4000: 10]
-    warmup_lr: 1.0e-06            # Warmup starting LR [🚀A4000: 1.0e-06]
+    warmup_epochs: 5              # Warmup epochs [🚀A4000: 5]
+    warmup_lr: 1.0e-05            # Warmup starting LR [🚀A4000: 1.0e-05]
     t_max: 100                    # Cosine annealing period
     eta_min: 1.0e-06              # Cosine annealing minimum LR
 
   grad_clip:
     enabled: true                 # Enable gradient clipping
-    max_norm: 0.1                 # Max gradient norm
+    max_norm: 0.1                 # Max gradient norm (OSTrack standard, DO NOT change to 1.0)
     norm_type: 2                  # Gradient norm type
 
   loss_weights:

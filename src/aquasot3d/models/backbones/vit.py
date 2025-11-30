@@ -105,7 +105,10 @@ class ViTBackbone(BaseModule):
         # Channel adapter for single-channel inputs (e.g., Sonar)
         if in_channels == 1:
             self.channel_adapter = nn.Conv2d(1, 3, kernel_size=1, bias=False)
-            self.logger.info("Added 1->3 channel adapter for single-channel input")
+            # CRITICAL FIX: Initialize to replicate input channel to all 3 outputs
+            # Random initialization causes gradient explosion with pretrained ViT
+            nn.init.constant_(self.channel_adapter.weight, 1.0)
+            self.logger.info("Added 1->3 channel adapter (initialized to replicate)")
         else:
             self.channel_adapter = None
 

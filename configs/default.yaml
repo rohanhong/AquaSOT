@@ -153,7 +153,7 @@ training:
 
   grad_clip:
     enabled: true             # Enable gradient clipping
-    max_norm: 0.1             # Max gradient norm
+    max_norm: 0.1             # Max gradient norm (OSTrack standard, DO NOT change to 1.0)
     norm_type: 2              # Gradient norm type
 
   loss_weights:

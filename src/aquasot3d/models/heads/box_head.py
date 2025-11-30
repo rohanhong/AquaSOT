@@ -576,48 +576,56 @@ class BoxHead(BaseHead):
 
     def _init_weights(self):
         """
-        Initialize weights for stable training following DETR/FCOS best practices.
+        Initialize weights following OSTrack/MixFormer best practices.
 
-        CRITICAL FIX: Use conservative initialization to prevent gradient explosion
-        in first optimizer step. Xavier with small gain for all layers.
+        CRITICAL FIX (Audit 2025113001): Previous initialization was TOO conservative
+        (gain=0.1, std=0.001), causing the network to be insensitive to input features.
+        This led to loss stagnation at ~5.0 with the model always predicting center.
+
+        Reference implementations:
+        - OSTrack: Xavier uniform with default gain
+        - MixFormer: Standard initialization
+        - DETR: Xavier uniform for attention, standard for MLP
+
+        Key changes:
+        1. Hidden layers: Xavier uniform with gain=1.0 (standard)
+        2. Output layer: Normal init with std=0.1 (not 0.001!)
+        3. Bias: Keep centered initialization for stability
         """
-        # Initialize all linear layers with reduced gain for stability
+        # Initialize hidden layers with standard Xavier (gain=1.0)
+        # This allows the network to be responsive to input variations
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                # Use xavier_uniform with small gain (0.1) following FCOS
-                # This prevents large initial activations that can cause NaN with AMP
-                nn.init.xavier_uniform_(m.weight, gain=0.1)
+                nn.init.xavier_uniform_(m.weight, gain=1.0)  # Standard gain, not 0.1!
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-        # Special initialization for regression head output layer
-        # Use very conservative initialization: near-zero weights + centered bias
-        # This ensures initial predictions are stable and centered
+        # Regression head output layer: moderate initialization for input sensitivity
+        # CRITICAL FIX: std=0.1 allows network to respond to input features
+        # Previous std=0.001 made output essentially constant regardless of input
         reg_output_layer = self.reg_head[-2]  # Last linear before sigmoid
         if isinstance(reg_output_layer, nn.Linear):
-            # CRITICAL: Use normal init with very small std instead of zeros
-            # Zero weights can cause training to stagnate; small random helps convergence
-            nn.init.normal_(reg_output_layer.weight, mean=0.0, std=0.001)
+            # std=0.1 following OSTrack/MixFormer conventions
+            # This is 100x larger than previous 0.001, enabling learning
+            nn.init.normal_(reg_output_layer.weight, mean=0.0, std=0.1)
             if reg_output_layer.bias is not None:
                 # Initialize to produce predictions around [0.5, 0.5, 0.3, 0.3] after sigmoid
-                # logit(0.5) = 0, logit(0.3) ≈ -0.85
-                reg_output_layer.bias.data[0] = 0.0  # cx ≈ 0.5 after sigmoid
-                reg_output_layer.bias.data[1] = 0.0  # cy ≈ 0.5 after sigmoid
-                reg_output_layer.bias.data[2] = -0.85  # w ≈ 0.3 after sigmoid
-                reg_output_layer.bias.data[3] = -0.85  # h ≈ 0.3 after sigmoid
+                # logit(0.5) = 0, logit(0.3) = -0.85
+                reg_output_layer.bias.data[0] = 0.0  # cx ~ 0.5 after sigmoid
+                reg_output_layer.bias.data[1] = 0.0  # cy ~ 0.5 after sigmoid
+                reg_output_layer.bias.data[2] = -0.85  # w ~ 0.3 after sigmoid
+                reg_output_layer.bias.data[3] = -0.85  # h ~ 0.3 after sigmoid
 
-        # Conservative initialization for classification and confidence heads
+        # Classification and confidence heads: moderate initialization
         for head_name in ['cls_head', 'confidence_head']:
             if hasattr(self, head_name):
                 head = getattr(self, head_name)
                 if head is not None and len(head) > 0:
-                    # Last layer of classification heads: use very small init
                     last_layer = head[-1]
                     if isinstance(last_layer, nn.Linear):
-                        nn.init.normal_(last_layer.weight, mean=0.0, std=0.01)
+                        # std=0.1 for responsiveness (not 0.01)
+                        nn.init.normal_(last_layer.weight, mean=0.0, std=0.1)
                         if last_layer.bias is not None:
-                            # Initialize bias to predict moderate confidence (~0.5 after sigmoid)
-                            # logit(0.5) = 0
                             nn.init.constant_(last_layer.bias, 0.0)
 
     def forward(

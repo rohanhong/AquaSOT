@@ -936,20 +936,50 @@ class Trainer:
         train_metrics: Dict[str, float],
         val_metrics: Optional[Dict[str, float]]
     ):
-        """Log epoch summary."""
+        """Log epoch summary with structured, ordered output."""
         summary = f"\nEpoch {epoch + 1}/{self.max_epochs} Summary:\n"
         summary += "=" * 60 + "\n"
 
+        # Define ordered metric groups for clear output
+        metric_groups = [
+            ("Box Losses (raw)", ['rgb_box', 'sonar_box']),
+            ("Confidence Losses (raw)", ['rgb_conf', 'sonar_conf']),
+            ("Auxiliary Losses (raw)", ['aux_rgb', 'aux_sonar']),
+            ("Consistency Losses (raw)", ['geometric_consistency', 'representation_consistency', 'view_consistency']),
+            ("Weighted Contributions", ['rgb_box_weighted', 'sonar_box_weighted', 'rgb_conf_weighted', 'sonar_conf_weighted',
+                                        'aux_rgb_weighted', 'aux_sonar_weighted',
+                                        'geometric_consistency_weighted', 'representation_consistency_weighted', 'view_consistency_weighted']),
+            ("Summary", ['total', 'validity_rate', 'validity_rate_rgb', 'validity_rate_sonar', 'invalid_samples']),
+        ]
+
+        def format_metrics(metrics: Dict[str, float], prefix: str = "") -> str:
+            output = ""
+            for group_name, keys in metric_groups:
+                group_metrics = [(k, metrics.get(f"{prefix}{k}")) for k in keys if f"{prefix}{k}" in metrics]
+                if group_metrics:
+                    output += f"  [{group_name}]\n"
+                    for key, value in group_metrics:
+                        output += f"    {key}: {value:.4f}\n"
+            # Add any remaining metrics not in groups
+            grouped_keys = set()
+            for _, keys in metric_groups:
+                grouped_keys.update(keys)
+            remaining = [(k, v) for k, v in metrics.items()
+                        if k.replace(prefix, '') not in grouped_keys and not k.endswith('_raw')]
+            if remaining:
+                output += f"  [Other]\n"
+                for key, value in sorted(remaining):
+                    output += f"    {key}: {value:.4f}\n"
+            return output
+
         # Training metrics
         summary += "Training Metrics:\n"
-        for key, value in train_metrics.items():
-            summary += f"  {key}: {value:.4f}\n"
+        summary += format_metrics(train_metrics)
 
         # Validation metrics
         if val_metrics is not None:
             summary += "\nValidation Metrics:\n"
-            for key, value in val_metrics.items():
-                summary += f"  {key}: {value:.4f}\n"
+            summary += format_metrics(val_metrics, prefix="val_")
 
         # Learning rate
         summary += f"\nLearning Rate: {self.optimizer.param_groups[0]['lr']:.2e}\n"
