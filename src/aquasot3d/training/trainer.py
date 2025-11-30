@@ -606,9 +606,11 @@ class Trainer:
             # Update progress bar
             if self.is_main_process:
                 # CRITICAL (Audit 2025111903 Phase 5): Add validity rate to progress bar
+                # Display heads LR (last group) - more intuitive for warmup visualization
+                heads_lr = self.optimizer.param_groups[-1]['lr']
                 postfix = {
                     'loss': f"{loss_dict['total'].item():.4f}",
-                    'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
+                    'lr': f"{heads_lr:.2e}"
                 }
                 if validity_stats['total_samples'] > 0:
                     validity_rate = validity_stats['valid_samples'] / validity_stats['total_samples'] * 100
@@ -981,8 +983,12 @@ class Trainer:
             summary += "\nValidation Metrics:\n"
             summary += format_metrics(val_metrics, prefix="val_")
 
-        # Learning rate
-        summary += f"\nLearning Rate: {self.optimizer.param_groups[0]['lr']:.2e}\n"
+        # Learning rate - show both heads (max) and backbone (min) for clarity
+        # With layer-wise LR decay, different param groups have different LRs
+        all_lrs = [pg['lr'] for pg in self.optimizer.param_groups]
+        max_lr = max(all_lrs)  # Heads LR (shallowest layers)
+        min_lr = min(all_lrs)  # Backbone LR (deepest layers)
+        summary += f"\nLearning Rate: {max_lr:.2e} (heads) / {min_lr:.2e} (backbone)\n"
         summary += "=" * 60
 
         logger.info(summary)
