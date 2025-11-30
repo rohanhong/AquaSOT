@@ -61,6 +61,11 @@ class OnlineTrackingEvaluator:
         normalization_config: Normalization parameters for RGB and Sonar
     """
 
+    # Confidence-based search area expansion parameters (mainstream defaults)
+    CONFIDENCE_HIGH = 0.5       # High confidence threshold
+    CONFIDENCE_LOW = 0.3        # Low confidence threshold
+    EXPANSION_FACTOR = 2.0      # Maximum expansion: 2x normal search area
+
     def __init__(
         self,
         model: nn.Module,
@@ -69,7 +74,12 @@ class OnlineTrackingEvaluator:
         search_size: int = 256,
         template_area_factor: float = 2.0,
         search_area_factor: float = 4.0,
-        normalization_config: Optional[Dict] = None
+        normalization_config: Optional[Dict] = None,
+        # Search area expansion for tracking recovery
+        enable_search_expansion: bool = True,
+        confidence_high: float = None,
+        confidence_low: float = None,
+        max_expansion_factor: float = None
     ):
         self.model = model
         self.device = torch.device(device) if isinstance(device, str) else device
@@ -77,6 +87,13 @@ class OnlineTrackingEvaluator:
         self.search_size = search_size
         self.template_area_factor = template_area_factor
         self.search_area_factor = search_area_factor
+        self._base_search_area_factor = search_area_factor  # Store original
+
+        # Search area expansion for tracking recovery
+        self.enable_search_expansion = enable_search_expansion
+        self.confidence_high = confidence_high or self.CONFIDENCE_HIGH
+        self.confidence_low = confidence_low or self.CONFIDENCE_LOW
+        self.max_expansion_factor = max_expansion_factor or self.EXPANSION_FACTOR
 
         # Normalization parameters
         norm_cfg = normalization_config or {}
@@ -99,7 +116,8 @@ class OnlineTrackingEvaluator:
         logger.info(
             f"OnlineTrackingEvaluator initialized: "
             f"template_size={template_size}, search_size={search_size}, "
-            f"search_area_factor={search_area_factor}"
+            f"search_area_factor={search_area_factor}, "
+            f"enable_search_expansion={enable_search_expansion}"
         )
 
     def evaluate_sequence(
@@ -169,6 +187,16 @@ class OnlineTrackingEvaluator:
         predictions['rgb_gt'].append(rgb_gt_bbox.copy())
         predictions['sonar_gt'].append(sonar_gt_bbox.copy())
 
+        # Initialize confidence tracking for search area expansion
+        # Start with high confidence (just initialized from GT)
+        rgb_conf_prev = 1.0
+        sonar_conf_prev = 1.0
+        rgb_search_factor = self._base_search_area_factor
+        sonar_search_factor = self._base_search_area_factor
+
+        # Track expansion statistics
+        expansion_count = 0
+
         # === FRAMES 1 to N-1: Online tracking ===
         frame_iter = range(1, num_frames)
         if verbose:
@@ -182,13 +210,22 @@ class OnlineTrackingEvaluator:
                 rgb_gt_bbox = frame_data['rgb_bbox'].copy()
                 sonar_gt_bbox = frame_data['sonar_bbox'].copy()
 
+                # === Compute dynamic search factors based on previous confidence ===
+                rgb_search_factor, sonar_search_factor = self._compute_search_factor(
+                    rgb_conf_prev, sonar_conf_prev
+                )
+
+                # Track if expansion is active
+                if rgb_search_factor > self._base_search_area_factor * 1.1:
+                    expansion_count += 1
+
                 # === CRITICAL: Crop search region centered on PREVIOUS PREDICTION ===
                 # This is the key difference from offline evaluation!
                 rgb_search, rgb_search_meta = self._crop_region(
                     frame_data['rgb_img'],
                     rgb_state,  # Use PREVIOUS PREDICTION, not GT!
                     self.search_size,
-                    self.search_area_factor,
+                    rgb_search_factor,  # Dynamic search factor
                     is_sonar=False,
                     return_metadata=True
                 )
@@ -196,7 +233,7 @@ class OnlineTrackingEvaluator:
                     frame_data['sonar_img'],
                     sonar_state,  # Use PREVIOUS PREDICTION, not GT!
                     self.search_size,
-                    self.search_area_factor,
+                    sonar_search_factor,  # Dynamic search factor
                     is_sonar=True,
                     return_metadata=True
                 )
@@ -216,6 +253,22 @@ class OnlineTrackingEvaluator:
                 # Model outputs normalized cxcywh in [0, 1]
                 rgb_pred_norm = outputs['rgb_boxes'][0].cpu().numpy()  # [cx, cy, w, h]
                 sonar_pred_norm = outputs['sonar_boxes'][0].cpu().numpy()
+
+                # Extract confidence scores for next frame's search factor
+                # Use quality or confidence from model output
+                if 'rgb_quality' in outputs:
+                    rgb_conf_prev = outputs['rgb_quality'][0].cpu().item()
+                elif 'rgb_confidence' in outputs:
+                    rgb_conf_prev = outputs['rgb_confidence'][0].cpu().item()
+                else:
+                    rgb_conf_prev = 1.0  # Default to high confidence if not available
+
+                if 'sonar_quality' in outputs:
+                    sonar_conf_prev = outputs['sonar_quality'][0].cpu().item()
+                elif 'sonar_confidence' in outputs:
+                    sonar_conf_prev = outputs['sonar_confidence'][0].cpu().item()
+                else:
+                    sonar_conf_prev = 1.0
 
                 # Transform from normalized crop space to original image space
                 rgb_pred_orig = self._transform_pred_to_original(
@@ -239,6 +292,13 @@ class OnlineTrackingEvaluator:
                 predictions['sonar_pred'].append(sonar_pred_orig)
                 predictions['rgb_gt'].append(rgb_gt_bbox)
                 predictions['sonar_gt'].append(sonar_gt_bbox)
+
+        # Log expansion statistics
+        if expansion_count > 0:
+            logger.debug(
+                f"Sequence {sequence_name}: search expansion triggered in "
+                f"{expansion_count}/{num_frames-1} frames ({100*expansion_count/(num_frames-1):.1f}%)"
+            )
 
         return predictions
 
@@ -417,6 +477,50 @@ class OnlineTrackingEvaluator:
             return False
         x, y, w, h = bbox
         return w >= min_size and h >= min_size
+
+    def _compute_search_factor(
+        self,
+        rgb_conf: float,
+        sonar_conf: float
+    ) -> Tuple[float, float]:
+        """
+        Compute dynamic search area factors based on confidence scores.
+
+        Uses mainstream strategy: expand search area when confidence is low
+        to enable target re-detection after tracking loss.
+
+        Reference: SiamFC++, DiMP use similar progressive expansion strategies.
+
+        Args:
+            rgb_conf: RGB branch confidence score [0, 1]
+            sonar_conf: Sonar branch confidence score [0, 1]
+
+        Returns:
+            Tuple of (rgb_search_factor, sonar_search_factor)
+        """
+        if not self.enable_search_expansion:
+            return self._base_search_area_factor, self._base_search_area_factor
+
+        base = self._base_search_area_factor
+        max_factor = base * self.max_expansion_factor
+
+        def compute_factor(conf: float) -> float:
+            """Compute search factor for single modality."""
+            if conf >= self.confidence_high:
+                # High confidence: use normal search area
+                return base
+            elif conf >= self.confidence_low:
+                # Medium confidence: linear interpolation to 1.5x
+                ratio = (self.confidence_high - conf) / (self.confidence_high - self.confidence_low)
+                return base * (1.0 + 0.5 * ratio)
+            else:
+                # Low confidence: expand to maximum (2x)
+                return max_factor
+
+        rgb_factor = compute_factor(rgb_conf)
+        sonar_factor = compute_factor(sonar_conf)
+
+        return rgb_factor, sonar_factor
 
     def evaluate_all_sequences(
         self,
