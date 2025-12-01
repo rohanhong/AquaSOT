@@ -98,9 +98,10 @@ class AquaSOT3DTracker(BaseModule):
         if self.backbone.sonar_encoder is not None and hasattr(self.backbone.sonar_encoder, 'get_feature_dim'):
             self.sonar_feat_dim = self.backbone.sonar_encoder.get_feature_dim()
         elif sonar_backbone_config:
-            self.sonar_feat_dim = sonar_backbone_config.get('output_dim', 384)
+            # CRITICAL FIX (Audit 2025120102): Default to 768 for ViT-Base, not 384
+            self.sonar_feat_dim = sonar_backbone_config.get('output_dim', 768)
         else:
-            self.sonar_feat_dim = 384
+            self.sonar_feat_dim = 768  # ViT-Base default
 
         # =====================================================
         # 2. Cross-Modal Fusion (G2-DCMA)

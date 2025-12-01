@@ -20,11 +20,11 @@ data:
   visibility_policy: all          # Frame filtering: all/any/both
   template_size: 128              # Template frame size
   search_size: 256                # Search frame size
-  template_search_gap_range: [1, 200]  # Gap range for template-search pairs
+  template_search_gap_range: [1, 20]   # Gap range: 1-20 frames = 0.1-2.0s @10Hz (Audit 2025120102)
   search_area_factor: 4.0         # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0       # Template region = sqrt(w*h) * factor
-  center_jitter_factor: 3.0       # Training center jitter (OSTrack default: 3.0)
-  scale_jitter_factor: 0.25       # Training scale jitter (OSTrack default: 0.25)
+  center_jitter_factor: 0.0       # DISABLED: breaks multi-modal spatial correspondence (Audit 2025120102)
+  scale_jitter_factor: 0.0        # DISABLED: breaks multi-modal spatial correspondence (Audit 2025120102)
   use_attention_mask: true        # Enable attention mask for padded regions
   template_update_policy: mixformer    # Template update: mixformer/first/recent
   quality_threshold_rgb: 0.7      # RGB quality threshold for template update

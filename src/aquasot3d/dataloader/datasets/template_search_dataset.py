@@ -263,10 +263,39 @@ class TemplateSearchDataset(Dataset):
             sonar_template = None
             sonar_crop_meta = None
 
-        # 4. Process search (TARGET-CENTERED CROP - NOT full-frame letterbox!)
-        # CRITICAL FIX (Audit 2025112602): Use OSTrack-style target-centered cropping
-        # This ensures GT bbox center is always near search region center,
-        # enabling the model to learn relative offset prediction.
+        # 4. Process search using TEMPLATE-CENTERED CROP
+        # CRITICAL FIX (Audit 2025120102): Use Template bbox center to crop Search region
+        # This is essential for learning tracking ability:
+        # - Template crop: centered on Template GT bbox (target at center)
+        # - Search crop: centered on TEMPLATE GT bbox position (NOT Search GT bbox!)
+        # - Natural frame-to-frame motion causes target to be offset from Search center
+        # - Model learns to predict this offset, which is the core tracking task
+        #
+        # Previous approach (Search centered on Search GT) caused target to always be
+        # at center, preventing the model from learning spatial offset prediction.
+
+        # Extract Template bbox centers for crop positioning
+        # RGB: use RGB Template bbox center
+        rgb_template_bbox = template_sample.get('rgb_bbox', None)
+        if rgb_template_bbox is not None:
+            if isinstance(rgb_template_bbox, torch.Tensor):
+                rgb_template_bbox = rgb_template_bbox.cpu().numpy()
+            rgb_template_cx = rgb_template_bbox[0] + rgb_template_bbox[2] / 2
+            rgb_template_cy = rgb_template_bbox[1] + rgb_template_bbox[3] / 2
+        else:
+            rgb_template_cx, rgb_template_cy = None, None
+
+        # Sonar: use Sonar Template bbox center
+        sonar_template_bbox = template_sample.get('sonar_bbox', None)
+        if sonar_template_bbox is not None:
+            if isinstance(sonar_template_bbox, torch.Tensor):
+                sonar_template_bbox = sonar_template_bbox.cpu().numpy()
+            sonar_template_cx = sonar_template_bbox[0] + sonar_template_bbox[2] / 2
+            sonar_template_cy = sonar_template_bbox[1] + sonar_template_bbox[3] / 2
+        else:
+            sonar_template_cx, sonar_template_cy = None, None
+
+        # Process RGB Search
         if search_sample['rgb_img'] is not None:
             rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array (after augmentation)
             # CRITICAL FIX (Audit 2025112505 Issue 7): Convert Tensor to numpy if needed
@@ -282,15 +311,22 @@ class TemplateSearchDataset(Dataset):
             else:
                 rgb_bbox_original = rgb_bbox.copy()  # XYWH format
 
-            # CRITICAL FIX (Audit 2025112602): Target-centered crop instead of full-frame
-            # Crop search region centered on GT bbox with search_area_factor
+            # CRITICAL FIX (Audit 2025120102): Use Template bbox center for crop position
+            # This allows natural frame motion to offset target from crop center
+            if rgb_template_cx is not None and rgb_template_cy is not None:
+                crop_center_override = (rgb_template_cx, rgb_template_cy)
+            else:
+                # Fallback: use Search bbox center if Template unavailable
+                crop_center_override = None
+
             rgb_search, rgb_att_mask, rgb_search_meta = self._crop_search_region(
                 rgb_search_raw,
                 rgb_bbox_original,
                 output_size=self.search_size,
                 area_factor=self.search_area_factor,
                 center_jitter_factor=self.center_jitter_factor,
-                scale_jitter_factor=self.scale_jitter_factor
+                scale_jitter_factor=self.scale_jitter_factor,
+                crop_center_override=crop_center_override
             )
         else:
             rgb_search_raw = None
@@ -307,6 +343,7 @@ class TemplateSearchDataset(Dataset):
                 'output_size': self.search_size
             }
 
+        # Process Sonar Search
         if search_sample['sonar_img'] is not None:
             sonar_search_raw = search_sample['sonar_img']  # Raw [H, W] numpy array (after augmentation)
             # CRITICAL FIX (Audit 2025112505 Issue 7): Convert Tensor to numpy if needed
@@ -322,14 +359,21 @@ class TemplateSearchDataset(Dataset):
             else:
                 sonar_bbox_original = sonar_bbox.copy()  # XYWH format
 
-            # CRITICAL FIX (Audit 2025112602): Target-centered crop instead of full-frame
+            # CRITICAL FIX (Audit 2025120102): Use Template bbox center for crop position
+            if sonar_template_cx is not None and sonar_template_cy is not None:
+                crop_center_override = (sonar_template_cx, sonar_template_cy)
+            else:
+                # Fallback: use Search bbox center if Template unavailable
+                crop_center_override = None
+
             sonar_search, sonar_att_mask, sonar_search_meta = self._crop_search_region(
                 sonar_search_raw,
                 sonar_bbox_original,
                 output_size=self.search_size,
                 area_factor=self.search_area_factor,
                 center_jitter_factor=self.center_jitter_factor,
-                scale_jitter_factor=self.scale_jitter_factor
+                scale_jitter_factor=self.scale_jitter_factor,
+                crop_center_override=crop_center_override
             )
         else:
             sonar_search_raw = None
@@ -886,7 +930,8 @@ class TemplateSearchDataset(Dataset):
         output_size: int,
         area_factor: float,
         center_jitter_factor: float = 0.0,
-        scale_jitter_factor: float = 0.0
+        scale_jitter_factor: float = 0.0,
+        crop_center_override: Optional[Tuple[float, float]] = None
     ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
         Crop search region centered on target bbox following OSTrack methodology.
@@ -895,9 +940,13 @@ class TemplateSearchDataset(Dataset):
         region cropping that ensures target is always near the center of the crop.
         This is essential for the model to learn relative offset prediction.
 
+        CRITICAL FIX (Audit 2025120102): Added crop_center_override parameter to
+        support multi-modal training where RGB and Sonar must use the same crop
+        center (from Template bbox) to maintain spatial correspondence.
+
         Algorithm:
         1. Compute crop size: sqrt(w*h) * area_factor
-        2. Optionally jitter center and scale for training
+        2. Use crop_center_override if provided, otherwise compute from bbox
         3. Compute crop boundaries (may extend beyond image)
         4. Pad out-of-bounds regions with image mean
         5. Resize to output_size
@@ -909,8 +958,10 @@ class TemplateSearchDataset(Dataset):
             bbox: Target bbox [x, y, w, h] in XYWH pixel format
             output_size: Output crop size (e.g., 256)
             area_factor: Crop size multiplier (e.g., 4.0 for search, 2.0 for template)
-            center_jitter_factor: Random center jitter (0.0 = no jitter)
-            scale_jitter_factor: Random scale jitter (0.0 = no jitter)
+            center_jitter_factor: Random center jitter (0.0 = no jitter) - DEPRECATED for multi-modal
+            scale_jitter_factor: Random scale jitter (0.0 = no jitter) - DEPRECATED for multi-modal
+            crop_center_override: (cx, cy) in pixel coordinates to use instead of bbox center.
+                                  Used for multi-modal training to ensure RGB/Sonar alignment.
 
         Returns:
             Tuple of (crop, attention_mask, metadata):
@@ -947,30 +998,35 @@ class TemplateSearchDataset(Dataset):
             w = max(w, 10)
             h = max(h, 10)
 
-        # Compute bbox center
-        cx = x + w / 2
-        cy = y + h / 2
-
         # Compute crop size following OSTrack: sqrt(w*h) * area_factor
         target_sz = math.sqrt(w * h)
         crop_sz = int(math.ceil(target_sz * area_factor))
         crop_sz = max(crop_sz, 1)  # Ensure positive
 
-        # Apply jitter for training (center and scale)
-        # CRITICAL FIX (Audit 2025112704): Align EXACTLY with OSTrack jitter implementation
-        # OSTrack: jittered_center = center + max_offset * (rand - 0.5)
-        # where max_offset = sqrt(w*h) * center_jitter_factor
-        # NOTE: OSTrack uses (rand - 0.5) with range [-0.5, 0.5], NOT (rand - 0.5) * 2!
-        # With CENTER_JITTER=3: max_offset_range = [-1.5, 1.5] * target_sz
-        # Since crop_half = 2 * target_sz, target center stays within crop
-        # Reference: https://github.com/botaoye/OSTrack/blob/main/lib/train/data/processing.py
-        if center_jitter_factor > 0:
-            # Jitter center proportional to target size (OSTrack style)
-            # max_offset = target_sz * center_jitter_factor
-            # offset = max_offset * (rand - 0.5), range = [-0.5, 0.5] * max_offset
-            max_offset = target_sz * center_jitter_factor
-            cx += max_offset * (random.random() - 0.5)
-            cy += max_offset * (random.random() - 0.5)
+        # CRITICAL FIX (Audit 2025120102): Use crop_center_override if provided
+        # This enables Template-centered cropping for multi-modal training
+        if crop_center_override is not None:
+            cx, cy = crop_center_override
+        else:
+            # Default: compute center from Search bbox
+            cx = x + w / 2
+            cy = y + h / 2
+
+            # Apply jitter for training (center and scale) - only when not using override
+            # CRITICAL FIX (Audit 2025112704): Align EXACTLY with OSTrack jitter implementation
+            # OSTrack: jittered_center = center + max_offset * (rand - 0.5)
+            # where max_offset = sqrt(w*h) * center_jitter_factor
+            # NOTE: OSTrack uses (rand - 0.5) with range [-0.5, 0.5], NOT (rand - 0.5) * 2!
+            # With CENTER_JITTER=3: max_offset_range = [-1.5, 1.5] * target_sz
+            # Since crop_half = 2 * target_sz, target center stays within crop
+            # Reference: https://github.com/botaoye/OSTrack/blob/main/lib/train/data/processing.py
+            if center_jitter_factor > 0:
+                # Jitter center proportional to target size (OSTrack style)
+                # max_offset = target_sz * center_jitter_factor
+                # offset = max_offset * (rand - 0.5), range = [-0.5, 0.5] * max_offset
+                max_offset = target_sz * center_jitter_factor
+                cx += max_offset * (random.random() - 0.5)
+                cy += max_offset * (random.random() - 0.5)
 
         if scale_jitter_factor > 0:
             # Jitter scale using exponential (OSTrack style: exp(randn * factor))
