@@ -23,8 +23,12 @@ data:
   template_search_gap_range: [1, 20]   # Gap range: 1-20 frames = 0.1-2.0s @10Hz (Audit 2025120102)
   search_area_factor: 4.0         # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0       # Template region = sqrt(w*h) * factor
-  center_jitter_factor: 0.0       # DISABLED: breaks multi-modal spatial correspondence (Audit 2025120102)
-  scale_jitter_factor: 0.0        # DISABLED: breaks multi-modal spatial correspondence (Audit 2025120102)
+  # CRITICAL FIX (Audit 2025120301 Finding 7): Enable jitter for training robustness
+  # Previous bug (Audit 2025120102): jitter was disabled because crop_center_override used template center
+  # Now fixed: search crop center uses current frame GT + jitter, so jitter is safe
+  # OSTrack defaults: center_jitter=3.0 (we use lower values for multi-modal stability)
+  center_jitter_factor: 0.125     # Center jitter: sqrt(w*h) * 0.125 offset range
+  scale_jitter_factor: 0.05       # Scale jitter: exp(randn * 0.05) multiplier
   use_attention_mask: true        # Enable attention mask for padded regions
   template_update_policy: mixformer    # Template update: mixformer/first/recent
   quality_threshold_rgb: 0.7      # RGB quality threshold for template update

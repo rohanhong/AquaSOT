@@ -134,6 +134,11 @@ def _get_default_parameter_groups(
     """
     Get default parameter groups with backbone/fusion/heads separation.
 
+    CRITICAL FIX (Audit 2025120301 Finding 10):
+    - Proper handling of bias, BatchNorm, LayerNorm parameters
+    - These parameters should NOT have weight decay applied
+    - Detection is now based on parameter names, not just dimensions
+
     Args:
         model: Model to extract parameters from
         base_lr: Base learning rate
@@ -147,66 +152,144 @@ def _get_default_parameter_groups(
     """
     groups = []
 
-    # Try to identify common components
-    backbone_params = []
-    fusion_params = []
-    head_params = []
-    other_params = []
+    # CRITICAL FIX (Audit 2025120301 Finding 10):
+    # Separate parameters by component AND by decay/no-decay
+    # Store (name, param) tuples to enable name-based filtering
+    backbone_decay = []
+    backbone_no_decay = []
+    fusion_decay = []
+    fusion_no_decay = []
+    head_decay = []
+    head_no_decay = []
+    other_decay = []
+    other_no_decay = []
+
+    def should_skip_weight_decay(name: str, param) -> bool:
+        """
+        Check if parameter should skip weight decay.
+
+        CRITICAL FIX (Audit 2025120301 Finding 10):
+        Bias, BatchNorm, LayerNorm parameters should NOT have weight decay.
+        This prevents training instability and improves generalization.
+        """
+        # Check by name patterns (more reliable than dimension)
+        name_lower = name.lower()
+        skip_patterns = [
+            'bias',           # All bias terms
+            '.bn',            # BatchNorm (e.g., bn1.weight)
+            'batchnorm',      # BatchNorm explicit
+            'batch_norm',     # BatchNorm variant
+            'layernorm',      # LayerNorm
+            'layer_norm',     # LayerNorm variant
+            '.norm',          # Generic norm layers
+            'norm.',          # Norm prefix
+            'gamma',          # Some norm implementations
+            'beta',           # Some norm implementations
+            'cls_token',      # ViT class token
+            'pos_embed',      # Position embeddings
+        ]
+        for pattern in skip_patterns:
+            if pattern in name_lower:
+                return True
+
+        # Fallback: 1D parameters are typically bias or norm parameters
+        if filter_bias_and_bn and hasattr(param, 'ndim') and param.ndim == 1:
+            return True
+
+        return False
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
 
-        # Categorize parameters
+        no_decay = should_skip_weight_decay(name, param) if filter_bias_and_bn else False
+
+        # Categorize parameters by component
         if 'backbone' in name.lower() or 'encoder' in name.lower():
-            backbone_params.append(param)
+            if no_decay:
+                backbone_no_decay.append(param)
+            else:
+                backbone_decay.append(param)
         elif 'fusion' in name.lower() or 'g2_dcma' in name.lower() or 'g2dcma' in name.lower():
-            fusion_params.append(param)
+            if no_decay:
+                fusion_no_decay.append(param)
+            else:
+                fusion_decay.append(param)
         elif 'head' in name.lower():
-            head_params.append(param)
+            if no_decay:
+                head_no_decay.append(param)
+            else:
+                head_decay.append(param)
         else:
-            other_params.append(param)
+            if no_decay:
+                other_no_decay.append(param)
+            else:
+                other_decay.append(param)
 
     # Build parameter groups with different learning rates
-    if backbone_params:
+    if backbone_decay:
         groups.append({
-            'params': backbone_params,
-            'lr': base_lr * backbone_lr_multiplier,  # Configurable LR multiplier for backbones
+            'params': backbone_decay,
+            'lr': base_lr * backbone_lr_multiplier,
             'weight_decay': weight_decay,
             'name': 'backbone'
         })
-
-    if fusion_params:
+    if backbone_no_decay:
         groups.append({
-            'params': fusion_params,
+            'params': backbone_no_decay,
+            'lr': base_lr * backbone_lr_multiplier,
+            'weight_decay': 0.0,  # CRITICAL FIX: no weight decay
+            'name': 'backbone_no_decay'
+        })
+
+    if fusion_decay:
+        groups.append({
+            'params': fusion_decay,
             'lr': base_lr,
             'weight_decay': weight_decay,
             'name': 'fusion'
         })
-
-    if head_params:
+    if fusion_no_decay:
         groups.append({
-            'params': head_params,
-            'lr': base_lr * head_lr_multiplier,  # Configurable LR multiplier for heads
+            'params': fusion_no_decay,
+            'lr': base_lr,
+            'weight_decay': 0.0,  # CRITICAL FIX: no weight decay
+            'name': 'fusion_no_decay'
+        })
+
+    if head_decay:
+        groups.append({
+            'params': head_decay,
+            'lr': base_lr * head_lr_multiplier,
             'weight_decay': weight_decay,
             'name': 'heads'
         })
-
-    if other_params:
+    if head_no_decay:
         groups.append({
-            'params': other_params,
+            'params': head_no_decay,
+            'lr': base_lr * head_lr_multiplier,
+            'weight_decay': 0.0,  # CRITICAL FIX: no weight decay
+            'name': 'heads_no_decay'
+        })
+
+    if other_decay:
+        groups.append({
+            'params': other_decay,
             'lr': base_lr,
             'weight_decay': weight_decay,
             'name': 'other'
         })
+    if other_no_decay:
+        groups.append({
+            'params': other_no_decay,
+            'lr': base_lr,
+            'weight_decay': 0.0,  # CRITICAL FIX: no weight decay
+            'name': 'other_no_decay'
+        })
 
-    # Optionally filter bias and BatchNorm parameters
-    if filter_bias_and_bn:
-        groups = _split_weight_decay_groups(groups)
-
-    logger.info(f"Created {len(groups)} default parameter groups (backbone_lr_mult={backbone_lr_multiplier}, head_lr_mult={head_lr_multiplier}):")
+    logger.info(f"Created {len(groups)} parameter groups (backbone_lr_mult={backbone_lr_multiplier}, head_lr_mult={head_lr_multiplier}):")
     for group in groups:
-        logger.info(f"  - {group.get('name', 'unnamed')}: {len(group['params'])} params, lr={group['lr']}")
+        logger.info(f"  - {group.get('name', 'unnamed')}: {len(group['params'])} params, lr={group['lr']:.6f}, wd={group['weight_decay']}")
 
     return groups
 

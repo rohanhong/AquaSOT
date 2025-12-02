@@ -311,13 +311,20 @@ class TemplateSearchDataset(Dataset):
             else:
                 rgb_bbox_original = rgb_bbox.copy()  # XYWH format
 
-            # CRITICAL FIX (Audit 2025120102): Use Template bbox center for crop position
-            # This allows natural frame motion to offset target from crop center
-            if rgb_template_cx is not None and rgb_template_cy is not None:
-                crop_center_override = (rgb_template_cx, rgb_template_cy)
-            else:
-                # Fallback: use Search bbox center if Template unavailable
-                crop_center_override = None
+            # CRITICAL FIX (Audit 2025120301 Finding 4): Use CURRENT frame GT center + jitter
+            # Previous bug (Audit 2025120102): Used template frame center, causing:
+            #   - Training-evaluation distribution mismatch
+            #   - Target may be truncated or outside crop
+            #   - Model learns wrong localization patterns
+            #
+            # Correct behavior (OSTrack/MixFormer):
+            #   - Training: search center = current frame GT center + jitter
+            #   - Evaluation: search center = previous frame prediction
+            #   - Template: template frame GT center (unchanged)
+            #
+            # Now: crop_center_override=None means _crop_search_region uses
+            # the search bbox (rgb_bbox_original) center, which IS the current frame GT.
+            # The jitter is applied inside _crop_search_region via center_jitter_factor.
 
             rgb_search, rgb_att_mask, rgb_search_meta = self._crop_search_region(
                 rgb_search_raw,
@@ -326,7 +333,7 @@ class TemplateSearchDataset(Dataset):
                 area_factor=self.search_area_factor,
                 center_jitter_factor=self.center_jitter_factor,
                 scale_jitter_factor=self.scale_jitter_factor,
-                crop_center_override=crop_center_override
+                crop_center_override=None  # Use current frame GT center
             )
         else:
             rgb_search_raw = None
@@ -359,12 +366,9 @@ class TemplateSearchDataset(Dataset):
             else:
                 sonar_bbox_original = sonar_bbox.copy()  # XYWH format
 
-            # CRITICAL FIX (Audit 2025120102): Use Template bbox center for crop position
-            if sonar_template_cx is not None and sonar_template_cy is not None:
-                crop_center_override = (sonar_template_cx, sonar_template_cy)
-            else:
-                # Fallback: use Search bbox center if Template unavailable
-                crop_center_override = None
+            # CRITICAL FIX (Audit 2025120301 Finding 4): Use CURRENT frame GT center + jitter
+            # Same fix as RGB branch - see comments above.
+            # crop_center_override=None uses sonar_bbox_original (current frame GT) center.
 
             sonar_search, sonar_att_mask, sonar_search_meta = self._crop_search_region(
                 sonar_search_raw,
@@ -373,7 +377,7 @@ class TemplateSearchDataset(Dataset):
                 area_factor=self.search_area_factor,
                 center_jitter_factor=self.center_jitter_factor,
                 scale_jitter_factor=self.scale_jitter_factor,
-                crop_center_override=crop_center_override
+                crop_center_override=None  # Use current frame GT center
             )
         else:
             sonar_search_raw = None
@@ -712,6 +716,80 @@ class TemplateSearchDataset(Dataset):
         else:
             raise ValueError(f"Unknown template update policy: {self.update_policy}")
 
+    def _denormalize_image_if_needed(
+        self,
+        image: Union[torch.Tensor, np.ndarray],
+        modality: str = 'rgb'
+    ) -> np.ndarray:
+        """
+        Detect and denormalize image if it has been ImageNet/Sonar normalized.
+
+        CRITICAL FIX (Audit 2025120301 Finding 1, 2, 8):
+        Augmentation pipeline may return normalized tensors (range ~[-2, 2] for RGB,
+        ~[-1, 1] for Sonar). Cropping functions expect uint8 [0, 255].
+        This function detects normalized data and reverses the normalization.
+
+        Detection logic:
+        - Float dtype with values < 0 or values in [-3, 3] range: ImageNet normalized
+        - Float dtype with max <= 1.0 and min >= 0: [0,1] normalized
+        - uint8: already in [0, 255], no change needed
+
+        Args:
+            image: Input image (tensor or ndarray), may be normalized
+            modality: 'rgb' or 'sonar' to select correct denormalization params
+
+        Returns:
+            numpy array in uint8 [0, 255] range, shape [H, W, C] or [H, W]
+        """
+        # Convert tensor to numpy
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3:  # [C, H, W]
+                image_np = image.permute(1, 2, 0).cpu().numpy()  # -> [H, W, C]
+            else:
+                image_np = image.cpu().numpy()
+        else:
+            image_np = image.copy() if isinstance(image, np.ndarray) else np.array(image)
+
+        # Already uint8 [0, 255]: no processing needed
+        if image_np.dtype == np.uint8:
+            return image_np
+
+        # Detect normalization type based on value range
+        img_min, img_max = image_np.min(), image_np.max()
+
+        # Case 1: ImageNet/Sonar normalized (range approximately [-3, 3])
+        # Typical ImageNet range: [-2.1, 2.6] after (x - mean) / std
+        if img_min < -0.5 or (img_max > 1.5 and img_max < 10):
+            # Denormalize using stored parameters
+            if modality == 'rgb':
+                mean = self.rgb_mean.squeeze().numpy()  # [3]
+                std = self.rgb_std.squeeze().numpy()    # [3]
+            else:
+                mean = self.sonar_mean.squeeze().numpy()  # [1]
+                std = self.sonar_std.squeeze().numpy()    # [1]
+
+            # Reverse normalization: x_original = x_normalized * std + mean
+            # Then scale to [0, 255]
+            image_np = image_np * std + mean  # Back to [0, 1]
+            image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
+            return image_np
+
+        # Case 2: [0, 1] normalized (no mean/std applied)
+        if img_max <= 1.0 and img_min >= 0:
+            image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
+            return image_np
+
+        # Case 3: Already in ~[0, 255] range (float)
+        if img_max > 1.0 and img_max <= 255:
+            return np.clip(image_np, 0, 255).astype(np.uint8)
+
+        # Fallback: clamp and convert
+        logger.warning(
+            f"Unexpected image range [{img_min:.2f}, {img_max:.2f}], "
+            f"clamping to [0, 255]"
+        )
+        return np.clip(image_np, 0, 255).astype(np.uint8)
+
     def _crop_template(
         self,
         image: torch.Tensor,
@@ -726,6 +804,10 @@ class TemplateSearchDataset(Dataset):
         - Adds boundary padding instead of clamping
         - Returns attention mask for padded regions
 
+        CRITICAL FIX (Audit 2025120301 Finding 1, 2, 8):
+        - Detects and handles already-normalized input from augmentation pipeline
+        - Prevents double normalization by using _denormalize_image_if_needed()
+
         Args:
             image: [3, H, W] or [1, H, W] tensor (from base_dataset)
             bbox: [x, y, w, h] in XYWH pixel format (numpy array)
@@ -736,18 +818,16 @@ class TemplateSearchDataset(Dataset):
                 - crop_tensor: Cropped template [C, crop_size, crop_size]
                 - crop_metadata: Dict with transformation parameters
         """
-        # Convert tensor to numpy for cropping
+        # CRITICAL FIX (Audit 2025120301): Detect modality from channel count
         if isinstance(image, torch.Tensor):
-            if image.dim() == 3:  # [C, H, W]
-                image_np = image.permute(1, 2, 0).numpy()  # -> [H, W, C]
-            else:
-                image_np = image.numpy()
+            n_channels = image.shape[0] if image.dim() == 3 else 1
         else:
-            image_np = image
+            n_channels = image.shape[-1] if image.ndim == 3 else 1
+        modality = 'rgb' if n_channels == 3 else 'sonar'
 
-        # Denormalize if needed (base_dataset may normalize to [0, 1])
-        if image_np.max() <= 1.0:
-            image_np = (image_np * 255).astype(np.uint8)
+        # CRITICAL FIX (Audit 2025120301 Finding 1, 2, 8):
+        # Use unified denormalization to handle all input types
+        image_np = self._denormalize_image_if_needed(image, modality)
 
         H, W = image_np.shape[:2]
         x, y, w, h = bbox
@@ -925,7 +1005,7 @@ class TemplateSearchDataset(Dataset):
 
     def _crop_search_region(
         self,
-        image: np.ndarray,
+        image: Union[np.ndarray, torch.Tensor],
         bbox: np.ndarray,
         output_size: int,
         area_factor: float,
@@ -944,6 +1024,10 @@ class TemplateSearchDataset(Dataset):
         support multi-modal training where RGB and Sonar must use the same crop
         center (from Template bbox) to maintain spatial correspondence.
 
+        CRITICAL FIX (Audit 2025120301 Finding 1, 2, 8):
+        - Detects and handles already-normalized input from augmentation pipeline
+        - Prevents double normalization by using _denormalize_image_if_needed()
+
         Algorithm:
         1. Compute crop size: sqrt(w*h) * area_factor
         2. Use crop_center_override if provided, otherwise compute from bbox
@@ -954,7 +1038,7 @@ class TemplateSearchDataset(Dataset):
         7. Transform bbox to crop coordinates
 
         Args:
-            image: Input image [H, W, C] or [H, W] numpy array
+            image: Input image [H, W, C] or [H, W] numpy array, or tensor
             bbox: Target bbox [x, y, w, h] in XYWH pixel format
             output_size: Output crop size (e.g., 256)
             area_factor: Crop size multiplier (e.g., 4.0 for search, 2.0 for template)
@@ -989,6 +1073,19 @@ class TemplateSearchDataset(Dataset):
                 'output_size': output_size,
             }
             return crop, att_mask, metadata
+
+        # CRITICAL FIX (Audit 2025120301 Finding 1, 2, 8):
+        # Detect modality and denormalize if input was already normalized
+        if isinstance(image, torch.Tensor):
+            n_channels = image.shape[0] if image.dim() == 3 else 1
+        elif isinstance(image, np.ndarray):
+            n_channels = image.shape[-1] if image.ndim == 3 else 1
+        else:
+            n_channels = 3  # Default to RGB
+        modality = 'rgb' if n_channels == 3 else 'sonar'
+
+        # Denormalize to uint8 [0, 255] for cropping operations
+        image = self._denormalize_image_if_needed(image, modality)
 
         H, W = image.shape[:2]
         x, y, w, h = bbox

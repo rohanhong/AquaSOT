@@ -333,6 +333,7 @@ class CenterHead(BaseHead):
         loss_weight_score: float = 1.0,
         loss_weight_size: float = 5.0,
         loss_weight_offset: float = 1.0,
+        loss_weight_objectness: float = 1.0,
         **kwargs
     ):
         super().__init__()
@@ -344,6 +345,7 @@ class CenterHead(BaseHead):
         self.loss_weight_score = loss_weight_score
         self.loss_weight_size = loss_weight_size
         self.loss_weight_offset = loss_weight_offset
+        self.loss_weight_objectness = loss_weight_objectness
 
         # Score branch: predicts center probability heatmap
         self.score_branch = nn.Sequential(
@@ -386,6 +388,22 @@ class CenterHead(BaseHead):
             )
         else:
             self.offset_branch = None
+
+        # CRITICAL FIX (Audit 2025120301 Finding 3, 9):
+        # Independent objectness branch - decoupled from quality/score
+        # Predicts binary target presence using has_object as supervision
+        # This enables search expansion strategies to rely on true objectness
+        self.objectness_branch = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 2, hidden_dim // 4, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim // 4),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),  # Global average pooling
+            nn.Flatten(),
+            nn.Linear(hidden_dim // 4, 1),
+        )
 
         self._init_weights()
 
@@ -516,7 +534,22 @@ class CenterHead(BaseHead):
         pred_h = torch.clamp(pred_h, 1e-4, 1.0)
 
         pred_boxes = torch.stack([pred_cx, pred_cy, pred_w, pred_h], dim=-1)
+
+        # Quality score: max of score map (localization quality, not objectness)
         pred_quality = score_map.view(B, -1).max(dim=-1)[0]
+
+        # CRITICAL FIX (Audit 2025120301 Finding 3, 9):
+        # Independent objectness prediction - decoupled from quality
+        # Objectness = binary target presence, supervised by has_object
+        # Quality = localization confidence, supervised by IoU with GT
+        objectness_logits = self.objectness_branch(features)  # [B, 1]
+        objectness_logits = objectness_logits.squeeze(-1)  # [B]
+        pred_objectness = torch.sigmoid(objectness_logits)  # [B], range [0, 1]
+
+        # CRITICAL FIX: Confidence is now objectness (target presence)
+        # Quality remains as localization quality (score map max)
+        # This decoupling allows search expansion to rely on true objectness
+        pred_confidence = pred_objectness
 
         outputs = {
             'pred_boxes': pred_boxes,
@@ -524,9 +557,11 @@ class CenterHead(BaseHead):
             'score_map': score_map,
             'size_map': size_map,
             'boxes': pred_boxes,
-            'quality': pred_quality,
-            'pred_confidence': pred_quality,
-            'confidence': pred_quality,
+            'quality': pred_quality,           # Localization quality (score map max)
+            'objectness': pred_objectness,     # Target presence (independent branch)
+            'objectness_logits': objectness_logits,  # Raw logits for loss computation
+            'pred_confidence': pred_confidence,  # Confidence = objectness (decoupled)
+            'confidence': pred_confidence,       # Alias for compatibility
         }
 
         if offset_map is not None:
@@ -535,8 +570,9 @@ class CenterHead(BaseHead):
         if target_boxes is not None:
             losses = self._compute_losses(
                 score_map_logits, size_map, offset_map,
+                objectness_logits,
                 pred_boxes, target_boxes,
-                validity_mask, feat_sz
+                validity_mask, has_object, feat_sz
             )
             outputs.update(losses)
             outputs['total_loss'] = losses.get('total_loss', torch.tensor(0.0, device=features.device))
@@ -548,12 +584,22 @@ class CenterHead(BaseHead):
         score_map_logits: torch.Tensor,
         size_map: torch.Tensor,
         offset_map: Optional[torch.Tensor],
+        objectness_logits: torch.Tensor,
         pred_boxes: torch.Tensor,
         target_boxes: torch.Tensor,
         validity_mask: Optional[torch.Tensor],
+        has_object: Optional[torch.Tensor],
         feat_sz: int
     ) -> Dict[str, torch.Tensor]:
-        """Compute CENTER head losses."""
+        """
+        Compute CENTER head losses with proper has_object handling.
+
+        CRITICAL FIX (Audit 2025120301 Finding 3, 9):
+        - score_map target is all-zeros (background) when has_object=0
+        - size_loss and iou_loss are masked by has_object
+        - Independent objectness loss with has_object as supervision
+        - This enables proper training on occlusion/no-object frames
+        """
         B = target_boxes.shape[0]
         device = target_boxes.device
 
@@ -571,12 +617,20 @@ class CenterHead(BaseHead):
 
         sigma = torch.clamp(target_w * feat_sz / 4, min=1.0)
 
+        # Generate Gaussian target heatmap
         target_score_map = torch.exp(
             -((xx.unsqueeze(0) - target_idx_x.view(B, 1, 1)) ** 2 +
               (yy.unsqueeze(0) - target_idx_y.view(B, 1, 1)) ** 2) /
             (2 * sigma.view(B, 1, 1) ** 2)
         )
-        target_score_map = target_score_map.unsqueeze(1)
+        target_score_map = target_score_map.unsqueeze(1)  # [B, 1, H, W]
+
+        # CRITICAL FIX (Audit 2025120301 Finding 3):
+        # When has_object=0, the target heatmap should be all background (zeros)
+        # This teaches the model to predict low scores when target is absent
+        if has_object is not None:
+            has_object_mask = has_object.float().view(B, 1, 1, 1)  # [B, 1, 1, 1]
+            target_score_map = target_score_map * has_object_mask  # Zero out when no object
 
         score_map_prob = torch.sigmoid(score_map_logits)
 
@@ -598,25 +652,50 @@ class CenterHead(BaseHead):
         giou = compute_giou(pred_xyxy, target_xyxy)
         iou_loss = 1.0 - giou
 
-        if validity_mask is not None:
-            validity_mask = validity_mask.float()
-            num_valid = validity_mask.sum().clamp(min=1.0)
-            size_loss = (size_loss * validity_mask).sum() / num_valid
-            iou_loss = (iou_loss * validity_mask).sum() / num_valid
+        # CRITICAL FIX (Audit 2025120301 Finding 3):
+        # Combine validity_mask with has_object for size/iou losses
+        # Only samples with valid annotations AND object present should contribute
+        effective_mask = None
+        if validity_mask is not None and has_object is not None:
+            effective_mask = validity_mask.float() * has_object.float()
+        elif validity_mask is not None:
+            effective_mask = validity_mask.float()
+        elif has_object is not None:
+            effective_mask = has_object.float()
+
+        if effective_mask is not None:
+            num_valid = effective_mask.sum().clamp(min=1.0)
+            size_loss = (size_loss * effective_mask).sum() / num_valid
+            iou_loss = (iou_loss * effective_mask).sum() / num_valid
         else:
             size_loss = size_loss.mean()
             iou_loss = iou_loss.mean()
 
+        # CRITICAL FIX (Audit 2025120301 Finding 3, 9):
+        # Independent objectness loss - BCE with has_object as target
+        # This decouples confidence (objectness) from quality (localization)
+        if has_object is not None:
+            target_objectness = has_object.float()  # [B]
+            # Use BCE with logits for numerical stability
+            objectness_loss = F.binary_cross_entropy_with_logits(
+                objectness_logits, target_objectness, reduction='mean'
+            )
+        else:
+            # No has_object supervision: skip objectness loss
+            objectness_loss = torch.tensor(0.0, device=device)
+
         total_loss = (
             score_loss * self.loss_weight_score +
             size_loss * self.loss_weight_size +
-            iou_loss * 2.0
+            iou_loss * 2.0 +
+            objectness_loss * self.loss_weight_objectness
         )
 
         return {
             'score_loss': score_loss,
             'size_loss': size_loss,
             'iou_loss': iou_loss,
+            'objectness_loss': objectness_loss,
             'total_loss': total_loss,
             'cls_loss': score_loss,
             'l1_loss': size_loss,

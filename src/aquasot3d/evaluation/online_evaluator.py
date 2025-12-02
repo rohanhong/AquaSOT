@@ -128,6 +128,11 @@ class OnlineTrackingEvaluator:
         """
         Evaluate a single sequence using online tracking protocol.
 
+        CRITICAL FIX (Audit 2025120301 Finding 6):
+        - Added visibility check for template initialization
+        - Searches for first valid (non-zero bbox) frame to initialize template
+        - Handles sequences that start with occlusion gracefully
+
         Args:
             base_dataset: RGBSonarDataset instance for this sequence
             verbose: Whether to show progress bar
@@ -149,19 +154,66 @@ class OnlineTrackingEvaluator:
             'sonar_gt': []
         }
 
-        # === FRAME 0: Initialize tracker ===
-        frame0_data = base_dataset._get_frame_data(0)
+        # === CRITICAL FIX (Audit 2025120301 Finding 6): Find first visible frame ===
+        # Search for the first frame with valid (non-zero) bbox for template initialization
+        # This handles sequences that start with occlusion (0,0,0,0 annotation)
+        template_frame_idx = 0
+        for frame_idx in range(num_frames):
+            frame_data = base_dataset._get_frame_data(frame_idx)
+            rgb_bbox = frame_data['rgb_bbox']
+            sonar_bbox = frame_data['sonar_bbox']
 
-        # Get first frame GT bboxes
+            # Check if at least one modality has a valid bbox
+            rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
+            sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
+
+            if rgb_valid or sonar_valid:
+                template_frame_idx = frame_idx
+                break
+        else:
+            # No valid frame found - entire sequence has no visible target
+            logger.warning(
+                f"Sequence {sequence_name}: No valid frame found for template initialization. "
+                f"All frames have zero/invalid bbox."
+            )
+            # Return empty predictions (no tracking possible)
+            return predictions
+
+        if template_frame_idx > 0:
+            logger.info(
+                f"Sequence {sequence_name}: Skipped {template_frame_idx} occluded frames, "
+                f"initializing template from frame {template_frame_idx}"
+            )
+
+        # Fill predictions for skipped frames with zero bbox (no prediction possible)
+        for skip_idx in range(template_frame_idx):
+            skip_frame_data = base_dataset._get_frame_data(skip_idx)
+            predictions['rgb_pred'].append(np.zeros(4, dtype=np.float32))
+            predictions['sonar_pred'].append(np.zeros(4, dtype=np.float32))
+            predictions['rgb_gt'].append(skip_frame_data['rgb_bbox'].copy())
+            predictions['sonar_gt'].append(skip_frame_data['sonar_bbox'].copy())
+
+        # === Initialize tracker from first visible frame ===
+        frame0_data = base_dataset._get_frame_data(template_frame_idx)
+
+        # Get template frame GT bboxes
         rgb_gt_bbox = frame0_data['rgb_bbox'].copy()
         sonar_gt_bbox = frame0_data['sonar_bbox'].copy()
+
+        # Handle case where one modality is still invalid
+        if np.sum(np.abs(rgb_gt_bbox)) == 0:
+            # Use sonar bbox as fallback for RGB
+            rgb_gt_bbox = sonar_gt_bbox.copy()
+        if np.sum(np.abs(sonar_gt_bbox)) == 0:
+            # Use RGB bbox as fallback for sonar
+            sonar_gt_bbox = rgb_gt_bbox.copy()
 
         # Initialize tracking state with GT (standard protocol)
         # State = predicted bbox from previous frame (or GT for frame 0)
         rgb_state = rgb_gt_bbox.copy()
         sonar_state = sonar_gt_bbox.copy()
 
-        # Crop and cache templates from first frame
+        # Crop and cache templates from first visible frame
         rgb_template, rgb_template_mask = self._crop_region(
             frame0_data['rgb_img'],
             rgb_gt_bbox,
@@ -181,7 +233,7 @@ class OnlineTrackingEvaluator:
         rgb_template = rgb_template.unsqueeze(0).to(self.device)
         sonar_template = sonar_template.unsqueeze(0).to(self.device)
 
-        # For frame 0, prediction = GT (initialization)
+        # For template frame, prediction = GT (initialization)
         predictions['rgb_pred'].append(rgb_gt_bbox.copy())
         predictions['sonar_pred'].append(sonar_gt_bbox.copy())
         predictions['rgb_gt'].append(rgb_gt_bbox.copy())
@@ -197,8 +249,10 @@ class OnlineTrackingEvaluator:
         # Track expansion statistics
         expansion_count = 0
 
-        # === FRAMES 1 to N-1: Online tracking ===
-        frame_iter = range(1, num_frames)
+        # === FRAMES template_frame_idx+1 to N-1: Online tracking ===
+        # CRITICAL FIX (Audit 2025120301 Finding 6): Start from next frame after template
+        start_frame = template_frame_idx + 1
+        frame_iter = range(start_frame, num_frames)
         if verbose:
             frame_iter = tqdm(frame_iter, desc=f"  {sequence_name}", unit="frame", leave=False)
 
@@ -314,6 +368,11 @@ class OnlineTrackingEvaluator:
         """
         Crop region centered on bbox following OSTrack methodology.
 
+        CRITICAL FIX (Audit 2025120301 Finding 5):
+        - Added NaN/Inf/extreme value protection for bbox
+        - Added crop_sz upper limit to prevent memory explosion
+        - Returns safe fallback crop when bbox is invalid
+
         Args:
             image: Input image [H, W, C] or [H, W]
             bbox: Center bbox [x, y, w, h] in XYWH pixel format
@@ -343,7 +402,20 @@ class OnlineTrackingEvaluator:
             return crop_tensor, None
 
         H, W = image.shape[:2]
+
+        # CRITICAL FIX (Audit 2025120301 Finding 5):
+        # Validate bbox - protect against NaN/Inf/extreme values
         x, y, w, h = bbox
+        if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(w) or not np.isfinite(h):
+            logger.warning(f"Invalid bbox detected: {bbox}, using image center fallback")
+            x, y, w, h = W / 4, H / 4, W / 2, H / 2  # Fallback to image center
+
+        # Clamp extreme values
+        max_dim = max(H, W)
+        x = np.clip(x, -max_dim, max_dim * 2)
+        y = np.clip(y, -max_dim, max_dim * 2)
+        w = np.clip(w, 1, max_dim * 2)
+        h = np.clip(h, 1, max_dim * 2)
 
         # Handle degenerate bbox (e.g., occlusion marker [0,0,0,0])
         if w <= 0 or h <= 0:
@@ -358,6 +430,17 @@ class OnlineTrackingEvaluator:
         target_sz = math.sqrt(w * h)
         crop_sz = int(math.ceil(target_sz * area_factor))
         crop_sz = max(crop_sz, 1)
+
+        # CRITICAL FIX (Audit 2025120301 Finding 5):
+        # Limit crop_sz to prevent memory explosion from drifted predictions
+        # Cap at 2x max(H, W) with absolute maximum of 2048
+        max_crop_sz = min(2 * max(H, W), 2048)
+        if crop_sz > max_crop_sz:
+            logger.warning(
+                f"Crop size {crop_sz} exceeds limit {max_crop_sz}, clamping. "
+                f"bbox={[x, y, w, h]}, area_factor={area_factor}"
+            )
+            crop_sz = max_crop_sz
 
         # Compute crop boundaries
         x1 = int(round(cx - crop_sz / 2))
