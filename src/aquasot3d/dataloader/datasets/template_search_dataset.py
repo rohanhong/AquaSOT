@@ -48,6 +48,10 @@ class TemplateSearchDataset(Dataset):
     instead of full-frame letterbox. This is essential for the model to learn
     target localization rather than predicting image center by default.
 
+    CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering for validation.
+    When enable_template_quality_filter=True, scans first N frames to select
+    the best quality template (not edge-clipped, sufficient size).
+
     Samples (template, search) pairs from continuous sequences.
     - Template: Target-centered crop with template_area_factor (default 2.0)
     - Search: Target-centered crop with search_area_factor (default 4.0)
@@ -85,6 +89,12 @@ class TemplateSearchDataset(Dataset):
         >>> print(sample['search_att_mask'].shape)  # [256, 256]
     """
 
+    # CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering defaults
+    # These match OnlineTrackingEvaluator and EvaluationSequenceDataset for consistency
+    TEMPLATE_MIN_SIZE = 5.0       # Minimum bbox dimension (pixels)
+    TEMPLATE_EDGE_MARGIN = 2      # Minimum distance from image edge (pixels)
+    TEMPLATE_SCAN_FRAMES = 20     # Number of frames to scan for best template
+
     def __init__(
         self,
         base_dataset,
@@ -102,7 +112,12 @@ class TemplateSearchDataset(Dataset):
         use_attention_mask: bool = True,      # Enable attention mask for padding
         context_factor: float = 2.0,          # Deprecated, use template_area_factor
         augmentation=None,
-        normalization_config: Optional[Dict] = None
+        normalization_config: Optional[Dict] = None,
+        # CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering for validation
+        enable_template_quality_filter: bool = False,  # Disabled by default for training
+        template_min_size: float = None,        # Min bbox dimension (pixels)
+        template_edge_margin: int = None,       # Min distance from image edge (pixels)
+        template_scan_frames: int = None        # Frames to scan for best template
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
@@ -158,6 +173,21 @@ class TemplateSearchDataset(Dataset):
         self.rgb_std = torch.tensor(normalization_config.get('rgb_std', [0.229, 0.224, 0.225])).view(3, 1, 1)
         self.sonar_mean = torch.tensor(normalization_config.get('sonar_mean', [0.5])).view(1, 1, 1)
         self.sonar_std = torch.tensor(normalization_config.get('sonar_std', [0.5])).view(1, 1, 1)
+
+        # CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering
+        # When enabled, selects best quality template from first N frames
+        # instead of always using the first valid frame
+        self.enable_template_quality_filter = enable_template_quality_filter
+        self.template_min_size = template_min_size or self.TEMPLATE_MIN_SIZE
+        self.template_edge_margin = template_edge_margin or self.TEMPLATE_EDGE_MARGIN
+        self.template_scan_frames = template_scan_frames or self.TEMPLATE_SCAN_FRAMES
+
+        if enable_template_quality_filter:
+            logger.info(
+                f"TemplateSearchDataset template quality filter ENABLED: "
+                f"min_size={self.template_min_size}, edge_margin={self.template_edge_margin}, "
+                f"scan_frames={self.template_scan_frames}"
+            )
 
         # Multi-sequence support (PRESERVED from FrameSequenceDataset)
         self.is_multi_sequence = isinstance(
@@ -674,9 +704,18 @@ class TemplateSearchDataset(Dataset):
             seq_end = len(self.base_dataset) - 1
 
         if self.update_policy == 'first_frame':
-            # Use first valid frame of sequence as template
-            template_idx = find_nearest_valid_frame(seq_start, seq_start, search_idx)
-            return template_idx
+            # CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering
+            # When enabled, select best quality template from first N frames
+            # instead of always using the first valid frame
+            if self.enable_template_quality_filter:
+                template_idx, reason = self._select_best_template_frame_for_sequence(
+                    seq_start, seq_end + 1  # seq_end is inclusive, method expects exclusive
+                )
+                return template_idx
+            else:
+                # Original behavior: use first valid frame of sequence as template
+                template_idx = find_nearest_valid_frame(seq_start, seq_start, search_idx)
+                return template_idx
 
         elif self.update_policy in ('recent', 'mixformer'):
             # CRITICAL FIX (Audit 2025112505 Issue 2):
@@ -715,6 +754,199 @@ class TemplateSearchDataset(Dataset):
 
         else:
             raise ValueError(f"Unknown template update policy: {self.update_policy}")
+
+    def _evaluate_template_quality(
+        self,
+        bbox: np.ndarray,
+        image_size: Tuple[int, int]
+    ) -> Tuple[bool, float]:
+        """
+        Evaluate template quality based on bbox completeness.
+
+        CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering
+        for validation mode. Checks if bbox is edge-clipped or too small.
+
+        Args:
+            bbox: Bounding box in XYWH format
+            image_size: Image dimensions (width, height)
+
+        Returns:
+            Tuple of (is_complete, quality_score)
+            - is_complete: True if bbox passes all quality checks
+            - quality_score: Combined score [0, 1] for ranking templates
+        """
+        if bbox is None or np.sum(np.abs(bbox)) == 0:
+            return False, 0.0
+
+        x, y, w, h = bbox
+        img_w, img_h = image_size
+
+        # Check minimum size
+        if w < self.template_min_size or h < self.template_min_size:
+            return False, 0.1  # Too small
+
+        # Check edge proximity
+        margin = self.template_edge_margin
+        left_margin = x
+        top_margin = y
+        right_margin = img_w - (x + w)
+        bottom_margin = img_h - (y + h)
+
+        min_margin = min(left_margin, top_margin, right_margin, bottom_margin)
+        is_edge_clipped = min_margin < margin
+
+        # Compute quality score
+        # 1. Size score: larger bbox = better (up to a point)
+        area = w * h
+        max_area = img_w * img_h * 0.5  # Cap at 50% of image
+        size_score = min(1.0, area / max_area)
+
+        # 2. Edge score: further from edge = better
+        max_margin = min(img_w, img_h) / 4
+        edge_score = min(1.0, min_margin / max_margin)
+
+        # 3. Aspect ratio score: prefer reasonable aspect ratios
+        aspect_ratio = max(w, h) / (min(w, h) + 1e-6)
+        aspect_score = 1.0 / (1.0 + max(0, aspect_ratio - 3))  # Penalize extreme ratios
+
+        # Combined score
+        quality_score = 0.4 * size_score + 0.4 * edge_score + 0.2 * aspect_score
+
+        is_complete = not is_edge_clipped and w >= self.template_min_size and h >= self.template_min_size
+
+        return is_complete, quality_score
+
+    def _select_best_template_frame_for_sequence(
+        self,
+        seq_start: int,
+        seq_end: int
+    ) -> Tuple[int, str]:
+        """
+        Select the best template frame from first N frames of a sequence.
+
+        CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering
+        for validation mode. Scans first N frames and selects the one with
+        best combined quality score.
+
+        Args:
+            seq_start: Start index of sequence
+            seq_end: End index of sequence (exclusive)
+
+        Returns:
+            Tuple of (frame_index, selection_reason)
+        """
+        scan_limit = min(seq_start + self.template_scan_frames, seq_end)
+
+        best_frame_idx = -1
+        best_quality = -1.0
+        best_reason = "no_valid_frame"
+
+        # Track candidates
+        candidates = []
+
+        for frame_idx in range(seq_start, scan_limit):
+            try:
+                # Get frame data directly from base dataset
+                if hasattr(self.base_dataset, '_get_frame_data'):
+                    frame_data = self.base_dataset._get_frame_data(frame_idx)
+                    rgb_bbox = frame_data.get('rgb_bbox')
+                    sonar_bbox = frame_data.get('sonar_bbox')
+                    rgb_img = frame_data.get('rgb_img')
+                    sonar_img = frame_data.get('sonar_img')
+                else:
+                    sample = self.base_dataset[frame_idx]
+                    rgb_bbox = sample.get('rgb_bbox')
+                    sonar_bbox = sample.get('sonar_bbox')
+                    rgb_img = sample.get('rgb_img')
+                    sonar_img = sample.get('sonar_img')
+
+                # Get image sizes
+                if rgb_img is not None:
+                    rgb_size = (rgb_img.shape[1], rgb_img.shape[0])  # (W, H)
+                else:
+                    rgb_size = (1920, 1080)  # Default fallback
+
+                if sonar_img is not None:
+                    if sonar_img.ndim == 3:
+                        sonar_size = (sonar_img.shape[1], sonar_img.shape[0])
+                    else:
+                        sonar_size = (sonar_img.shape[1], sonar_img.shape[0])
+                else:
+                    sonar_size = (682, 376)  # Default fallback
+
+                # Convert bbox to numpy if needed
+                if rgb_bbox is not None and isinstance(rgb_bbox, torch.Tensor):
+                    rgb_bbox = rgb_bbox.cpu().numpy()
+                if sonar_bbox is not None and isinstance(sonar_bbox, torch.Tensor):
+                    sonar_bbox = sonar_bbox.cpu().numpy()
+
+                # Evaluate quality
+                rgb_complete, rgb_quality = self._evaluate_template_quality(rgb_bbox, rgb_size)
+                sonar_complete, sonar_quality = self._evaluate_template_quality(sonar_bbox, sonar_size)
+
+                # Check validity
+                rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
+                sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
+
+                if not rgb_valid and not sonar_valid:
+                    continue  # Skip occluded frames
+
+                # Determine combined quality and reason
+                if rgb_complete and sonar_complete:
+                    combined_quality = (rgb_quality + sonar_quality) / 2 + 0.2  # Bonus for dual complete
+                    reason = "dual_complete"
+                elif rgb_complete:
+                    combined_quality = rgb_quality + 0.1
+                    reason = "rgb_complete"
+                elif sonar_complete:
+                    combined_quality = sonar_quality + 0.1
+                    reason = "sonar_complete"
+                elif rgb_valid or sonar_valid:
+                    combined_quality = max(rgb_quality, sonar_quality)
+                    reason = "partial_valid"
+                else:
+                    continue
+
+                candidates.append((frame_idx, combined_quality, reason))
+
+                if combined_quality > best_quality:
+                    best_quality = combined_quality
+                    best_frame_idx = frame_idx
+                    best_reason = reason
+
+            except Exception as e:
+                logger.warning(f"Error evaluating frame {frame_idx}: {e}")
+                continue
+
+        # Fallback: if no good template found, use first valid frame
+        if best_frame_idx < 0:
+            for frame_idx in range(seq_start, seq_end):
+                try:
+                    if hasattr(self.base_dataset, '_get_frame_data'):
+                        frame_data = self.base_dataset._get_frame_data(frame_idx)
+                        rgb_bbox = frame_data.get('rgb_bbox')
+                        sonar_bbox = frame_data.get('sonar_bbox')
+                    else:
+                        sample = self.base_dataset[frame_idx]
+                        rgb_bbox = sample.get('rgb_bbox')
+                        sonar_bbox = sample.get('sonar_bbox')
+
+                    if rgb_bbox is not None and isinstance(rgb_bbox, torch.Tensor):
+                        rgb_bbox = rgb_bbox.cpu().numpy()
+                    if sonar_bbox is not None and isinstance(sonar_bbox, torch.Tensor):
+                        sonar_bbox = sonar_bbox.cpu().numpy()
+
+                    rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
+                    sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
+
+                    if rgb_valid or sonar_valid:
+                        return frame_idx, "first_valid_fallback"
+                except Exception:
+                    continue
+
+            return seq_start, "fallback_to_start"
+
+        return best_frame_idx, best_reason
 
     def _denormalize_image_if_needed(
         self,

@@ -39,6 +39,13 @@ data:
   val_template_update_policy: first_frame  # Validation uses first frame like online eval
   quality_threshold_rgb: 0.7      # RGB quality threshold for template update
   quality_threshold_sonar: 0.7    # Sonar quality threshold for template update
+  # CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering for validation
+  # Ensures val selects best quality template (not edge-clipped, sufficient size)
+  # Consistent with OnlineTrackingEvaluator behavior
+  val_enable_template_quality_filter: true  # Enable quality-based template selection for val
+  template_min_size: 5.0          # Minimum bbox dimension (pixels)
+  template_edge_margin: 2         # Minimum distance from image edge (pixels)
+  template_scan_frames: 20        # Number of frames to scan for best template
   num_workers: 12                 # DataLoader workers [🚀A4000: 48]
   prefetch_factor: 4              # Prefetch batches per worker [🚀A4000: 8]
 

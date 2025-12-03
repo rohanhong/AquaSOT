@@ -219,6 +219,7 @@ def main():
     # - Correct metadata passing to GeometryGatedAttention
     # - Correct output key handling (rgb_boxes, sonar_boxes)
     # - Consistent behavior with training/evaluation
+    # CRITICAL FIX (Audit 2025120402): Add template quality filtering
     evaluator = OnlineTrackingEvaluator(
         model=model,
         device=device,
@@ -229,7 +230,12 @@ def main():
         normalization_config=cfg.data.normalize,
         enable_template_update=enable_template_update,
         template_update_interval=cfg.evaluation.get('template_update_interval', 10),
-        template_update_threshold=cfg.evaluation.get('template_update_threshold', 0.7)
+        template_update_threshold=cfg.evaluation.get('template_update_threshold', 0.7),
+        # Template quality filtering for better initialization
+        template_min_size=cfg.evaluation.get('template_min_size', 5.0),
+        template_edge_margin=cfg.evaluation.get('template_edge_margin', 2),
+        template_scan_frames=cfg.evaluation.get('template_scan_frames', 20),
+        enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True)
     )
 
     logger.info(f"Template update: {'ENABLED' if enable_template_update else 'DISABLED'}")

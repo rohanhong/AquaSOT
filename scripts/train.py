@@ -417,6 +417,10 @@ def build_dataloaders(cfg):
         val_template_policy = cfg.data.get('val_template_update_policy', 'first_frame')
         logger.info(f"Validation template policy: {val_template_policy} (aligned with online tracking)")
 
+        # CRITICAL FIX (Audit 2025120402 Finding 5): Enable template quality filtering for validation
+        # This ensures val selects best quality template, consistent with OnlineTrackingEvaluator
+        val_enable_quality_filter = cfg.data.get('val_enable_template_quality_filter', True)
+
         val_dataset = TemplateSearchDataset(
             base_dataset=val_base_dataset,
             template_size=template_size,
@@ -428,7 +432,12 @@ def build_dataloaders(cfg):
             center_jitter_factor=0.0,  # No jitter for validation
             scale_jitter_factor=0.0,
             augmentation=None,  # No augmentation for validation
-            normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+            normalization_config=cfg.data.normalize,  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+            # CRITICAL FIX (Audit 2025120402 Finding 5): Template quality filtering for validation
+            enable_template_quality_filter=val_enable_quality_filter,
+            template_min_size=cfg.data.get('template_min_size', 5.0),
+            template_edge_margin=cfg.data.get('template_edge_margin', 2),
+            template_scan_frames=cfg.data.get('template_scan_frames', 20)
         )
 
         logger.info(f"Val dataset: {len(val_dataset)} samples")

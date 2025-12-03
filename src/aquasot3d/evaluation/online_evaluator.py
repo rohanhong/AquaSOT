@@ -66,6 +66,12 @@ class OnlineTrackingEvaluator:
     CONFIDENCE_LOW = 0.3        # Low confidence threshold
     EXPANSION_FACTOR = 2.0      # Maximum expansion: 2x normal search area
 
+    # Template quality thresholds (Audit 2025120402)
+    # Used to filter out incomplete/edge-clipped templates during initialization
+    TEMPLATE_MIN_SIZE = 5.0             # Minimum bbox dimension (pixels)
+    TEMPLATE_EDGE_MARGIN = 2            # Minimum distance from image edge (pixels)
+    TEMPLATE_SCAN_FRAMES = 20           # Number of frames to scan for best template
+
     def __init__(
         self,
         model: nn.Module,
@@ -83,7 +89,12 @@ class OnlineTrackingEvaluator:
         # CRITICAL FIX (Audit 2025120401 Finding 6): Template update configuration
         enable_template_update: bool = True,
         template_update_interval: int = 10,  # Update template every N frames
-        template_update_threshold: float = 0.7  # Minimum confidence to update
+        template_update_threshold: float = 0.7,  # Minimum confidence to update
+        # CRITICAL FIX (Audit 2025120402 Finding 1-2): Template quality filtering
+        template_min_size: float = None,        # Min bbox dimension (pixels)
+        template_edge_margin: int = None,       # Min distance from image edge (pixels)
+        template_scan_frames: int = None,       # Frames to scan for best template
+        enable_template_quality_filter: bool = True  # Enable quality-based template selection
     ):
         self.model = model
         self.device = torch.device(device) if isinstance(device, str) else device
@@ -122,12 +133,19 @@ class OnlineTrackingEvaluator:
         self.template_update_interval = template_update_interval
         self.template_update_threshold = template_update_threshold
 
+        # CRITICAL FIX (Audit 2025120402 Finding 1-2): Template quality filtering
+        self.template_min_size = template_min_size or self.TEMPLATE_MIN_SIZE
+        self.template_edge_margin = template_edge_margin or self.TEMPLATE_EDGE_MARGIN
+        self.template_scan_frames = template_scan_frames or self.TEMPLATE_SCAN_FRAMES
+        self.enable_template_quality_filter = enable_template_quality_filter
+
         logger.info(
             f"OnlineTrackingEvaluator initialized: "
             f"template_size={template_size}, search_size={search_size}, "
             f"search_area_factor={search_area_factor}, "
             f"enable_search_expansion={enable_search_expansion}, "
-            f"enable_template_update={enable_template_update}"
+            f"enable_template_update={enable_template_update}, "
+            f"enable_template_quality_filter={enable_template_quality_filter}"
         )
 
     def evaluate_sequence(
@@ -164,23 +182,20 @@ class OnlineTrackingEvaluator:
             'sonar_gt': []
         }
 
-        # === CRITICAL FIX (Audit 2025120301 Finding 6): Find first visible frame ===
-        # Search for the first frame with valid (non-zero) bbox for template initialization
-        # This handles sequences that start with occlusion (0,0,0,0 annotation)
-        template_frame_idx = 0
-        for frame_idx in range(num_frames):
-            frame_data = base_dataset._get_frame_data(frame_idx)
-            rgb_bbox = frame_data['rgb_bbox']
-            sonar_bbox = frame_data['sonar_bbox']
-
-            # Check if at least one modality has a valid bbox
-            rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
-            sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
-
-            if rgb_valid or sonar_valid:
-                template_frame_idx = frame_idx
-                break
+        # === CRITICAL FIX (Audit 2025120402 Finding 1-2): Template quality filtering ===
+        # Select the best template frame based on completeness and quality,
+        # not just the first valid frame. This handles edge-clipped/incomplete templates.
+        if self.enable_template_quality_filter:
+            template_frame_idx, selection_reason = self._select_best_template_frame(
+                base_dataset, num_frames
+            )
         else:
+            # Fallback: use first valid frame (original behavior for --baseline mode)
+            template_frame_idx, selection_reason = self._find_first_valid_frame(
+                base_dataset, num_frames
+            )
+
+        if template_frame_idx < 0:
             # No valid frame found - entire sequence has no visible target
             logger.warning(
                 f"Sequence {sequence_name}: No valid frame found for template initialization. "
@@ -189,10 +204,10 @@ class OnlineTrackingEvaluator:
             # Return empty predictions (no tracking possible)
             return predictions
 
-        if template_frame_idx > 0:
+        if template_frame_idx > 0 or selection_reason != "dual_complete":
             logger.info(
-                f"Sequence {sequence_name}: Skipped {template_frame_idx} occluded frames, "
-                f"initializing template from frame {template_frame_idx}"
+                f"Sequence {sequence_name}: Template selected from frame {template_frame_idx} "
+                f"(reason: {selection_reason})"
             )
 
         # Fill predictions for skipped frames with zero bbox (no prediction possible)
@@ -678,6 +693,222 @@ class OnlineTrackingEvaluator:
             return False
         x, y, w, h = bbox
         return w >= min_size and h >= min_size
+
+    def _evaluate_template_quality(
+        self,
+        bbox: np.ndarray,
+        image_size: Tuple[int, int]
+    ) -> Tuple[bool, float]:
+        """
+        Evaluate template quality based on completeness and edge proximity.
+
+        CRITICAL FIX (Audit 2025120402 Finding 1-2):
+        Checks if bbox is:
+        1. Valid (non-zero, reasonable size)
+        2. Complete (not clipped at image edges)
+        3. Has sufficient size for tracking
+
+        Args:
+            bbox: Bounding box [x, y, w, h] in XYWH format
+            image_size: Image dimensions (H, W)
+
+        Returns:
+            Tuple of (is_complete, quality_score)
+            - is_complete: True if bbox meets all quality criteria
+            - quality_score: 0.0-1.0 score for ranking (higher = better)
+        """
+        if bbox is None:
+            return False, 0.0
+
+        x, y, w, h = bbox
+        H, W = image_size
+
+        # Check 1: Valid bbox (non-zero)
+        if np.sum(np.abs(bbox)) == 0:
+            return False, 0.0
+
+        # Check 2: Minimum size requirement
+        if w < self.template_min_size or h < self.template_min_size:
+            return False, 0.1  # Small but valid
+
+        # Check 3: Edge proximity (not clipped)
+        margin = self.template_edge_margin
+        left_margin = x
+        top_margin = y
+        right_margin = W - (x + w)
+        bottom_margin = H - (y + h)
+
+        is_edge_clipped = (
+            left_margin < margin or
+            top_margin < margin or
+            right_margin < margin or
+            bottom_margin < margin
+        )
+
+        if is_edge_clipped:
+            # Compute how much is clipped (for scoring)
+            min_margin = min(left_margin, top_margin, right_margin, bottom_margin)
+            clip_penalty = max(0.0, 1.0 - (margin - min_margin) / margin)
+            return False, 0.3 + 0.3 * clip_penalty  # Clipped but visible
+
+        # Compute quality score based on:
+        # - Size (larger is better, normalized by image size)
+        # - Centrality (more centered is often better for initial template)
+        # - Aspect ratio (moderate aspect ratio is better)
+
+        # Size score (0.3 weight)
+        bbox_area = w * h
+        image_area = H * W
+        area_ratio = bbox_area / image_area
+        # Optimal range: 1%-10% of image area
+        if area_ratio < 0.01:
+            size_score = area_ratio / 0.01
+        elif area_ratio < 0.10:
+            size_score = 1.0
+        else:
+            size_score = max(0.5, 1.0 - (area_ratio - 0.10) / 0.20)
+
+        # Margin score (0.3 weight) - prefer centered targets
+        margin_score = min(left_margin, top_margin, right_margin, bottom_margin) / max(W, H)
+        margin_score = min(1.0, margin_score * 10)  # Normalize
+
+        # Aspect ratio score (0.2 weight) - penalize extreme aspect ratios
+        aspect = max(w, h) / max(min(w, h), 1)
+        if aspect <= 2.0:
+            aspect_score = 1.0
+        elif aspect <= 4.0:
+            aspect_score = 1.0 - (aspect - 2.0) / 4.0
+        else:
+            aspect_score = 0.5
+
+        # Combined quality score
+        quality_score = 0.3 * size_score + 0.4 * margin_score + 0.3 * aspect_score
+        quality_score = 0.7 + 0.3 * quality_score  # Base score of 0.7 for complete templates
+
+        return True, quality_score
+
+    def _select_best_template_frame(
+        self,
+        base_dataset,
+        num_frames: int
+    ) -> Tuple[int, str]:
+        """
+        Select the best template frame from the first N frames.
+
+        CRITICAL FIX (Audit 2025120402 Finding 1):
+        Scans first N frames to find the one with highest quality template,
+        considering both RGB and Sonar bbox quality.
+
+        Args:
+            base_dataset: Dataset instance
+            num_frames: Total number of frames in sequence
+
+        Returns:
+            Tuple of (frame_index, selection_reason)
+        """
+        scan_limit = min(self.template_scan_frames, num_frames)
+
+        best_frame_idx = -1
+        best_quality = -1.0
+        best_reason = "no_valid_frame"
+
+        # Track candidate frames
+        candidates = []
+
+        for frame_idx in range(scan_limit):
+            frame_data = base_dataset._get_frame_data(frame_idx)
+            rgb_bbox = frame_data['rgb_bbox']
+            sonar_bbox = frame_data['sonar_bbox']
+
+            # Get image sizes
+            rgb_img = frame_data.get('rgb_img')
+            sonar_img = frame_data.get('sonar_img')
+
+            rgb_size = (rgb_img.shape[0], rgb_img.shape[1]) if rgb_img is not None else (480, 640)
+            sonar_size = (sonar_img.shape[0], sonar_img.shape[1]) if sonar_img is not None else (512, 512)
+
+            # Evaluate quality for both modalities
+            rgb_complete, rgb_quality = self._evaluate_template_quality(rgb_bbox, rgb_size)
+            sonar_complete, sonar_quality = self._evaluate_template_quality(sonar_bbox, sonar_size)
+
+            # Combined quality: require at least one modality to be valid
+            rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
+            sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
+
+            if not (rgb_valid or sonar_valid):
+                continue  # Skip fully invalid frames
+
+            # Compute combined quality score
+            # Prefer frames where both modalities are complete
+            if rgb_complete and sonar_complete:
+                combined_quality = (rgb_quality + sonar_quality) / 2.0 + 0.2  # Bonus for dual-complete
+                reason = "dual_complete"
+            elif rgb_complete:
+                combined_quality = rgb_quality * 0.8
+                reason = "rgb_complete"
+            elif sonar_complete:
+                combined_quality = sonar_quality * 0.8
+                reason = "sonar_complete"
+            else:
+                # Neither complete but at least one valid
+                combined_quality = max(rgb_quality, sonar_quality) * 0.5
+                reason = "partial_valid"
+
+            candidates.append((frame_idx, combined_quality, reason))
+
+            if combined_quality > best_quality:
+                best_quality = combined_quality
+                best_frame_idx = frame_idx
+                best_reason = reason
+
+        # If no complete template found, fall back to first valid frame
+        if best_frame_idx < 0:
+            # Scan again for any valid frame (original behavior)
+            for frame_idx in range(num_frames):
+                frame_data = base_dataset._get_frame_data(frame_idx)
+                rgb_bbox = frame_data['rgb_bbox']
+                sonar_bbox = frame_data['sonar_bbox']
+
+                rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
+                sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
+
+                if rgb_valid or sonar_valid:
+                    return frame_idx, "first_valid_fallback"
+
+            return -1, "no_valid_frame"
+
+        return best_frame_idx, best_reason
+
+    def _find_first_valid_frame(
+        self,
+        base_dataset,
+        num_frames: int
+    ) -> Tuple[int, str]:
+        """
+        Find the first frame with at least one valid modality (original behavior).
+
+        This is the fallback when enable_template_quality_filter=False.
+        Does NOT consider edge proximity or size constraints.
+
+        Args:
+            base_dataset: Dataset instance
+            num_frames: Total number of frames in sequence
+
+        Returns:
+            Tuple of (frame_index, selection_reason)
+        """
+        for frame_idx in range(num_frames):
+            frame_data = base_dataset._get_frame_data(frame_idx)
+            rgb_bbox = frame_data['rgb_bbox']
+            sonar_bbox = frame_data['sonar_bbox']
+
+            rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
+            sonar_valid = sonar_bbox is not None and np.sum(np.abs(sonar_bbox)) > 0
+
+            if rgb_valid or sonar_valid:
+                return frame_idx, "first_valid"
+
+        return -1, "no_valid_frame"
 
     def _compute_search_factor(
         self,

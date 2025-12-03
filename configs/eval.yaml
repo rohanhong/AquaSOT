@@ -26,6 +26,14 @@ evaluation:
   template_update_interval: 10      # Update template every N frames (if confident)
   template_update_threshold: 0.7    # Minimum confidence to update template
 
+  # CRITICAL FIX (Audit 2025120402): Template quality filtering
+  # Scans first N frames to find best quality template (not edge-clipped, sufficient size)
+  # Applies to both online (OnlineTrackingEvaluator) and offline (EvaluationSequenceDataset)
+  enable_template_quality_filter: true  # Enable quality-based template selection
+  template_min_size: 5.0            # Minimum bbox dimension (pixels)
+  template_edge_margin: 2           # Minimum distance from image edge (pixels)
+  template_scan_frames: 20          # Number of frames to scan for best template
+
   template:
     visibility_policy: any          # Template selection: any/both/all
 

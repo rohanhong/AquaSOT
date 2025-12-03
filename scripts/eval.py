@@ -63,10 +63,14 @@ def parse_args():
                              'offline=search centered on GT (ablation only)')
 
     # Template update control for online evaluation
-    parser.add_argument('--enable-template-update', action='store_true', default=None,
-                        help='Enable dynamic template update during online tracking')
-    parser.add_argument('--no-template-update', action='store_true', default=None,
-                        help='Disable template update (use first frame only)')
+    # CRITICAL FIX (Audit 2025120402 Finding 2-3): Clear baseline vs update mode
+    template_group = parser.add_mutually_exclusive_group()
+    template_group.add_argument('--enable-template-update', action='store_true', default=None,
+                        help='Enable dynamic template update during online tracking (default)')
+    template_group.add_argument('--no-template-update', '--baseline', action='store_true', default=None,
+                        dest='no_template_update',
+                        help='Disable template update for first-frame-fixed BASELINE evaluation. '
+                             'Use this to compare with --enable-template-update for ablation.')
 
     return parser.parse_args()
 
@@ -337,6 +341,7 @@ def main():
         logger.info(f"  Search center: PREVIOUS PREDICTION (standard tracking)")
 
         # CRITICAL FIX (Audit 2025112702): Use correct config key 'template_area_factor'
+        # CRITICAL FIX (Audit 2025120402): Add template quality filtering parameters
         evaluator = OnlineTrackingEvaluator(
             model=model,
             device=device,
@@ -348,7 +353,12 @@ def main():
             # CRITICAL FIX (Audit 2025120401 Finding 6): Pass template update config
             enable_template_update=enable_template_update,
             template_update_interval=cfg.evaluation.get('template_update_interval', 10),
-            template_update_threshold=cfg.evaluation.get('template_update_threshold', 0.7)
+            template_update_threshold=cfg.evaluation.get('template_update_threshold', 0.7),
+            # CRITICAL FIX (Audit 2025120402 Finding 1-2): Template quality filtering
+            template_min_size=cfg.evaluation.get('template_min_size', 5.0),
+            template_edge_margin=cfg.evaluation.get('template_edge_margin', 2),
+            template_scan_frames=cfg.evaluation.get('template_scan_frames', 20),
+            enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True)
         )
     else:
         # OFFLINE protocol (ablation only):
@@ -367,7 +377,12 @@ def main():
             template_area_factor=cfg.data.get('template_area_factor', 2.0),
             search_area_factor=cfg.data.get('search_area_factor', 4.0),
             normalization_config=cfg.data.normalize,
-            enable_template_update=False  # No update for offline
+            enable_template_update=False,  # No update for offline
+            # CRITICAL FIX (Audit 2025120402 Finding 1-2): Template quality filtering
+            template_min_size=cfg.evaluation.get('template_min_size', 5.0),
+            template_edge_margin=cfg.evaluation.get('template_edge_margin', 2),
+            template_scan_frames=cfg.evaluation.get('template_scan_frames', 20),
+            enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True)
         )
 
     # Run evaluation
