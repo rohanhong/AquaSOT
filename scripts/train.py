@@ -405,11 +405,24 @@ def build_dataloaders(cfg):
     if val_base_dataset is not None:
         # ARCHITECTURE CHANGE (Audit 2025112104): Template-search validation
         # NOTE: Validation uses no jitter (center_jitter=0) to evaluate on centered targets
+        #
+        # CRITICAL FIX (Audit 2025120401 Finding 3): Align validation template strategy with deployment
+        # Validation MUST use 'first_frame' policy to match OnlineTrackingEvaluator protocol:
+        #   - Training: 'mixformer' (random template selection for diverse learning)
+        #   - Validation: 'first_frame' (consistent with online tracking initialization)
+        # Using 'mixformer' for validation causes train-val metric mismatch because:
+        #   - Val samples random templates (like training)
+        #   - Online eval always uses first frame as initial template
+        # This alignment ensures val metrics better predict online tracking performance.
+        val_template_policy = cfg.data.get('val_template_update_policy', 'first_frame')
+        logger.info(f"Validation template policy: {val_template_policy} (aligned with online tracking)")
+
         val_dataset = TemplateSearchDataset(
             base_dataset=val_base_dataset,
             template_size=template_size,
             search_size=search_size,
             template_search_gap=gap_tuple,  # Fixed: correct parameter name
+            template_update_policy=val_template_policy,  # CRITICAL: Use first_frame for deployment alignment
             search_area_factor=search_area_factor,
             template_area_factor=template_area_factor,
             center_jitter_factor=0.0,  # No jitter for validation

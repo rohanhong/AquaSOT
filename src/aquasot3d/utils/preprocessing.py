@@ -209,6 +209,121 @@ def preprocess_for_inference(
     return img_tensor, metadata
 
 
+def crop_metadata_to_letterbox(
+    crop_meta: Dict,
+    search_size: int = 256
+) -> Dict:
+    """
+    Convert crop-based metadata to letterbox-equivalent format for GeometryGatedAttention.
+
+    CRITICAL FIX (Audit 2025120401 Finding 2, 10):
+    This function unifies metadata format across training/validation/online evaluation.
+    GeometryGatedAttention expects letterbox-style metadata with specific keys.
+    Training pipeline produces crop-style metadata. This function bridges the gap.
+
+    Crop metadata format (from TemplateSearchDataset/OnlineEvaluator):
+        - crop_x1, crop_y1: Top-left corner of crop in original image
+        - crop_sz: Size of crop region before resize
+        - resize_factor: output_size / crop_sz
+        - pad_left, pad_top, pad_right, pad_bottom: Padding added for boundary handling
+        - original_size: (H, W) of source image
+
+    Letterbox metadata format (expected by GeometryGatedAttention):
+        - scale: Resize factor from crop to output
+        - scale_x, scale_y: Directional scale factors
+        - pad_top, pad_left, pad_x, pad_y: Padding in output pixel space
+        - original_height, original_width: Original image dimensions
+        - new_size: (new_h, new_w) after scaling
+
+    Semantic mapping:
+        - For target-centered crops (OSTrack style), the "original" in letterbox terms
+          is the crop region, not the full image
+        - scale = resize_factor (crop_sz -> output_size)
+        - pad_top = y1_pad * resize_factor (padding in output space)
+        - original_height = crop_sz (the "original" is the crop)
+
+    Args:
+        crop_meta: Crop-style metadata dict from _crop_region/_crop_search_region
+        search_size: Output size (typically 256)
+
+    Returns:
+        Letterbox-style metadata dict compatible with GeometryGatedAttention
+
+    Example:
+        >>> crop_meta = {'crop_sz': 200, 'resize_factor': 1.28, 'pad_top': 10, ...}
+        >>> lb_meta = crop_metadata_to_letterbox(crop_meta, search_size=256)
+        >>> # Pass lb_meta to GeometryGatedAttention
+    """
+    # Extract crop parameters with safe defaults
+    crop_sz = crop_meta.get('crop_sz', search_size)
+    resize_factor = crop_meta.get('resize_factor', 1.0)
+
+    # Padding in crop space (before resize)
+    pad_left_crop = crop_meta.get('pad_left', 0)
+    pad_top_crop = crop_meta.get('pad_top', 0)
+    pad_right_crop = crop_meta.get('pad_right', 0)
+    pad_bottom_crop = crop_meta.get('pad_bottom', 0)
+
+    # Original image size (for reference only)
+    original_size = crop_meta.get('original_size', (crop_sz, crop_sz))
+    if isinstance(original_size, (list, tuple)):
+        orig_h, orig_w = original_size
+    else:
+        orig_h = orig_w = original_size
+
+    # Convert padding to output space (after resize)
+    pad_left_out = pad_left_crop * resize_factor
+    pad_top_out = pad_top_crop * resize_factor
+    pad_right_out = pad_right_crop * resize_factor
+    pad_bottom_out = pad_bottom_crop * resize_factor
+
+    # Compute effective content size in output space
+    # new_size = (crop_sz - padding) * resize_factor, but clamped to output_size
+    content_h = crop_sz - pad_top_crop - pad_bottom_crop
+    content_w = crop_sz - pad_left_crop - pad_right_crop
+    new_h = int(content_h * resize_factor)
+    new_w = int(content_w * resize_factor)
+
+    # Build letterbox-format metadata
+    letterbox_meta = {
+        # Core scale factors
+        'scale': resize_factor,
+        'scale_x': resize_factor,
+        'scale_y': resize_factor,
+
+        # Padding in output pixel space (used by RadialProfileExtractor)
+        'pad_top': pad_top_out,
+        'pad_left': pad_left_out,
+        'pad_bottom': pad_bottom_out,
+        'pad_right': pad_right_out,
+        'pad_x': (pad_left_out + pad_right_out) / 2,  # Average horizontal padding
+        'pad_y': (pad_top_out + pad_bottom_out) / 2,  # Average vertical padding
+
+        # Original dimensions (crop region as "original" for letterbox semantics)
+        # For GeometryGatedAttention radial binning, this represents the pre-letterbox size
+        'original_height': crop_sz,
+        'original_width': crop_sz,
+
+        # Full image original size (for reference)
+        'source_height': orig_h,
+        'source_width': orig_w,
+
+        # New size after scaling (content area in output space)
+        'new_size': (new_h, new_w),
+
+        # Output size for convenience
+        'output_size': search_size,
+
+        # Pass through crop metadata for inverse transform if needed
+        'crop_x1': crop_meta.get('crop_x1', 0),
+        'crop_y1': crop_meta.get('crop_y1', 0),
+        'crop_sz': crop_sz,
+        'resize_factor': resize_factor,
+    }
+
+    return letterbox_meta
+
+
 def normalize_bbox(
     bbox: np.ndarray,
     img_size: int,

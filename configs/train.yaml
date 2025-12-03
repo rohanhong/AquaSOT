@@ -23,14 +23,20 @@ data:
   template_search_gap_range: [1, 20]   # Gap range: 1-20 frames = 0.1-2.0s @10Hz (Audit 2025120102)
   search_area_factor: 4.0         # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0       # Template region = sqrt(w*h) * factor
-  # CRITICAL FIX (Audit 2025120301 Finding 7): Enable jitter for training robustness
-  # Previous bug (Audit 2025120102): jitter was disabled because crop_center_override used template center
-  # Now fixed: search crop center uses current frame GT + jitter, so jitter is safe
-  # OSTrack defaults: center_jitter=3.0 (we use lower values for multi-modal stability)
-  center_jitter_factor: 0.125     # Center jitter: sqrt(w*h) * 0.125 offset range
-  scale_jitter_factor: 0.05       # Scale jitter: exp(randn * 0.05) multiplier
+  # CRITICAL FIX (Audit 2025120401 Finding 4, 9): Curriculum moderate jitter
+  # - Previous 0.125 was too small: model couldn't learn off-center prediction
+  # - 0.5 was too large: breaks cross-modal spatial alignment in uncalibrated multi-modal
+  # - Solution: moderate jitter (0.15) preserving alignment, combined with confidence-driven
+  #   search expansion for tracking recovery (OnlineTrackingEvaluator)
+  # OSTrack defaults: center_jitter=3.0 (not applicable to uncalibrated multi-modal)
+  # Recommended range for uncalibrated multi-modal: 0.1 ~ 0.2
+  center_jitter_factor: 0.15      # Center jitter: sqrt(w*h) * 0.15 offset range
+  scale_jitter_factor: 0.1        # Scale jitter: exp(randn * 0.1) multiplier
   use_attention_mask: true        # Enable attention mask for padded regions
-  template_update_policy: mixformer    # Template update: mixformer/first/recent
+  template_update_policy: mixformer    # Template update for training: mixformer/first/recent
+  # CRITICAL FIX (Audit 2025120401 Finding 3): Validation template policy
+  # Must use 'first_frame' to align with online tracking protocol (OnlineTrackingEvaluator)
+  val_template_update_policy: first_frame  # Validation uses first frame like online eval
   quality_threshold_rgb: 0.7      # RGB quality threshold for template update
   quality_threshold_sonar: 0.7    # Sonar quality threshold for template update
   num_workers: 12                 # DataLoader workers [🚀A4000: 48]

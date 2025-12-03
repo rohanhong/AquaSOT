@@ -34,6 +34,12 @@ from .bbox import (
     convert_bbox_format as convert_bbox_format_typed,
 )
 
+from .preprocessing import (
+    letterbox_with_metadata,
+    preprocess_for_inference,
+    crop_metadata_to_letterbox,
+)
+
 __all__ = [
     # Bbox Format Conversion (Audit 2025111405 contract helpers)
     'convert_bbox_format',
@@ -68,4 +74,9 @@ __all__ = [
     'validate_config',
     'print_config',
     'setup_config_logging',
+
+    # Preprocessing (Audit 2025120401 unified metadata conversion)
+    'letterbox_with_metadata',
+    'preprocess_for_inference',
+    'crop_metadata_to_letterbox',
 ]

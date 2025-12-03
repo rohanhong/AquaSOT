@@ -79,7 +79,11 @@ class OnlineTrackingEvaluator:
         enable_search_expansion: bool = True,
         confidence_high: float = None,
         confidence_low: float = None,
-        max_expansion_factor: float = None
+        max_expansion_factor: float = None,
+        # CRITICAL FIX (Audit 2025120401 Finding 6): Template update configuration
+        enable_template_update: bool = True,
+        template_update_interval: int = 10,  # Update template every N frames
+        template_update_threshold: float = 0.7  # Minimum confidence to update
     ):
         self.model = model
         self.device = torch.device(device) if isinstance(device, str) else device
@@ -113,11 +117,17 @@ class OnlineTrackingEvaluator:
         # Store results for get_best/worst_sequences
         self._last_results = None
 
+        # CRITICAL FIX (Audit 2025120401 Finding 6): Template update parameters
+        self.enable_template_update = enable_template_update
+        self.template_update_interval = template_update_interval
+        self.template_update_threshold = template_update_threshold
+
         logger.info(
             f"OnlineTrackingEvaluator initialized: "
             f"template_size={template_size}, search_size={search_size}, "
             f"search_area_factor={search_area_factor}, "
-            f"enable_search_expansion={enable_search_expansion}"
+            f"enable_search_expansion={enable_search_expansion}, "
+            f"enable_template_update={enable_template_update}"
         )
 
     def evaluate_sequence(
@@ -249,6 +259,10 @@ class OnlineTrackingEvaluator:
         # Track expansion statistics
         expansion_count = 0
 
+        # CRITICAL FIX (Audit 2025120401 Finding 6): Template update tracking
+        template_update_count = 0
+        frames_since_update = 0
+
         # === FRAMES template_frame_idx+1 to N-1: Online tracking ===
         # CRITICAL FIX (Audit 2025120301 Finding 6): Start from next frame after template
         start_frame = template_frame_idx + 1
@@ -296,11 +310,34 @@ class OnlineTrackingEvaluator:
                 rgb_search = rgb_search.unsqueeze(0).to(self.device)
                 sonar_search = sonar_search.unsqueeze(0).to(self.device)
 
+                # === CRITICAL FIX (Audit 2025120401 Finding 1): Build metadata for fusion ===
+                # GeometryGatedAttention requires sonar_letterbox_metadata for correct radial binning
+                # Without this, geometric gating degrades to no-geometry baseline
+                metadata = {
+                    'rgb_search_metadata': [rgb_search_meta],
+                    'sonar_search_metadata': [sonar_search_meta],  # List format for tracker.py
+                    'sonar_metadata': [sonar_search_meta]  # Alternative key used by tracker
+                }
+
+                # === CRITICAL FIX (Audit 2025120401 Finding 5): Detect occlusion ===
+                # Check if current frame is occluded (GT = [0,0,0,0])
+                # For occluded frames, we should skip state update to prevent drift
+                rgb_gt_occluded = np.sum(np.abs(rgb_gt_bbox)) == 0
+                sonar_gt_occluded = np.sum(np.abs(sonar_gt_bbox)) == 0
+
+                # Build validity tensors for model (optional, helps conditional fusion)
+                is_rgb_valid = torch.tensor([not rgb_gt_occluded], dtype=torch.bool, device=self.device)
+                is_sonar_valid = torch.tensor([not sonar_gt_occluded], dtype=torch.bool, device=self.device)
+
                 # === Model forward pass ===
+                # CRITICAL FIX (Audit 2025120401 Finding 1): Pass metadata to model
                 outputs = self.model(
                     rgb_template, rgb_search,
                     sonar_template, sonar_search,
-                    return_losses=False
+                    is_rgb_valid=is_rgb_valid,
+                    is_sonar_valid=is_sonar_valid,
+                    return_losses=False,
+                    metadata=metadata
                 )
 
                 # === Extract and denormalize predictions ===
@@ -333,25 +370,87 @@ class OnlineTrackingEvaluator:
                 )
 
                 # === Update state for next frame ===
-                # CRITICAL: Use current prediction as next frame's search center
-                if self._is_valid_bbox(rgb_pred_orig):
-                    rgb_state = rgb_pred_orig.copy()
-                # else: keep previous state (handle tracking failures gracefully)
+                # CRITICAL FIX (Audit 2025120401 Finding 5): Occlusion-aware state update
+                # For occluded frames (GT = 0,0,0,0), skip state update to prevent drift
+                # This follows standard tracking protocol: maintain last known position during occlusion
 
-                if self._is_valid_bbox(sonar_pred_orig):
+                # RGB state update
+                if not rgb_gt_occluded and self._is_valid_bbox(rgb_pred_orig):
+                    rgb_state = rgb_pred_orig.copy()
+                # else: keep previous state (occlusion or tracking failure)
+
+                # Sonar state update
+                if not sonar_gt_occluded and self._is_valid_bbox(sonar_pred_orig):
                     sonar_state = sonar_pred_orig.copy()
 
                 # Store predictions and GT
-                predictions['rgb_pred'].append(rgb_pred_orig)
-                predictions['sonar_pred'].append(sonar_pred_orig)
+                # For occluded frames, store zero prediction to match GT format
+                if rgb_gt_occluded:
+                    predictions['rgb_pred'].append(np.zeros(4, dtype=np.float32))
+                else:
+                    predictions['rgb_pred'].append(rgb_pred_orig)
+
+                if sonar_gt_occluded:
+                    predictions['sonar_pred'].append(np.zeros(4, dtype=np.float32))
+                else:
+                    predictions['sonar_pred'].append(sonar_pred_orig)
+
                 predictions['rgb_gt'].append(rgb_gt_bbox)
                 predictions['sonar_gt'].append(sonar_gt_bbox)
+
+                # === CRITICAL FIX (Audit 2025120401 Finding 6): Template update ===
+                # Update template periodically when tracking is confident
+                # This aligns with MixFormer-style dynamic template update during training
+                frames_since_update += 1
+
+                if self.enable_template_update:
+                    # Get average confidence across modalities
+                    avg_conf = (rgb_conf_prev + sonar_conf_prev) / 2.0
+
+                    # Check if we should update template
+                    should_update = (
+                        frames_since_update >= self.template_update_interval and
+                        avg_conf >= self.template_update_threshold and
+                        not rgb_gt_occluded and
+                        not sonar_gt_occluded
+                    )
+
+                    if should_update:
+                        # Update templates using current prediction as bbox
+                        new_rgb_template, _ = self._crop_region(
+                            frame_data['rgb_img'],
+                            rgb_pred_orig,  # Use prediction, not GT
+                            self.template_size,
+                            self.template_area_factor,
+                            is_sonar=False
+                        )
+                        new_sonar_template, _ = self._crop_region(
+                            frame_data['sonar_img'],
+                            sonar_pred_orig,
+                            self.template_size,
+                            self.template_area_factor,
+                            is_sonar=True
+                        )
+
+                        # Update cached templates
+                        rgb_template = new_rgb_template.unsqueeze(0).to(self.device)
+                        sonar_template = new_sonar_template.unsqueeze(0).to(self.device)
+
+                        # Reset counter
+                        frames_since_update = 0
+                        template_update_count += 1
 
         # Log expansion statistics
         if expansion_count > 0:
             logger.debug(
                 f"Sequence {sequence_name}: search expansion triggered in "
                 f"{expansion_count}/{num_frames-1} frames ({100*expansion_count/(num_frames-1):.1f}%)"
+            )
+
+        # Log template update statistics
+        if template_update_count > 0:
+            logger.debug(
+                f"Sequence {sequence_name}: template updated {template_update_count} times"
             )
 
         return predictions
@@ -373,6 +472,11 @@ class OnlineTrackingEvaluator:
         - Added crop_sz upper limit to prevent memory explosion
         - Returns safe fallback crop when bbox is invalid
 
+        CRITICAL FIX (Audit 2025120401 Finding 1-2):
+        - Returns letterbox-format metadata compatible with GeometryGatedAttention
+        - Keys: scale, pad_top, pad_bottom, original_height, original_width, new_size
+        - This enables correct radial binning in geometric gating fusion
+
         Args:
             image: Input image [H, W, C] or [H, W]
             bbox: Center bbox [x, y, w, h] in XYWH pixel format
@@ -384,6 +488,7 @@ class OnlineTrackingEvaluator:
         Returns:
             crop_tensor: Normalized crop [C, H, W]
             metadata (optional): Dict with crop parameters for inverse transform
+                                 AND letterbox-format metadata for GeometryGatedAttention
         """
         # Handle None or invalid image
         if image is None:
@@ -497,14 +602,27 @@ class OnlineTrackingEvaluator:
             crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
 
         if return_metadata:
+            # CRITICAL FIX (Audit 2025120401 Finding 10):
+            # Return crop metadata in unified format. The tracker.py fuse_features()
+            # will automatically convert this to letterbox format using
+            # crop_metadata_to_letterbox() for GeometryGatedAttention compatibility.
+            #
+            # This ensures consistent metadata handling across training/validation/online.
+
             metadata = {
+                # Crop metadata for bbox inverse transform
                 'crop_center': (cx, cy),
                 'crop_sz': crop_sz,
                 'resize_factor': resize_factor,
                 'crop_x1': x1,
                 'crop_y1': y1,
                 'original_size': (H, W),
-                'output_size': output_size
+                'output_size': output_size,
+                # Padding in crop space (before resize) - needed for letterbox conversion
+                'pad_left': x1_pad,
+                'pad_top': y1_pad,
+                'pad_right': x2_pad,
+                'pad_bottom': y2_pad,
             }
             return crop_tensor, metadata
 

@@ -623,7 +623,8 @@ class GeometryGatedAttention(BaseModule):
         rgb_features: torch.Tensor,
         sonar_features: torch.Tensor,
         rgb_pyramid: Optional[list] = None,
-        sonar_letterbox_metadata: Union[dict, List[dict], None] = None
+        sonar_letterbox_metadata: Union[dict, List[dict], None] = None,
+        rgb_letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Apply geometry-gated cross-attention.
@@ -634,6 +635,10 @@ class GeometryGatedAttention(BaseModule):
         ENHANCED FIX (Audit 2025112403 Follow-up): Per-sample metadata support
         Now accepts list of dicts for heterogeneous batches with different letterbox params.
 
+        CRITICAL FIX (Audit 2025120401 Finding 9): Added rgb_letterbox_metadata parameter
+        for symmetric cross-modal metadata passing. Currently stored for future scale
+        consistency verification when dynamic search expansion is used.
+
         Args:
             rgb_features: RGB feature maps [B, C, H_rgb, W_rgb]
             sonar_features: Sonar feature maps [B, C, H_sonar, W_sonar]
@@ -641,6 +646,7 @@ class GeometryGatedAttention(BaseModule):
             sonar_letterbox_metadata: Either:
                                      - Single dict: used for all samples
                                      - List of dicts: per-sample metadata for heterogeneous batches
+            rgb_letterbox_metadata: RGB letterbox metadata (symmetric to sonar, for future use)
 
         Returns:
             dict containing:

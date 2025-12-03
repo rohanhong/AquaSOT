@@ -19,6 +19,13 @@ evaluation:
   mode: test                        # Evaluation mode: val/test
   batch_size: 1                     # Evaluation batch size (sequential)
 
+  # CRITICAL FIX (Audit 2025120401 Finding 6): Online tracking template update
+  # These settings control dynamic template update during online evaluation.
+  # Should align with training template_update_policy for consistent behavior.
+  enable_template_update: true      # Enable dynamic template update
+  template_update_interval: 10      # Update template every N frames (if confident)
+  template_update_threshold: 0.7    # Minimum confidence to update template
+
   template:
     visibility_policy: any          # Template selection: any/both/all
 

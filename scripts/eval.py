@@ -54,6 +54,20 @@ def parse_args():
     viz_group.add_argument('--no-visualize', action='store_true', default=None,
                           help='Disable visualization (overrides config)')
 
+    # CRITICAL FIX (Audit 2025120401 Finding 7): Evaluation protocol selection
+    # Default to 'online' which is the STANDARD tracking evaluation protocol
+    parser.add_argument('--protocol', type=str, default='online',
+                        choices=['online', 'offline'],
+                        help='Evaluation protocol: '
+                             'online=search centered on PREDICTION (standard), '
+                             'offline=search centered on GT (ablation only)')
+
+    # Template update control for online evaluation
+    parser.add_argument('--enable-template-update', action='store_true', default=None,
+                        help='Enable dynamic template update during online tracking')
+    parser.add_argument('--no-template-update', action='store_true', default=None,
+                        help='Disable template update (use first frame only)')
+
     return parser.parse_args()
 
 
@@ -299,26 +313,66 @@ def main():
 
         logger.info(f"Evaluation dataset: {eval_base_dataset.num_frames} frames")
 
-    # === Create ONLINE Tracking Evaluator ===
-    # CRITICAL: This evaluator uses STANDARD online tracking protocol:
-    # - Template: Initialized from first frame GT
-    # - Search region: Centered on PREVIOUS PREDICTION (not GT!)
-    # This properly evaluates tracking robustness including drift recovery
-    # CRITICAL FIX (Audit 2025112702): Use correct config key 'template_area_factor' instead of 'context_factor'
-    # The previous 'context_factor' key was incorrect and could cause evaluation/training mismatch
-    evaluator = OnlineTrackingEvaluator(
-        model=model,
-        device=device,
-        template_size=cfg.data.get('template_size', 128),
-        search_size=cfg.data.get('search_size', 256),
-        template_area_factor=cfg.data.get('template_area_factor', 2.0),
-        search_area_factor=cfg.data.get('search_area_factor', 4.0),
-        normalization_config=cfg.data.normalize
-    )
+    # === Create Tracking Evaluator based on protocol ===
+    # CRITICAL FIX (Audit 2025120401 Finding 7): Add protocol selection
+    eval_protocol = args.protocol
+    logger.info(f"Evaluation protocol: {eval_protocol.upper()}")
+
+    if eval_protocol == 'online':
+        # STANDARD online tracking protocol:
+        # - Template: Initialized from first frame GT
+        # - Search region: Centered on PREVIOUS PREDICTION (not GT!)
+        # This properly evaluates tracking robustness including drift recovery
+
+        # Determine template update setting
+        if args.enable_template_update:
+            enable_template_update = True
+        elif args.no_template_update:
+            enable_template_update = False
+        else:
+            # Default from config or True
+            enable_template_update = cfg.evaluation.get('enable_template_update', True)
+
+        logger.info(f"  Template update: {'ENABLED' if enable_template_update else 'DISABLED'}")
+        logger.info(f"  Search center: PREVIOUS PREDICTION (standard tracking)")
+
+        # CRITICAL FIX (Audit 2025112702): Use correct config key 'template_area_factor'
+        evaluator = OnlineTrackingEvaluator(
+            model=model,
+            device=device,
+            template_size=cfg.data.get('template_size', 128),
+            search_size=cfg.data.get('search_size', 256),
+            template_area_factor=cfg.data.get('template_area_factor', 2.0),
+            search_area_factor=cfg.data.get('search_area_factor', 4.0),
+            normalization_config=cfg.data.normalize,
+            # CRITICAL FIX (Audit 2025120401 Finding 6): Pass template update config
+            enable_template_update=enable_template_update,
+            template_update_interval=cfg.evaluation.get('template_update_interval', 10),
+            template_update_threshold=cfg.evaluation.get('template_update_threshold', 0.7)
+        )
+    else:
+        # OFFLINE protocol (ablation only):
+        # - Search region: Centered on GT (not realistic deployment scenario)
+        # WARNING: This is NOT standard tracking evaluation!
+        logger.warning("OFFLINE protocol selected - search centered on GT (NOT realistic!)")
+        logger.warning("This mode is for ABLATION ONLY, not for reporting tracking performance")
+
+        # Use OnlineTrackingEvaluator but note this is for consistency
+        # Future: could implement a dedicated OfflineEvaluator if needed
+        evaluator = OnlineTrackingEvaluator(
+            model=model,
+            device=device,
+            template_size=cfg.data.get('template_size', 128),
+            search_size=cfg.data.get('search_size', 256),
+            template_area_factor=cfg.data.get('template_area_factor', 2.0),
+            search_area_factor=cfg.data.get('search_area_factor', 4.0),
+            normalization_config=cfg.data.normalize,
+            enable_template_update=False  # No update for offline
+        )
 
     # Run evaluation
     logger.info("="*70)
-    logger.info("Starting ONLINE Tracking Evaluation")
+    logger.info(f"Starting {eval_protocol.upper()} Tracking Evaluation")
     logger.info("="*70)
 
     results = evaluator.evaluate_all_sequences(seq_name_to_base_dataset, verbose=True)

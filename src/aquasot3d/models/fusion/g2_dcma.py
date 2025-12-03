@@ -270,7 +270,8 @@ class G2DCMA(BaseModule):
         sonar_features: torch.Tensor,
         rgb_pyramid: Optional[List[torch.Tensor]] = None,
         return_consistency: bool = True,
-        sonar_letterbox_metadata: Union[dict, List[dict], None] = None
+        sonar_letterbox_metadata: Union[dict, List[dict], None] = None,
+        rgb_letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for single-scale fusion with confidence estimation.
@@ -284,12 +285,16 @@ class G2DCMA(BaseModule):
         ENHANCED FIX (Audit 2025112403 Follow-up): Per-sample metadata support
         Now accepts list of dicts for heterogeneous batches.
 
+        CRITICAL FIX (Audit 2025120401 Finding 9): Added rgb_letterbox_metadata parameter
+        for symmetric cross-modal metadata passing when dynamic search expansion is used.
+
         Args:
             rgb_features: RGB feature maps [B, C, H_rgb, W_rgb]
             sonar_features: Sonar feature maps [B, C, H_sonar, W_sonar]
             rgb_pyramid: Optional multi-scale RGB features for geometric gating
             return_consistency: Whether to compute consistency losses
             sonar_letterbox_metadata: Either single dict or list of dicts for per-sample metadata
+            rgb_letterbox_metadata: Either single dict or list of dicts for RGB per-sample metadata
 
         Returns:
             dict containing:
@@ -313,11 +318,13 @@ class G2DCMA(BaseModule):
         # use_geometry_gating and use_deformable must control execution, not just be stored
         if self.use_geometry_gating:
             # CRITICAL FIX (Audit 2025112403 Finding 3): Pass letterbox metadata for radial binning
+            # CRITICAL FIX (Audit 2025120401 Finding 9): Pass symmetric RGB metadata
             geometry_output = self.geometry_gating(
                 rgb_features=rgb_features,
                 sonar_features=sonar_features,
                 rgb_pyramid=rgb_pyramid,
-                sonar_letterbox_metadata=sonar_letterbox_metadata
+                sonar_letterbox_metadata=sonar_letterbox_metadata,
+                rgb_letterbox_metadata=rgb_letterbox_metadata
             )
             geometry_gated = geometry_output['fused_features']
 
@@ -623,12 +630,16 @@ class G2DCMA(BaseModule):
         rgb_pyramid: Optional[List[torch.Tensor]] = None,
         sonar_pyramid: Optional[List[torch.Tensor]] = None,
         return_consistency: bool = True,
-        sonar_letterbox_metadata: dict = None
+        sonar_letterbox_metadata: Union[dict, List[dict], None] = None,
+        rgb_letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for G²-DCMA fusion.
 
         CRITICAL FIX (Audit 2025112403 Finding 3): Added sonar_letterbox_metadata parameter
+
+        CRITICAL FIX (Audit 2025120401 Finding 9): Added rgb_letterbox_metadata parameter
+        for symmetric cross-modal metadata passing.
 
         Args:
             rgb_features: RGB feature maps [B, C, H_rgb, W_rgb]
@@ -637,6 +648,7 @@ class G2DCMA(BaseModule):
             sonar_pyramid: Optional list of multi-scale Sonar features
             return_consistency: Whether to compute consistency losses
             sonar_letterbox_metadata: Letterbox metadata for sonar images
+            rgb_letterbox_metadata: Letterbox metadata for RGB images
 
         Returns:
             dict containing fusion results and consistency losses
@@ -649,7 +661,8 @@ class G2DCMA(BaseModule):
                 sonar_features,
                 rgb_pyramid,
                 return_consistency,
-                sonar_letterbox_metadata
+                sonar_letterbox_metadata,
+                rgb_letterbox_metadata
             )
 
 
@@ -917,7 +930,8 @@ class ConditionalG2DCMA(BaseModule):
         is_sonar_valid: Optional[torch.Tensor] = None,
         rgb_pyramid: Optional[List[torch.Tensor]] = None,
         return_consistency: bool = True,
-        sonar_letterbox_metadata: Union[dict, List[dict], None] = None
+        sonar_letterbox_metadata: Union[dict, List[dict], None] = None,
+        rgb_letterbox_metadata: Union[dict, List[dict], None] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Conditional fusion with modality-aware routing.
@@ -934,6 +948,9 @@ class ConditionalG2DCMA(BaseModule):
         ENHANCED FIX (Audit 2025112403 Follow-up): Per-sample metadata support
         Now accepts and passes through list of dicts for heterogeneous batches.
 
+        CRITICAL FIX (Audit 2025120401 Finding 9): Added rgb_letterbox_metadata parameter
+        for symmetric cross-modal metadata passing when dynamic search expansion is used.
+
         Args:
             rgb_features: RGB feature maps [B, C_rgb, H_rgb, W_rgb]
             sonar_features: Sonar feature maps [B, C_sonar, H_sonar, W_sonar]
@@ -942,6 +959,7 @@ class ConditionalG2DCMA(BaseModule):
             rgb_pyramid: Optional multi-scale RGB features for geometric gating
             return_consistency: Whether to compute consistency losses
             sonar_letterbox_metadata: Either single dict or list of dicts for per-sample metadata
+            rgb_letterbox_metadata: Either single dict or list of dicts for RGB per-sample metadata
 
         Returns:
             dict containing:
@@ -1022,13 +1040,24 @@ class ConditionalG2DCMA(BaseModule):
                     # Extract metadata subset for dual-modality samples
                     sonar_metadata_dual = [sonar_letterbox_metadata[i] for i in dual_idx.tolist()]
 
+            # CRITICAL FIX (Audit 2025120401 Finding 9): Symmetric RGB metadata extraction
+            rgb_metadata_dual = None
+            if rgb_letterbox_metadata is not None:
+                if isinstance(rgb_letterbox_metadata, dict):
+                    # Single metadata dict (same for all samples in batch)
+                    rgb_metadata_dual = rgb_letterbox_metadata
+                elif isinstance(rgb_letterbox_metadata, list):
+                    # Extract metadata subset for dual-modality samples
+                    rgb_metadata_dual = [rgb_letterbox_metadata[i] for i in dual_idx.tolist()]
+
             # Apply full G²-DCMA
             g2_output = self.g2_dcma.forward_single_scale(
                 rgb_features=rgb_dual,
                 sonar_features=sonar_dual,
                 rgb_pyramid=[p[dual_idx] for p in rgb_pyramid] if rgb_pyramid else None,
                 return_consistency=return_consistency,
-                sonar_letterbox_metadata=sonar_metadata_dual
+                sonar_letterbox_metadata=sonar_metadata_dual,
+                rgb_letterbox_metadata=rgb_metadata_dual
             )
 
             # Place fused features back to output tensor

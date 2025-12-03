@@ -446,44 +446,89 @@ class AquaSOT3DTracker(BaseModule):
             'return_consistency': return_consistency
         }
 
-        # CRITICAL FIX (Audit 2025112403 Finding 3): Pass letterbox metadata to fusion
-        # ENHANCED FIX (Audit 2025112403 Follow-up): Pass full metadata list for per-sample support
-        # Extract sonar_letterbox_metadata from metadata dict
+        # CRITICAL FIX (Audit 2025120401 Finding 9-10): Unified metadata conversion
+        # Use crop_metadata_to_letterbox to convert crop-style metadata to letterbox format
+        # This ensures consistent metadata format across training/validation/online evaluation
+        # SYMMETRIC PASSING: Both RGB and Sonar metadata are converted and passed to fusion
         if metadata is not None:
-            # Try all possible metadata keys (training vs evaluation)
-            sonar_metadata_list = (
-                metadata.get('sonar_metadata') or
-                metadata.get('sonar_search_metadata') or
-                metadata.get('search_sonar_metadata')
-            )
+            from aquasot3d.utils.preprocessing import crop_metadata_to_letterbox
 
-            if sonar_metadata_list and len(sonar_metadata_list) > 0:
-                # Check if all samples have consistent letterbox parameters
+            def _convert_metadata_list(metadata_list, modality_name):
+                """Convert a list of crop metadata to letterbox format."""
+                if not metadata_list or len(metadata_list) == 0:
+                    return None, True
+
+                converted_list = []
+                for meta in metadata_list:
+                    if meta is None:
+                        converted_list.append(None)
+                        continue
+
+                    # Check if already in letterbox format (has 'scale' key)
+                    # or crop format (has 'resize_factor' key)
+                    if 'scale' in meta and 'original_height' in meta:
+                        # Already letterbox format
+                        converted_list.append(meta)
+                    elif 'resize_factor' in meta or 'crop_sz' in meta:
+                        # Crop format - convert to letterbox
+                        output_size = meta.get('output_size', 256)
+                        converted = crop_metadata_to_letterbox(meta, output_size)
+                        converted_list.append(converted)
+                    else:
+                        # Unknown format - pass through
+                        converted_list.append(meta)
+
+                # Check consistency
                 all_consistent = True
-                first_meta = sonar_metadata_list[0]
+                first_meta = converted_list[0] if converted_list else None
 
-                if len(sonar_metadata_list) > 1:
-                    for meta in sonar_metadata_list[1:]:
+                if first_meta and len(converted_list) > 1:
+                    for meta in converted_list[1:]:
+                        if meta is None:
+                            all_consistent = False
+                            break
                         if (meta.get('scale') != first_meta.get('scale') or
                             meta.get('pad_top') != first_meta.get('pad_top') or
                             meta.get('original_height') != first_meta.get('original_height')):
                             all_consistent = False
                             break
 
-                # ENHANCED FIX: Pass full list for per-sample processing in fusion
-                # Fusion module (GeometryGatedAttention) now handles both single dict and list
-                if all_consistent and first_meta and 'scale' in first_meta:
-                    # Optimization: if all samples consistent, pass single dict (backward compatible)
-                    fusion_kwargs['sonar_letterbox_metadata'] = first_meta
-                elif not all_consistent:
-                    # Pass full list for per-sample processing
-                    fusion_kwargs['sonar_letterbox_metadata'] = sonar_metadata_list
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.debug(
-                        "Batch contains samples with heterogeneous letterbox parameters. "
-                        "Using per-sample metadata for accurate radial binning."
-                    )
+                return converted_list, all_consistent
+
+            # === Process Sonar metadata ===
+            sonar_metadata_list = (
+                metadata.get('sonar_metadata') or
+                metadata.get('sonar_search_metadata') or
+                metadata.get('search_sonar_metadata')
+            )
+
+            if sonar_metadata_list:
+                converted_sonar, sonar_consistent = _convert_metadata_list(sonar_metadata_list, 'sonar')
+                if converted_sonar:
+                    first_sonar = converted_sonar[0] if converted_sonar else None
+                    if sonar_consistent and first_sonar and 'scale' in first_sonar:
+                        fusion_kwargs['sonar_letterbox_metadata'] = first_sonar
+                    elif not sonar_consistent:
+                        fusion_kwargs['sonar_letterbox_metadata'] = converted_sonar
+
+            # === CRITICAL FIX (Audit 2025120401 Finding 9): Symmetric RGB metadata ===
+            # When dynamic search expansion or non-uniform scaling is used, RGB crop
+            # physical scale also varies. Pass RGB letterbox metadata symmetrically
+            # to ensure cross-modal physical baseline consistency.
+            rgb_metadata_list = (
+                metadata.get('rgb_metadata') or
+                metadata.get('rgb_search_metadata') or
+                metadata.get('search_rgb_metadata')
+            )
+
+            if rgb_metadata_list:
+                converted_rgb, rgb_consistent = _convert_metadata_list(rgb_metadata_list, 'rgb')
+                if converted_rgb:
+                    first_rgb = converted_rgb[0] if converted_rgb else None
+                    if rgb_consistent and first_rgb and 'scale' in first_rgb:
+                        fusion_kwargs['rgb_letterbox_metadata'] = first_rgb
+                    elif not rgb_consistent:
+                        fusion_kwargs['rgb_letterbox_metadata'] = converted_rgb
 
         # Check if fusion module is ConditionalG2DCMA (has forward signature with is_rgb_valid)
         from aquasot3d.models.fusion import ConditionalG2DCMA
