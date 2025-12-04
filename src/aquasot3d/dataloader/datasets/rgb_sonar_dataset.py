@@ -137,6 +137,15 @@ def parse_groundtruth(gt_path: Union[str, Path]) -> np.ndarray:
     return np.array(bboxes, dtype=np.float32)
 
 
+# CRITICAL FIX (Audit 2025120403 Issue 19): Fixed rectified sonar resolution
+# The preprocessor (scripts/preprocess_sonar.py) outputs unified 682x376 resolution.
+# All downstream code assumes this resolution. Using different sizes will cause:
+# - Incorrect bbox scales and geometry metadata
+# - Spatial correspondence issues between modalities
+# - Silent corruption of training/evaluation
+EXPECTED_SONAR_RESOLUTION = (682, 376)  # (width, height)
+
+
 @DATASET_REGISTRY.register("RGBSonarDataset")
 class RGBSonarDataset(Dataset):
     """
@@ -359,6 +368,70 @@ class RGBSonarDataset(Dataset):
                 raise FileNotFoundError(
                     f"Required file not found: {file_path}"
                 )
+
+        # CRITICAL FIX (Audit 2025120403 Issue 19): Validate sonar resolution
+        if self.sonar_is_rectified:
+            self._validate_sonar_resolution()
+
+    def _validate_sonar_resolution(self):
+        """
+        Validate that rectified sonar images match expected resolution.
+
+        CRITICAL FIX (Audit 2025120403 Issue 19): The codebase assumes unified
+        rectified sonar resolution of 682x376. Using different sizes will cause:
+        - Incorrect bbox scales and geometry metadata
+        - Spatial correspondence issues between modalities
+        - Silent corruption of training/evaluation
+
+        Raises:
+            ValueError: If sonar resolution does not match expected 682x376
+        """
+        # Find first available sonar image to check resolution
+        first_img_path = self.sonar_img_dir / "1.jpg"
+
+        if not first_img_path.exists():
+            # Try to find any image in the directory
+            sonar_images = list(self.sonar_img_dir.glob("*.jpg"))
+            if not sonar_images:
+                logger.warning(
+                    f"No sonar images found in {self.sonar_img_dir}, "
+                    "cannot validate resolution"
+                )
+                return
+            first_img_path = sonar_images[0]
+
+        # Load image to check dimensions
+        img = cv2.imread(str(first_img_path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            logger.warning(
+                f"Failed to load sonar image {first_img_path}, "
+                "cannot validate resolution"
+            )
+            return
+
+        actual_resolution = (img.shape[1], img.shape[0])  # (width, height)
+        expected = EXPECTED_SONAR_RESOLUTION
+
+        if actual_resolution != expected:
+            raise ValueError(
+                f"Rectified sonar resolution mismatch for sequence '{self.sequence_name}'.\n"
+                f"  Expected: {expected[0]}x{expected[1]} (width x height)\n"
+                f"  Actual:   {actual_resolution[0]}x{actual_resolution[1]}\n"
+                f"\n"
+                f"The codebase assumes unified rectified sonar resolution of {expected[0]}x{expected[1]}.\n"
+                f"Using different sizes will cause incorrect bbox scales and geometry metadata.\n"
+                f"\n"
+                f"To fix this, re-run sonar preprocessing with default output size:\n"
+                f"    python scripts/preprocess_sonar.py --sequence {self.sequence_name}\n"
+                f"\n"
+                f"Or update EXPECTED_SONAR_RESOLUTION and all dependent code if using "
+                f"different resolution intentionally."
+            )
+
+        logger.debug(
+            f"Sonar resolution validated for {self.sequence_name}: "
+            f"{actual_resolution[0]}x{actual_resolution[1]}"
+        )
 
     def _build_valid_indices(self) -> List[int]:
         """

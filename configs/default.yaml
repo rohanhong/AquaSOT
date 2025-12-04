@@ -33,8 +33,13 @@ data:
   template_search_gap_range: [1, 20]   # Gap range: 1-20 frames = 0.1-2.0s @10Hz (Audit 2025120102)
   search_area_factor: 4.0     # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0   # Template region = sqrt(w*h) * factor
-  center_jitter_factor: 0.0   # DISABLED: breaks multi-modal spatial correspondence (Audit 2025120102)
-  scale_jitter_factor: 0.0    # DISABLED: breaks multi-modal spatial correspondence (Audit 2025120102)
+  # CRITICAL FIX (Audit 2025120403 Issue 16): Jitter factor documentation
+  # Jitter is DISABLED by default in default.yaml for inference/evaluation safety.
+  # Training config (train.yaml) overrides with moderate values (0.15, 0.1).
+  # DO NOT use large jitter values (>0.25) which break multi-modal spatial correspondence.
+  # For uncalibrated multi-modal tracking, recommended range: 0.1 ~ 0.2
+  center_jitter_factor: 0.0   # Default: disabled (override in train.yaml)
+  scale_jitter_factor: 0.0    # Default: disabled (override in train.yaml)
   use_attention_mask: true    # Enable attention mask for padded regions
 
   augmentation:
@@ -177,9 +182,27 @@ training:
     metric: val_total         # Metric for best model selection
     mode: min                 # Metric optimization direction
 
+  # Optional online evaluation during training (Audit 11/12)
+  online_eval:
+    enabled: false            # Enable lightweight online evaluation hook
+    sequences: null           # Defaults to data.val_sequences when null
+    data_root: null           # Defaults to data.data_root when null
+    template_size: null       # Defaults to data.template_size when null
+    search_size: null         # Defaults to data.search_size when null
+    template_area_factor: null  # Defaults to data.template_area_factor when null
+    search_area_factor: null    # Defaults to data.search_area_factor when null
+    template_update_interval: 10
+    template_update_threshold: 0.7
+    template_min_size: 5.0
+    template_edge_margin: 2
+    template_scan_frames: 20
+    enable_template_quality_filter: true
   log_interval: 10            # Logging interval (iterations)
   tensorboard: true           # Enable TensorBoard logging
-  wandb: false                # Enable Weights & Biases logging
+  # CRITICAL FIX (Audit 2025120403 Issue 22): WandB not implemented
+  # wandb integration is not currently implemented in trainer.py.
+  # Setting this to true will have no effect. Use tensorboard instead.
+  wandb: false                # NOT IMPLEMENTED - use tensorboard
   resume: null                # Resume checkpoint path
   load_optimizer: true        # Load optimizer state on resume
   load_scheduler: true        # Load scheduler state on resume

@@ -210,11 +210,13 @@ class OnlineTrackingEvaluator:
                 f"(reason: {selection_reason})"
             )
 
-        # Fill predictions for skipped frames with zero bbox (no prediction possible)
+        # CRITICAL FIX (Audit 2025120403 Issue 8 & 21): Store None for pre-init frames
+        # Before initialization, no prediction is possible, so store None (not [0,0,0,0])
+        # This ensures metrics.py _is_valid_bbox() properly skips these frames
         for skip_idx in range(template_frame_idx):
             skip_frame_data = base_dataset._get_frame_data(skip_idx)
-            predictions['rgb_pred'].append(np.zeros(4, dtype=np.float32))
-            predictions['sonar_pred'].append(np.zeros(4, dtype=np.float32))
+            predictions['rgb_pred'].append(None)  # No prediction possible before init
+            predictions['sonar_pred'].append(None)
             predictions['rgb_gt'].append(skip_frame_data['rgb_bbox'].copy())
             predictions['sonar_gt'].append(skip_frame_data['sonar_bbox'].copy())
 
@@ -225,13 +227,46 @@ class OnlineTrackingEvaluator:
         rgb_gt_bbox = frame0_data['rgb_bbox'].copy()
         sonar_gt_bbox = frame0_data['sonar_bbox'].copy()
 
-        # Handle case where one modality is still invalid
-        if np.sum(np.abs(rgb_gt_bbox)) == 0:
-            # Use sonar bbox as fallback for RGB
-            rgb_gt_bbox = sonar_gt_bbox.copy()
-        if np.sum(np.abs(sonar_gt_bbox)) == 0:
-            # Use RGB bbox as fallback for sonar
-            sonar_gt_bbox = rgb_gt_bbox.copy()
+        # CRITICAL FIX (Audit 2025120403 Issue 6): NO cross-modality bbox borrowing
+        # Cross-modal fallback breaks uncalibrated multi-modal tracking
+        # because RGB and Sonar may have different coordinate systems.
+        # Instead, handle missing modality by skipping or using center fallback.
+        rgb_is_valid = np.sum(np.abs(rgb_gt_bbox)) > 0
+        sonar_is_valid = np.sum(np.abs(sonar_gt_bbox)) > 0
+
+        if not rgb_is_valid and not sonar_is_valid:
+            # Neither modality valid - cannot initialize
+            logger.warning(
+                f"Sequence {sequence_name}: Frame {template_frame_idx} has no valid bbox. "
+                f"Searching for next valid frame..."
+            )
+            # Find next valid frame
+            for next_idx in range(template_frame_idx + 1, num_frames):
+                next_data = base_dataset._get_frame_data(next_idx)
+                if np.sum(np.abs(next_data['rgb_bbox'])) > 0 or np.sum(np.abs(next_data['sonar_bbox'])) > 0:
+                    template_frame_idx = next_idx
+                    frame0_data = next_data
+                    rgb_gt_bbox = frame0_data['rgb_bbox'].copy()
+                    sonar_gt_bbox = frame0_data['sonar_bbox'].copy()
+                    rgb_is_valid = np.sum(np.abs(rgb_gt_bbox)) > 0
+                    sonar_is_valid = np.sum(np.abs(sonar_gt_bbox)) > 0
+                    break
+            else:
+                logger.warning(f"Sequence {sequence_name}: No valid frames found at all")
+                return predictions
+
+        # Use image center as fallback for missing modality (not cross-modal bbox)
+        if not rgb_is_valid:
+            rgb_img = frame0_data['rgb_img']
+            H, W = rgb_img.shape[:2]
+            rgb_gt_bbox = np.array([W/4, H/4, W/2, H/2], dtype=np.float32)
+            logger.debug(f"RGB init: using image center fallback due to invalid GT")
+
+        if not sonar_is_valid:
+            sonar_img = frame0_data['sonar_img']
+            H, W = sonar_img.shape[:2]
+            sonar_gt_bbox = np.array([W/4, H/4, W/2, H/2], dtype=np.float32)
+            logger.debug(f"Sonar init: using image center fallback due to invalid GT")
 
         # Initialize tracking state with GT (standard protocol)
         # State = predicted bbox from previous frame (or GT for frame 0)
@@ -334,23 +369,26 @@ class OnlineTrackingEvaluator:
                     'sonar_metadata': [sonar_search_meta]  # Alternative key used by tracker
                 }
 
-                # === CRITICAL FIX (Audit 2025120401 Finding 5): Detect occlusion ===
-                # Check if current frame is occluded (GT = [0,0,0,0])
-                # For occluded frames, we should skip state update to prevent drift
+                # === CRITICAL FIX (Audit 2025120403 Issue 4): NO GT visibility in model forward ===
+                # Previous implementation leaked GT occlusion status to model, masking true routing failures.
+                # Model must predict objectness from features alone, not from GT hints.
+                # Occlusion status is determined AFTER prediction using confidence/objectness scores.
                 rgb_gt_occluded = np.sum(np.abs(rgb_gt_bbox)) == 0
                 sonar_gt_occluded = np.sum(np.abs(sonar_gt_bbox)) == 0
 
-                # Build validity tensors for model (optional, helps conditional fusion)
-                is_rgb_valid = torch.tensor([not rgb_gt_occluded], dtype=torch.bool, device=self.device)
-                is_sonar_valid = torch.tensor([not sonar_gt_occluded], dtype=torch.bool, device=self.device)
+                # CRITICAL FIX (Audit 2025120403 Issue 4):
+                # DO NOT pass GT-derived is_rgb_valid/is_sonar_valid to model!
+                # Model should always assume both modalities are valid during inference.
+                # Routing decisions must come from model's own confidence predictions.
 
                 # === Model forward pass ===
                 # CRITICAL FIX (Audit 2025120401 Finding 1): Pass metadata to model
+                # CRITICAL FIX (Audit 2025120403 Issue 4): Remove GT validity leakage
                 outputs = self.model(
                     rgb_template, rgb_search,
                     sonar_template, sonar_search,
-                    is_rgb_valid=is_rgb_valid,
-                    is_sonar_valid=is_sonar_valid,
+                    # is_rgb_valid=REMOVED - model must infer from features
+                    # is_sonar_valid=REMOVED - model must infer from features
                     return_losses=False,
                     metadata=metadata
                 )
@@ -360,21 +398,36 @@ class OnlineTrackingEvaluator:
                 rgb_pred_norm = outputs['rgb_boxes'][0].cpu().numpy()  # [cx, cy, w, h]
                 sonar_pred_norm = outputs['sonar_boxes'][0].cpu().numpy()
 
-                # Extract confidence scores for next frame's search factor
-                # Use quality or confidence from model output
-                if 'rgb_quality' in outputs:
-                    rgb_conf_prev = outputs['rgb_quality'][0].cpu().item()
-                elif 'rgb_confidence' in outputs:
-                    rgb_conf_prev = outputs['rgb_confidence'][0].cpu().item()
-                else:
-                    rgb_conf_prev = 1.0  # Default to high confidence if not available
+                # CRITICAL FIX (Audit 2025120403 Issue 9): Use objectness, not quality
+                # Quality scores indicate "how good" the prediction is but can be high even
+                # when the model is confidently wrong (locked on wrong peak).
+                # Objectness indicates "is there an object" which better triggers recovery.
+                #
+                # Priority order:
+                # 1. objectness - direct object presence indicator
+                # 2. confidence - alternative name for objectness in some models
+                # 3. quality - fallback (less reliable for recovery triggering)
 
-                if 'sonar_quality' in outputs:
-                    sonar_conf_prev = outputs['sonar_quality'][0].cpu().item()
-                elif 'sonar_confidence' in outputs:
-                    sonar_conf_prev = outputs['sonar_confidence'][0].cpu().item()
+                # RGB confidence extraction
+                if 'rgb_objectness' in outputs and outputs['rgb_objectness'] is not None:
+                    rgb_conf_prev = outputs['rgb_objectness'][0].cpu().item()
+                elif 'rgb_confidence' in outputs and outputs['rgb_confidence'] is not None:
+                    rgb_conf_prev = outputs['rgb_confidence'][0].cpu().item()
+                elif 'rgb_quality' in outputs and outputs['rgb_quality'] is not None:
+                    # Fallback to quality (less reliable)
+                    rgb_conf_prev = outputs['rgb_quality'][0].cpu().item()
                 else:
-                    sonar_conf_prev = 1.0
+                    rgb_conf_prev = 0.5  # Conservative default triggers moderate expansion
+
+                # Sonar confidence extraction
+                if 'sonar_objectness' in outputs and outputs['sonar_objectness'] is not None:
+                    sonar_conf_prev = outputs['sonar_objectness'][0].cpu().item()
+                elif 'sonar_confidence' in outputs and outputs['sonar_confidence'] is not None:
+                    sonar_conf_prev = outputs['sonar_confidence'][0].cpu().item()
+                elif 'sonar_quality' in outputs and outputs['sonar_quality'] is not None:
+                    sonar_conf_prev = outputs['sonar_quality'][0].cpu().item()
+                else:
+                    sonar_conf_prev = 0.5
 
                 # Transform from normalized crop space to original image space
                 rgb_pred_orig = self._transform_pred_to_original(
@@ -384,31 +437,44 @@ class OnlineTrackingEvaluator:
                     sonar_pred_norm, sonar_search_meta
                 )
 
-                # === Update state for next frame ===
-                # CRITICAL FIX (Audit 2025120401 Finding 5): Occlusion-aware state update
-                # For occluded frames (GT = 0,0,0,0), skip state update to prevent drift
-                # This follows standard tracking protocol: maintain last known position during occlusion
+                # CRITICAL FIX (Audit 2025120403 Issue 2 & 7): Sanitize predictions
+                # Clamp to image bounds, reject NaN/Inf, use fallback for invalid predictions
+                rgb_img_size = (frame_data['rgb_img'].shape[0], frame_data['rgb_img'].shape[1])
+                sonar_img_size = (frame_data['sonar_img'].shape[0], frame_data['sonar_img'].shape[1])
 
-                # RGB state update
-                if not rgb_gt_occluded and self._is_valid_bbox(rgb_pred_orig):
-                    rgb_state = rgb_pred_orig.copy()
-                # else: keep previous state (occlusion or tracking failure)
+                rgb_pred_sanitized = self._sanitize_bbox(
+                    rgb_pred_orig, rgb_img_size, fallback_bbox=rgb_state.copy()
+                )
+                sonar_pred_sanitized = self._sanitize_bbox(
+                    sonar_pred_orig, sonar_img_size, fallback_bbox=sonar_state.copy()
+                )
+
+                # === Update state for next frame ===
+                # CRITICAL FIX (Audit 2025120403 Issue 2 & 7): Use sanitized predictions
+                # State update based on sanitized prediction validity and confidence
+
+                # RGB state update - use confidence-based decision (not GT occlusion)
+                if rgb_pred_sanitized is not None and rgb_conf_prev >= self.confidence_low:
+                    rgb_state = rgb_pred_sanitized.copy()
+                # else: keep previous state (low confidence or invalid prediction)
 
                 # Sonar state update
-                if not sonar_gt_occluded and self._is_valid_bbox(sonar_pred_orig):
-                    sonar_state = sonar_pred_orig.copy()
+                if sonar_pred_sanitized is not None and sonar_conf_prev >= self.confidence_low:
+                    sonar_state = sonar_pred_sanitized.copy()
 
-                # Store predictions and GT
-                # For occluded frames, store zero prediction to match GT format
+                # CRITICAL FIX (Audit 2025120403 Issue 8 & 21): Store None for occluded frames
+                # Instead of storing [0,0,0,0], store None to properly signal "no prediction".
+                # metrics.py _is_valid_bbox() will skip None entries during metric computation.
+                # This follows standard tracking benchmarks (LaSOT, GOT-10k) protocol.
                 if rgb_gt_occluded:
-                    predictions['rgb_pred'].append(np.zeros(4, dtype=np.float32))
+                    predictions['rgb_pred'].append(None)  # Not [0,0,0,0]
                 else:
-                    predictions['rgb_pred'].append(rgb_pred_orig)
+                    predictions['rgb_pred'].append(rgb_pred_sanitized)
 
                 if sonar_gt_occluded:
-                    predictions['sonar_pred'].append(np.zeros(4, dtype=np.float32))
+                    predictions['sonar_pred'].append(None)  # Not [0,0,0,0]
                 else:
-                    predictions['sonar_pred'].append(sonar_pred_orig)
+                    predictions['sonar_pred'].append(sonar_pred_sanitized)
 
                 predictions['rgb_gt'].append(rgb_gt_bbox)
                 predictions['sonar_gt'].append(sonar_gt_bbox)
@@ -419,29 +485,31 @@ class OnlineTrackingEvaluator:
                 frames_since_update += 1
 
                 if self.enable_template_update:
-                    # Get average confidence across modalities
+                    # CRITICAL FIX (Audit 2025120403 Issue 9): Use objectness, not GT occlusion
+                    # Template update decision based on model confidence, not GT visibility
                     avg_conf = (rgb_conf_prev + sonar_conf_prev) / 2.0
 
-                    # Check if we should update template
+                    # Check if we should update template (confidence-based, not GT-based)
                     should_update = (
                         frames_since_update >= self.template_update_interval and
                         avg_conf >= self.template_update_threshold and
-                        not rgb_gt_occluded and
-                        not sonar_gt_occluded
+                        rgb_pred_sanitized is not None and
+                        sonar_pred_sanitized is not None
                     )
 
                     if should_update:
-                        # Update templates using current prediction as bbox
+                        # Update templates using sanitized prediction as bbox
+                        # CRITICAL FIX (Audit 2025120403): Use sanitized predictions
                         new_rgb_template, _ = self._crop_region(
                             frame_data['rgb_img'],
-                            rgb_pred_orig,  # Use prediction, not GT
+                            rgb_pred_sanitized,  # Use sanitized prediction, not raw
                             self.template_size,
                             self.template_area_factor,
                             is_sonar=False
                         )
                         new_sonar_template, _ = self._crop_region(
                             frame_data['sonar_img'],
-                            sonar_pred_orig,
+                            sonar_pred_sanitized,  # Use sanitized prediction, not raw
                             self.template_size,
                             self.template_area_factor,
                             is_sonar=True
@@ -651,6 +719,15 @@ class OnlineTrackingEvaluator:
         """
         Transform normalized prediction from crop space to original image space.
 
+        DESIGN NOTE (Audit 2025120403 Issue 14 & 17):
+        The crop_x1/crop_y1 values already encode padding information:
+        - When crop extends beyond image left edge: crop_x1 is negative
+        - The magnitude of negative crop_x1 equals pad_left
+        - Therefore: original_x = crop_x + crop_x1 (no separate padding subtraction)
+
+        This follows OSTrack's inverse transform methodology where crop_x1
+        represents the crop origin in original image coordinates (can be negative).
+
         Args:
             pred_norm: Predicted bbox [cx, cy, w, h] normalized to [0, 1]
             crop_metadata: Crop parameters from _crop_region
@@ -676,6 +753,8 @@ class OnlineTrackingEvaluator:
         h_orig = h_crop / resize_factor
 
         # Step 3: Add crop offset to get original image coordinates
+        # NOTE: crop_x1/crop_y1 already encode padding offset (negative when padded)
+        # So this single addition handles both normal and padded cases correctly.
         cx_orig = cx_orig_crop + crop_x1
         cy_orig = cy_orig_crop + crop_y1
 
@@ -685,11 +764,75 @@ class OnlineTrackingEvaluator:
 
         return np.array([x_orig, y_orig, w_orig, h_orig], dtype=np.float32)
 
+    def _sanitize_bbox(
+        self,
+        bbox: np.ndarray,
+        image_size: Tuple[int, int],
+        fallback_bbox: Optional[np.ndarray] = None
+    ) -> Optional[np.ndarray]:
+        """
+        Sanitize bbox: reject NaN/Inf, clamp to image bounds.
+
+        CRITICAL FIX (Audit 2025120403 Issue 2 & 7):
+        - Filters out NaN/Inf predictions that cause metric explosion
+        - Clamps bbox to image boundaries to prevent drift
+        - Returns fallback or None for invalid inputs
+
+        Args:
+            bbox: Input bbox [x, y, w, h] in XYWH format
+            image_size: Image dimensions (H, W)
+            fallback_bbox: Optional fallback bbox if input is invalid
+
+        Returns:
+            Sanitized bbox or fallback/None if input is invalid
+        """
+        if bbox is None:
+            return fallback_bbox
+
+        # Check for NaN/Inf
+        if not np.all(np.isfinite(bbox)):
+            logger.warning(f"NaN/Inf detected in bbox: {bbox}, using fallback")
+            return fallback_bbox
+
+        x, y, w, h = bbox
+        H, W = image_size
+
+        # Reject completely invalid dimensions
+        if w <= 0 or h <= 0:
+            logger.warning(f"Invalid bbox dimensions: w={w}, h={h}, using fallback")
+            return fallback_bbox
+
+        # Clamp dimensions to reasonable range (max 2x image size)
+        w = np.clip(w, 1.0, W * 2)
+        h = np.clip(h, 1.0, H * 2)
+
+        # Clamp position to keep bbox mostly within image
+        # Allow partial overlap (up to 50% outside)
+        x = np.clip(x, -w * 0.5, W - w * 0.5)
+        y = np.clip(y, -h * 0.5, H - h * 0.5)
+
+        return np.array([x, y, w, h], dtype=np.float32)
+
     def _is_valid_bbox(self, bbox: np.ndarray, min_size: float = 1.0) -> bool:
-        """Check if bbox is valid (not degenerate)."""
+        """
+        Check if bbox is valid (not degenerate, no NaN/Inf).
+
+        CRITICAL FIX (Audit 2025120403 Issue 2 & 7):
+        - Added NaN/Inf check
+
+        Args:
+            bbox: Bounding box [x, y, w, h]
+            min_size: Minimum dimension size
+
+        Returns:
+            True if bbox is valid for tracking
+        """
         if bbox is None:
             return False
         if len(bbox) < 4:
+            return False
+        # CRITICAL FIX (Audit 2025120403 Issue 2 & 7): Check NaN/Inf
+        if not np.all(np.isfinite(bbox)):
             return False
         x, y, w, h = bbox
         return w >= min_size and h >= min_size

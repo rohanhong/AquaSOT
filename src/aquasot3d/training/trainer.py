@@ -26,11 +26,14 @@ from pathlib import Path
 from tqdm import tqdm
 import logging
 import time
+import math
 from collections import defaultdict
 
 from aquasot3d.training.loss_manager import LossManager
 from aquasot3d.training.checkpoint import CheckpointManager
 from aquasot3d.training.optimizer import clip_gradients
+from aquasot3d.evaluation.online_evaluator import OnlineTrackingEvaluator
+from aquasot3d.dataloader import RGBSonarDataset
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -108,6 +111,7 @@ class Trainer:
         distributed: bool = False,
         rank: int = 0,
         checkpoint_metadata: Optional[Dict[str, Any]] = None,
+        online_eval_config: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         self.model = model
@@ -118,6 +122,8 @@ class Trainer:
         self.val_loader = val_loader
         self.checkpoint_manager = checkpoint_manager
         self.checkpoint_metadata = checkpoint_metadata or {}
+        self.online_eval_cfg = online_eval_config or {}
+        self.best_online_metric = float('-inf')
 
         self.device = torch.device(device) if isinstance(device, str) else device
         self.max_epochs = max_epochs
@@ -217,6 +223,14 @@ class Trainer:
             if should_validate:
                 val_metrics = self.validate(epoch)
 
+            # Optional online evaluation hook (Audit Issue 11/12)
+            online_metrics = None
+            if self.online_eval_cfg.get('enabled', False) and self.is_main_process:
+                try:
+                    online_metrics = self._run_online_eval(epoch)
+                except Exception as e:
+                    logger.warning(f"Online evaluation failed at epoch {epoch + 1}: {e}")
+
             # Update learning rate
             self.scheduler.step()
 
@@ -225,6 +239,8 @@ class Trainer:
                 metrics = {**train_metrics}
                 if val_metrics is not None:
                     metrics.update(val_metrics)
+                if online_metrics is not None:
+                    metrics.update(online_metrics)
 
                 # 1. Save "last" checkpoint every epoch (overwrite) - only if save_last is enabled
                 # Use skip_best_check=True to prevent race condition with best checkpoint saving.
@@ -273,7 +289,20 @@ class Trainer:
                             )
 
                     if current_metric is not None:
-                        if self.checkpoint_manager._is_better(current_metric, self.checkpoint_manager.best_metric):
+                        # CRITICAL FIX (Audit 2025120403 Issue 23): NaN/Inf protection for best checkpoint
+                        # Skip best checkpoint update if metric is invalid to prevent corrupted selection
+                        metric_is_valid = (
+                            isinstance(current_metric, (int, float)) and
+                            math.isfinite(current_metric)
+                        )
+
+                        if not metric_is_valid:
+                            logger.warning(
+                                f"SKIPPING best checkpoint update at epoch {epoch + 1}: "
+                                f"{self.checkpoint_manager.metric_name}={current_metric} is invalid (NaN/Inf). "
+                                f"Last checkpoint will still be saved for postmortem analysis."
+                            )
+                        elif self.checkpoint_manager._is_better(current_metric, self.checkpoint_manager.best_metric):
                             self.checkpoint_manager.best_metric = current_metric
                             self.checkpoint_manager.best_epoch = epoch
                             self.checkpoint_manager.save(
@@ -640,6 +669,90 @@ class Trainer:
             averaged_metrics['invalid_samples'] = validity_stats['invalid_samples']
 
         return averaged_metrics
+
+    def _run_online_eval(self, epoch: int) -> Dict[str, float]:
+        """
+        Run lightweight online evaluation on val sequences using OnlineTrackingEvaluator.
+
+        Returns:
+            Dictionary of online metrics prefixed with 'online_'
+        """
+        cfg = self.online_eval_cfg
+        if not cfg.get('enabled', False):
+            return {}
+
+        data_root = cfg.get('data_root', 'data')
+        sequences = cfg.get('sequences', [])
+        if isinstance(sequences, str):
+            sequences = [sequences]
+
+        if len(sequences) == 0:
+            logger.warning("Online eval enabled but no sequences provided; skipping")
+            return {}
+
+        logger.info(f"Running online evaluation on sequences: {sequences}")
+
+        # Build base datasets (occluded frames included)
+        seq_name_to_base_dataset = {}
+        for seq_name in sequences:
+            base_ds = RGBSonarDataset(
+                data_root=data_root,
+                sequence_name=seq_name,
+                return_occluded=True
+            )
+            seq_name_to_base_dataset[seq_name] = base_ds
+
+        # Build evaluator
+        evaluator = OnlineTrackingEvaluator(
+            model=self.model,
+            device=self.device,
+            template_size=cfg.get('template_size', 128),
+            search_size=cfg.get('search_size', 256),
+            template_area_factor=cfg.get('template_area_factor', 2.0),
+            search_area_factor=cfg.get('search_area_factor', 4.0),
+            normalization_config=cfg.get('normalize', {}),
+            enable_template_update=cfg.get('enable_template_update', True),
+            template_update_interval=cfg.get('template_update_interval', 10),
+            template_update_threshold=cfg.get('template_update_threshold', 0.7),
+            template_min_size=cfg.get('template_min_size', 5.0),
+            template_edge_margin=cfg.get('template_edge_margin', 2),
+            template_scan_frames=cfg.get('template_scan_frames', 20),
+            enable_template_quality_filter=cfg.get('enable_template_quality_filter', True)
+        )
+
+        results = evaluator.evaluate_all_sequences(seq_name_to_base_dataset, verbose=False)
+
+        online_metrics = {}
+        if 'overall' in results and 'rgb' in results['overall']:
+            rgb_metrics = results['overall']['rgb']
+            online_metrics['online_success_auc_rgb'] = rgb_metrics.get('success_auc_mean', 0.0)
+            online_metrics['online_precision_20_rgb'] = rgb_metrics.get('precision_20_mean', 0.0)
+
+            # Track best online metric and optionally save checkpoint
+            metric_value = online_metrics['online_success_auc_rgb']
+            if metric_value > self.best_online_metric:
+                self.best_online_metric = metric_value
+                if self.checkpoint_manager is not None:
+                    self.checkpoint_manager.save(
+                        model=self.model,
+                        optimizer=self.optimizer,
+                        scheduler=self.scheduler,
+                        epoch=epoch,
+                        metrics=online_metrics,
+                        filename='checkpoint_best_online.pth',
+                        metadata=self.checkpoint_metadata
+                    )
+                    logger.info(
+                        f"New best online AUC {metric_value:.4f} at epoch {epoch + 1}, "
+                        f"checkpoint_best_online.pth saved."
+                    )
+
+        # Log to TensorBoard
+        if self.is_main_process and self.writer is not None:
+            for key, value in online_metrics.items():
+                self.writer.add_scalar(f'OnlineEval/{key}', value, epoch)
+
+        return online_metrics
 
     def validate(self, epoch: int) -> Dict[str, float]:
         """

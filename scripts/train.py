@@ -35,6 +35,7 @@ from aquasot3d.utils.config import load_config, save_config, setup_config_loggin
 from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, TemplateSearchDataset, template_search_collate_fn, create_dataloader
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.training import Trainer, LossManager, CheckpointManager, build_optimizer, build_scheduler
+from aquasot3d.utils.config import _config_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -573,6 +574,31 @@ def main():
     }
     logger.info(f"Checkpoint metadata: {checkpoint_metadata}")
 
+    # Prepare optional online evaluation config (Audit Issue 11/12)
+    online_eval_cfg = None
+    if hasattr(cfg.training, 'online_eval') and cfg.training.online_eval.get('enabled', False):
+        online_eval_cfg = _config_to_dict(cfg.training.online_eval)
+        # Fill defaults from data/evaluation settings
+        online_eval_cfg.setdefault('data_root', cfg.data.get('data_root', 'data'))
+        online_eval_cfg.setdefault('sequences', cfg.data.get('val_sequences', []))
+        online_eval_cfg.setdefault('template_size', cfg.data.get('template_size', 128))
+        online_eval_cfg.setdefault('search_size', cfg.data.get('search_size', 256))
+        online_eval_cfg.setdefault('template_area_factor', cfg.data.get('template_area_factor', 2.0))
+        online_eval_cfg.setdefault('search_area_factor', cfg.data.get('search_area_factor', 4.0))
+        # Pull normalization config
+        online_eval_cfg.setdefault('normalize', _config_to_dict(cfg.data.normalize))
+        # Template quality filtering defaults (align with evaluation config)
+        online_eval_cfg.setdefault('enable_template_quality_filter', cfg.evaluation.get('enable_template_quality_filter', True))
+        online_eval_cfg.setdefault('template_min_size', cfg.evaluation.get('template_min_size', 5.0))
+        online_eval_cfg.setdefault('template_edge_margin', cfg.evaluation.get('template_edge_margin', 2))
+        online_eval_cfg.setdefault('template_scan_frames', cfg.evaluation.get('template_scan_frames', 20))
+        # Template update defaults (align with eval config)
+        online_eval_cfg.setdefault('enable_template_update', cfg.evaluation.get('template_update', {}).get('enabled', cfg.evaluation.get('enable_template_update', True)))
+        online_eval_cfg.setdefault('template_update_interval', cfg.evaluation.get('template_update_interval', 10))
+        online_eval_cfg.setdefault('template_update_threshold', cfg.evaluation.get('template_update_threshold', 0.7))
+
+        logger.info(f"Online evaluation enabled during training on sequences: {online_eval_cfg.get('sequences')}")
+
     # Create trainer
     trainer = Trainer(
         model=model,
@@ -592,7 +618,8 @@ def main():
         checkpoint_save_interval=cfg.training.checkpoint.get('save_interval', 1),
         save_best=cfg.training.checkpoint.get('save_best', True),
         save_last=cfg.training.checkpoint.get('save_last', True),
-        checkpoint_metadata=checkpoint_metadata
+        checkpoint_metadata=checkpoint_metadata,
+        online_eval_config=online_eval_cfg
     )
     
     # Resume from checkpoint if specified

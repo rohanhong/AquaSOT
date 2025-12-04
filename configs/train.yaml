@@ -23,13 +23,19 @@ data:
   template_search_gap_range: [1, 20]   # Gap range: 1-20 frames = 0.1-2.0s @10Hz (Audit 2025120102)
   search_area_factor: 4.0         # Search region = sqrt(w*h) * factor
   template_area_factor: 2.0       # Template region = sqrt(w*h) * factor
-  # CRITICAL FIX (Audit 2025120401 Finding 4, 9): Curriculum moderate jitter
-  # - Previous 0.125 was too small: model couldn't learn off-center prediction
-  # - 0.5 was too large: breaks cross-modal spatial alignment in uncalibrated multi-modal
-  # - Solution: moderate jitter (0.15) preserving alignment, combined with confidence-driven
-  #   search expansion for tracking recovery (OnlineTrackingEvaluator)
-  # OSTrack defaults: center_jitter=3.0 (not applicable to uncalibrated multi-modal)
-  # Recommended range for uncalibrated multi-modal: 0.1 ~ 0.2
+  # CRITICAL FIX (Audit 2025120403 Issue 16): Standardized jitter factors
+  # Jitter enables model to learn off-center prediction but must be carefully tuned:
+  # - Too small (< 0.1): model predicts center bias, poor drift recovery
+  # - Too large (> 0.25): breaks cross-modal spatial alignment in uncalibrated multi-modal
+  #
+  # Current values (0.15, 0.1) balance:
+  # 1. Training diversity for drift recovery
+  # 2. Multi-modal spatial consistency preservation
+  # 3. Combined with confidence-driven search expansion (OnlineTrackingEvaluator)
+  #
+  # Reference values:
+  # - OSTrack: 3.0 (single modal, not applicable here)
+  # - Recommended for uncalibrated multi-modal: 0.1 ~ 0.2
   center_jitter_factor: 0.15      # Center jitter: sqrt(w*h) * 0.15 offset range
   scale_jitter_factor: 0.1        # Scale jitter: exp(randn * 0.1) multiplier
   use_attention_mask: true        # Enable attention mask for padded regions
@@ -166,6 +172,18 @@ training:
     metric: val_total             # Metric for best model selection
     mode: min                     # Metric optimization direction
     max_keep: 5                   # Maximum checkpoints to keep
+
+  # Optional online evaluation during training (Audit 11/12)
+  online_eval:
+    enabled: false                # Set true to run lightweight online eval on val sequences
+    sequences: null               # Defaults to data.val_sequences when null
+    data_root: null               # Defaults to data.data_root when null
+    template_update_interval: 10
+    template_update_threshold: 0.7
+    template_min_size: 5.0
+    template_edge_margin: 2
+    template_scan_frames: 20
+    enable_template_quality_filter: true
 
   log_interval: 10                # Logging interval (iterations)
   resume: null                    # Resume checkpoint path

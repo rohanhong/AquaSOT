@@ -177,18 +177,58 @@ def compute_center_error(
     return float(distance)
 
 
+def _is_valid_bbox(bbox: np.ndarray) -> bool:
+    """
+    Check if a bounding box is valid (non-zero and finite).
+
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    Determines whether a bbox should be included in metrics computation.
+    Filters out occluded frames (0,0,0,0) and invalid predictions.
+
+    Args:
+        bbox: Bounding box array [4] or None
+
+    Returns:
+        True if bbox is valid for metrics computation
+    """
+    if bbox is None:
+        return False
+    if not isinstance(bbox, np.ndarray):
+        bbox = np.array(bbox)
+    if bbox.shape != (4,):
+        return False
+    # Check for NaN/Inf
+    if not np.all(np.isfinite(bbox)):
+        return False
+    # Check for zero bbox (occlusion marker)
+    if np.sum(np.abs(bbox)) == 0:
+        return False
+    # Check for degenerate bbox (zero or negative width/height)
+    if len(bbox) >= 4 and (bbox[2] <= 0 or bbox[3] <= 0):
+        return False
+    return True
+
+
 def compute_success_curve(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    thresholds: Optional[np.ndarray] = None
+    thresholds: Optional[np.ndarray] = None,
+    visibility_mask: Optional[List[bool]] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute success curve (overlap precision) at different IoU thresholds.
+
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
+    - Automatically skips frames where GT is zero (occlusion) or pred is None
+    - Follows LaSOT/OTB/GOT-10k standard evaluation protocol
 
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
         thresholds: IoU thresholds (default: 0 to 1 with 0.05 step)
+        visibility_mask: Optional list of booleans indicating valid frames
+                        (True=include in metrics, False=skip)
 
     Returns:
         thresholds: IoU thresholds
@@ -208,11 +248,20 @@ def compute_success_curve(
     # Compute IoU for each frame
     # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
     # Dataset returns [x, y, w, h] (xywh format), not [cx, cy, w, h]
+    # CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21): Skip invalid frames
     ious = []
-    for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
-        if pred_box is not None and gt_box is not None:
-            iou = compute_iou(pred_box, gt_box, format='xywh')
-            ious.append(iou)
+    for i, (pred_box, gt_box) in enumerate(zip(pred_bboxes, gt_bboxes)):
+        # Check explicit visibility mask first
+        if visibility_mask is not None and not visibility_mask[i]:
+            continue
+        # Check if GT is valid (non-zero, non-occluded)
+        if not _is_valid_bbox(gt_box):
+            continue
+        # Check if prediction is valid
+        if not _is_valid_bbox(pred_box):
+            continue
+        iou = compute_iou(pred_box, gt_box, format='xywh')
+        ious.append(iou)
 
     if len(ious) == 0:
         return thresholds, np.zeros_like(thresholds)
@@ -228,17 +277,23 @@ def compute_success_curve(
 def compute_success_auc(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    thresholds: Optional[np.ndarray] = None
+    thresholds: Optional[np.ndarray] = None,
+    visibility_mask: Optional[List[bool]] = None
 ) -> float:
     """
     Compute Area Under Curve (AUC) of success plot.
 
     This is the primary metric in VOT and RGBS50 benchmarks.
 
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
+    - Passes mask through to compute_success_curve for consistent filtering
+
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
         thresholds: IoU thresholds (default: 0 to 1 with 0.05 step)
+        visibility_mask: Optional list of booleans indicating valid frames
 
     Returns:
         AUC value in [0, 1]
@@ -246,7 +301,9 @@ def compute_success_auc(
     Example:
         >>> auc = compute_success_auc(pred_boxes, gt_boxes)
     """
-    thresholds, success_rates = compute_success_curve(pred_bboxes, gt_bboxes, thresholds)
+    thresholds, success_rates = compute_success_curve(
+        pred_bboxes, gt_bboxes, thresholds, visibility_mask
+    )
 
     # Compute AUC using trapezoidal rule
     auc = np.trapz(success_rates, thresholds)
@@ -257,15 +314,22 @@ def compute_success_auc(
 def compute_precision_curve(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    thresholds: Optional[np.ndarray] = None
+    thresholds: Optional[np.ndarray] = None,
+    visibility_mask: Optional[List[bool]] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute precision curve at different center error thresholds.
+
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
+    - Automatically skips frames where GT is zero (occlusion) or pred is None
+    - Prevents inflated precision from zero-vs-zero center errors
 
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
         thresholds: Center error thresholds in pixels (default: 0 to 50 with step 1)
+        visibility_mask: Optional list of booleans indicating valid frames
 
     Returns:
         thresholds: Center error thresholds
@@ -282,11 +346,20 @@ def compute_precision_curve(
 
     # Compute center error for each frame
     # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
+    # CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21): Skip invalid frames
     errors = []
-    for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
-        if pred_box is not None and gt_box is not None:
-            error = compute_center_error(pred_box, gt_box, format='xywh')
-            errors.append(error)
+    for i, (pred_box, gt_box) in enumerate(zip(pred_bboxes, gt_bboxes)):
+        # Check explicit visibility mask first
+        if visibility_mask is not None and not visibility_mask[i]:
+            continue
+        # Check if GT is valid (non-zero, non-occluded)
+        if not _is_valid_bbox(gt_box):
+            continue
+        # Check if prediction is valid
+        if not _is_valid_bbox(pred_box):
+            continue
+        error = compute_center_error(pred_box, gt_box, format='xywh')
+        errors.append(error)
 
     if len(errors) == 0:
         return thresholds, np.zeros_like(thresholds, dtype=float)
@@ -302,15 +375,20 @@ def compute_precision_curve(
 def compute_precision_at_threshold(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    threshold: float = 20.0
+    threshold: float = 20.0,
+    visibility_mask: Optional[List[bool]] = None
 ) -> float:
     """
     Compute precision at a specific center error threshold.
+
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
 
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
         threshold: Center error threshold in pixels (default: 20)
+        visibility_mask: Optional list of booleans indicating valid frames
 
     Returns:
         Precision value in [0, 1]
@@ -318,20 +396,29 @@ def compute_precision_at_threshold(
     Example:
         >>> precision = compute_precision_at_threshold(pred_boxes, gt_boxes, threshold=20)
     """
-    _, precisions = compute_precision_curve(pred_bboxes, gt_bboxes, np.array([threshold]))
+    _, precisions = compute_precision_curve(
+        pred_bboxes, gt_bboxes, np.array([threshold]), visibility_mask
+    )
     return float(precisions[0])
 
 
 def compute_average_center_error(
     pred_bboxes: List[np.ndarray],
-    gt_bboxes: List[np.ndarray]
+    gt_bboxes: List[np.ndarray],
+    visibility_mask: Optional[List[bool]] = None
 ) -> float:
     """
     Compute average center location error across all frames.
 
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
+    - Automatically skips frames where GT is zero (occlusion) or pred is None
+    - Prevents inflated center error from zero-vs-prediction distances
+
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
+        visibility_mask: Optional list of booleans indicating valid frames
 
     Returns:
         Average center error in pixels
@@ -343,11 +430,20 @@ def compute_average_center_error(
         return float('inf')
 
     # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
+    # CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21): Skip invalid frames
     errors = []
-    for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
-        if pred_box is not None and gt_box is not None:
-            error = compute_center_error(pred_box, gt_box, format='xywh')
-            errors.append(error)
+    for i, (pred_box, gt_box) in enumerate(zip(pred_bboxes, gt_bboxes)):
+        # Check explicit visibility mask first
+        if visibility_mask is not None and not visibility_mask[i]:
+            continue
+        # Check if GT is valid (non-zero, non-occluded)
+        if not _is_valid_bbox(gt_box):
+            continue
+        # Check if prediction is valid
+        if not _is_valid_bbox(pred_box):
+            continue
+        error = compute_center_error(pred_box, gt_box, format='xywh')
+        errors.append(error)
 
     if len(errors) == 0:
         return float('inf')
@@ -358,15 +454,21 @@ def compute_average_center_error(
 def compute_success_at_threshold(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
-    threshold: float = 0.5
+    threshold: float = 0.5,
+    visibility_mask: Optional[List[bool]] = None
 ) -> float:
     """
     Compute success rate at a specific IoU threshold.
+
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
+    - Automatically skips frames where GT is zero (occlusion) or pred is None
 
     Args:
         pred_bboxes: List of predicted bounding boxes
         gt_bboxes: List of ground truth bounding boxes
         threshold: IoU threshold (default: 0.5)
+        visibility_mask: Optional list of booleans indicating valid frames
 
     Returns:
         Success rate (proportion of frames with IoU > threshold)
@@ -378,11 +480,20 @@ def compute_success_at_threshold(
         return 0.0
 
     # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
+    # CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21): Skip invalid frames
     ious = []
-    for pred_box, gt_box in zip(pred_bboxes, gt_bboxes):
-        if pred_box is not None and gt_box is not None:
-            iou = compute_iou(pred_box, gt_box, format='xywh')
-            ious.append(iou)
+    for i, (pred_box, gt_box) in enumerate(zip(pred_bboxes, gt_bboxes)):
+        # Check explicit visibility mask first
+        if visibility_mask is not None and not visibility_mask[i]:
+            continue
+        # Check if GT is valid (non-zero, non-occluded)
+        if not _is_valid_bbox(gt_box):
+            continue
+        # Check if prediction is valid
+        if not _is_valid_bbox(pred_box):
+            continue
+        iou = compute_iou(pred_box, gt_box, format='xywh')
+        ious.append(iou)
 
     if len(ious) == 0:
         return 0.0
@@ -394,12 +505,18 @@ def compute_sequence_metrics(
     pred_bboxes: List[np.ndarray],
     gt_bboxes: List[np.ndarray],
     modality: str = 'rgb',
-    additional_metrics: Optional[List[str]] = None
+    additional_metrics: Optional[List[str]] = None,
+    visibility_mask: Optional[List[bool]] = None
 ) -> Dict[str, float]:
     """
     Compute all standard tracking metrics for a sequence.
 
     ARCHITECTURE UPDATE (Audit 2025112313): Default modality changed to 'rgb'.
+
+    CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21):
+    - Added visibility_mask parameter to explicitly skip frames
+    - Passes mask through to all sub-metric functions
+    - Automatically filters occluded (GT=0) and invalid prediction frames
 
     Args:
         pred_bboxes: List of predicted bounding boxes
@@ -409,6 +526,7 @@ def compute_sequence_metrics(
             Supported values:
                 - 'precision_N': Precision at N pixels (e.g., 'precision_10', 'precision_5')
                 - 'success_X': Success at IoU threshold X (e.g., 'success_0.7', 'success_0.6')
+        visibility_mask: Optional list of booleans indicating valid frames
 
     Returns:
         Dictionary containing all metrics
@@ -421,26 +539,43 @@ def compute_sequence_metrics(
         >>> print(f"AUC: {metrics['success_auc']:.4f}")
         >>> print(f"Precision@10: {metrics['precision_10']:.4f}")
     """
+    # CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21): Count valid frames properly
+    num_valid_gt = sum(1 for gt in gt_bboxes if _is_valid_bbox(gt))
+    num_valid_pred = sum(1 for pred in pred_bboxes if _is_valid_bbox(pred))
+
     metrics = {
         'modality': modality,
         'num_frames': len(gt_bboxes),
-        'num_valid_predictions': sum(1 for b in pred_bboxes if b is not None)
+        'num_valid_gt_frames': num_valid_gt,
+        'num_valid_predictions': num_valid_pred
     }
 
-    # Success (AUC)
-    metrics['success_auc'] = compute_success_auc(pred_bboxes, gt_bboxes)
+    # Success (AUC) - with visibility masking
+    metrics['success_auc'] = compute_success_auc(
+        pred_bboxes, gt_bboxes, visibility_mask=visibility_mask
+    )
 
-    # Precision at 20 pixels (standard metric)
-    metrics['precision_20'] = compute_precision_at_threshold(pred_bboxes, gt_bboxes, threshold=20.0)
+    # Precision at 20 pixels (standard metric) - with visibility masking
+    metrics['precision_20'] = compute_precision_at_threshold(
+        pred_bboxes, gt_bboxes, threshold=20.0, visibility_mask=visibility_mask
+    )
 
-    # Average center error
-    metrics['avg_center_error'] = compute_average_center_error(pred_bboxes, gt_bboxes)
+    # Average center error - with visibility masking
+    metrics['avg_center_error'] = compute_average_center_error(
+        pred_bboxes, gt_bboxes, visibility_mask=visibility_mask
+    )
 
     # Additional standard metrics
-    # Mean IoU
+    # Mean IoU - with proper validity checking
     # CRITICAL FIX (Audit 2025111409 Finding 2): Explicitly specify bbox format
-    ious = [compute_iou(pred, gt, format='xywh') for pred, gt in zip(pred_bboxes, gt_bboxes)
-            if pred is not None and gt is not None]
+    # CRITICAL FIX (Audit 2025120403 Issue 1, 8, 21): Skip invalid frames
+    ious = []
+    for i, (pred, gt) in enumerate(zip(pred_bboxes, gt_bboxes)):
+        if visibility_mask is not None and not visibility_mask[i]:
+            continue
+        if not _is_valid_bbox(gt) or not _is_valid_bbox(pred):
+            continue
+        ious.append(compute_iou(pred, gt, format='xywh'))
     metrics['mean_iou'] = float(np.mean(ious)) if len(ious) > 0 else 0.0
 
     # Success rate at 0.5 IoU threshold (PASCAL VOC metric)
@@ -454,7 +589,8 @@ def compute_sequence_metrics(
                 try:
                     threshold = float(metric_name.split('_')[1])
                     metrics[metric_name] = compute_precision_at_threshold(
-                        pred_bboxes, gt_bboxes, threshold=threshold
+                        pred_bboxes, gt_bboxes, threshold=threshold,
+                        visibility_mask=visibility_mask
                     )
                 except (IndexError, ValueError):
                     logger.warning(f"Invalid metric name: {metric_name}, skipping")
@@ -464,7 +600,8 @@ def compute_sequence_metrics(
                 try:
                     threshold = float(metric_name.split('_')[1].replace('_', '.'))
                     metrics[metric_name] = compute_success_at_threshold(
-                        pred_bboxes, gt_bboxes, threshold=threshold
+                        pred_bboxes, gt_bboxes, threshold=threshold,
+                        visibility_mask=visibility_mask
                     )
                 except (IndexError, ValueError):
                     logger.warning(f"Invalid metric name: {metric_name}, skipping")

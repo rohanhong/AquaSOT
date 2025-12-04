@@ -250,6 +250,35 @@ class LossManager(nn.Module):
             targets.get('is_valid_sonar', None), 'is_valid_sonar', batch_size
         )
 
+        # CRITICAL FIX (Audit 2025120403 Issue 15/18): Extract has_object masks
+        # has_object indicates whether the target object is present in the frame
+        # When has_object=False (occlusion, GT=[0,0,0,0]), box regression loss must be zero
+        # This prevents training on invalid/occluded frames that would corrupt the model
+        has_object_rgb = self._validate_validity_mask(
+            targets.get('has_object_rgb', targets.get('search_has_object_rgb', None)),
+            'has_object_rgb', batch_size
+        )
+        has_object_sonar = self._validate_validity_mask(
+            targets.get('has_object_sonar', targets.get('search_has_object_sonar', None)),
+            'has_object_sonar', batch_size
+        )
+
+        # CRITICAL FIX (Audit 2025120403 Issue 15/18): Combine validity and has_object masks
+        # Final mask = is_valid AND has_object (both must be true for loss computation)
+        if is_valid_rgb is not None and has_object_rgb is not None:
+            rgb_loss_mask = is_valid_rgb * has_object_rgb  # Element-wise AND via multiply
+        elif has_object_rgb is not None:
+            rgb_loss_mask = has_object_rgb
+        else:
+            rgb_loss_mask = is_valid_rgb  # Fallback to validity only
+
+        if is_valid_sonar is not None and has_object_sonar is not None:
+            sonar_loss_mask = is_valid_sonar * has_object_sonar
+        elif has_object_sonar is not None:
+            sonar_loss_mask = has_object_sonar
+        else:
+            sonar_loss_mask = is_valid_sonar
+
         # ============================================
         # 1. RGB Branch Losses (fallback only if model didn't provide)
         # ============================================
@@ -269,10 +298,12 @@ class LossManager(nn.Module):
                     break
 
             if rgb_box_pred is not None and rgb_box_target is not None:
+                # CRITICAL FIX (Audit 2025120403 Issue 15/18): Use combined mask
+                # rgb_loss_mask = is_valid AND has_object (zero loss for occluded frames)
                 rgb_box_loss = self._compute_box_loss(
                     rgb_box_pred,
                     rgb_box_target,
-                    validity_mask=is_valid_rgb
+                    validity_mask=rgb_loss_mask
                 )
                 loss_dict['rgb_box'] = rgb_box_loss
 
@@ -295,10 +326,12 @@ class LossManager(nn.Module):
                     break
 
             if sonar_box_pred is not None and sonar_box_target is not None:
+                # CRITICAL FIX (Audit 2025120403 Issue 15/18): Use combined mask
+                # sonar_loss_mask = is_valid AND has_object (zero loss for occluded frames)
                 sonar_box_loss = self._compute_box_loss(
                     sonar_box_pred,
                     sonar_box_target,
-                    validity_mask=is_valid_sonar
+                    validity_mask=sonar_loss_mask
                 )
                 loss_dict['sonar_box'] = sonar_box_loss
 

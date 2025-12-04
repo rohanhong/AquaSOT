@@ -553,6 +553,23 @@ def main():
 
                 seq_frames_combined = []
 
+                def _validate_bbox_coords(bbox, img_shape, name):
+                    """Raise if bbox is outside reasonable bounds of the image."""
+                    if bbox is None:
+                        return
+                    h_img, w_img = img_shape[:2]
+                    x, y, w, h = bbox
+                    if not np.isfinite([x, y, w, h]).all():
+                        raise ValueError(f"{seq_name} frame {frame_idx}: {name} has NaN/Inf bbox {bbox}")
+                    if w <= 0 or h <= 0:
+                        raise ValueError(f"{seq_name} frame {frame_idx}: {name} has non-positive size {bbox}")
+                    # Allow small tolerance outside image (up to 50%)
+                    if (x + w) < -0.5 * w_img or x > 1.5 * w_img or (y + h) < -0.5 * h_img or y > 1.5 * h_img:
+                        raise ValueError(
+                            f"{seq_name} frame {frame_idx}: {name} bbox {bbox} is outside image bounds "
+                            f"({w_img}x{h_img}) - check coordinate space."
+                        )
+
                 for frame_idx in tqdm(range(num_frames), desc=f"  {seq_name}", unit="frame", leave=False):
                     # Load ORIGINAL full-resolution images from base dataset
                     frame_data = base_dataset._get_frame_data(frame_idx)
@@ -608,6 +625,8 @@ def main():
                         sonar_gt = np.array(sonar_gt) * vis_scale
 
                     # Draw RGB frame with predictions and GT
+                    _validate_bbox_coords(rgb_pred, rgb_img.shape, "RGB pred")
+                    _validate_bbox_coords(rgb_gt, rgb_img.shape, "RGB GT")
                     rgb_vis = visualizer.draw_tracking_result(
                         rgb_img.copy(),
                         pred_box=rgb_pred,
@@ -618,6 +637,8 @@ def main():
                     )
 
                     # Draw Sonar frame with predictions and GT
+                    _validate_bbox_coords(sonar_pred, sonar_img.shape, "Sonar pred")
+                    _validate_bbox_coords(sonar_gt, sonar_img.shape, "Sonar GT")
                     sonar_vis = visualizer.draw_tracking_result(
                         sonar_img.copy(),
                         pred_box=sonar_pred,
