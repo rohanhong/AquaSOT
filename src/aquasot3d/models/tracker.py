@@ -334,7 +334,12 @@ class AquaSOT3DTracker(BaseModule):
         rgb_template: torch.Tensor,
         rgb_search: torch.Tensor,
         sonar_template: torch.Tensor,
-        sonar_search: torch.Tensor
+        sonar_search: torch.Tensor,
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Attention masks
+        rgb_search_att_mask: Optional[torch.Tensor] = None,
+        sonar_search_att_mask: Optional[torch.Tensor] = None,
+        rgb_template_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_att_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Extract features from RGB and Sonar backbones using template-search paradigm.
@@ -342,11 +347,19 @@ class AquaSOT3DTracker(BaseModule):
         ARCHITECTURE CHANGE (Audit 2025112104):
         Migrated to template-search dual input (OSTrack-style).
 
+        CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+        Now accepts attention masks to properly handle padded regions in backbone.
+        Both template and search masks are supported.
+
         Args:
             rgb_template: RGB template frame, shape (B, 3, H_t, W_t)
             rgb_search: RGB search frame, shape (B, 3, H_s, W_s)
             sonar_template: Sonar template frame, shape (B, 1, H_t, W_t)
             sonar_search: Sonar search frame, shape (B, 1, H_s, W_s)
+            rgb_search_att_mask: Optional attention mask for RGB search [B, H, W], 1=valid, 0=padded
+            sonar_search_att_mask: Optional attention mask for Sonar search [B, H, W], 1=valid, 0=padded
+            rgb_template_att_mask: Optional attention mask for RGB template [B, H, W], 1=valid, 0=padded
+            sonar_template_att_mask: Optional attention mask for Sonar template [B, H, W], 1=valid, 0=padded
 
         Returns:
             Dictionary containing extracted features:
@@ -357,12 +370,18 @@ class AquaSOT3DTracker(BaseModule):
                 'sonar_search_features': [B, N_x, D]
             }
         """
-        # Extract multi-modal features using template-search paradigm
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+        # Pass attention masks to backbone for proper padding handling
+        # Both template and search masks are passed
         backbone_outputs = self.backbone(
             rgb_template=rgb_template,
             rgb_search=rgb_search,
             sonar_template=sonar_template,
-            sonar_search=sonar_search
+            sonar_search=sonar_search,
+            rgb_search_att_mask=rgb_search_att_mask,
+            sonar_search_att_mask=sonar_search_att_mask,
+            rgb_template_att_mask=rgb_template_att_mask,
+            sonar_template_att_mask=sonar_template_att_mask
         )
 
         # Extract features from nested structure
@@ -552,13 +571,19 @@ class AquaSOT3DTracker(BaseModule):
         is_sonar_valid: Optional[torch.Tensor] = None,
         has_object_rgb: Optional[torch.Tensor] = None,
         has_object_sonar: Optional[torch.Tensor] = None,
-        has_object: Optional[torch.Tensor] = None
+        has_object: Optional[torch.Tensor] = None,
+        # CRITICAL FIX (Audit 2025120902): Attention masks for head
+        rgb_att_mask: Optional[torch.Tensor] = None,
+        sonar_att_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Predict 2D bounding boxes for all modalities using template-search paradigm.
 
         CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX):
         Accepts has_object flags for confidence head training.
+
+        CRITICAL FIX (Audit 2025120902): Now accepts attention masks
+        to pass to box heads for proper padding handling.
 
         Args:
             rgb_features: RGB features, shape (B, C_rgb, H, W)
@@ -570,6 +595,8 @@ class AquaSOT3DTracker(BaseModule):
             has_object_rgb: Optional RGB has_object flags, shape (B,)
             has_object_sonar: Optional Sonar has_object flags, shape (B,)
             has_object: Optional combined has_object flags, shape (B,)
+            rgb_att_mask: Optional attention mask for RGB [B, H, W], 1=valid, 0=padded
+            sonar_att_mask: Optional attention mask for Sonar [B, H, W], 1=valid, 0=padded
 
         Returns:
             Dictionary containing box predictions and losses
@@ -603,7 +630,8 @@ class AquaSOT3DTracker(BaseModule):
                 target_boxes=gt_boxes.get('rgb') if gt_boxes and 'rgb' in gt_boxes else None,
                 target_labels=None,
                 validity_mask=is_rgb_valid,
-                has_object=has_object_rgb
+                has_object=has_object_rgb,
+                attention_mask=rgb_att_mask  # CRITICAL FIX (Audit 2025120902): Pass attention mask
             )
             outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
             outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
@@ -611,6 +639,13 @@ class AquaSOT3DTracker(BaseModule):
             # Add confidence prediction if available
             if 'pred_confidence' in rgb_box_outputs:
                 outputs['rgb_confidence'] = rgb_box_outputs['pred_confidence']
+
+            # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+            # Add validity prediction for fusion routing
+            if 'validity_final' in rgb_box_outputs:
+                outputs['rgb_validity'] = rgb_box_outputs['validity_final']
+            if 'validity_logits' in rgb_box_outputs:
+                outputs['rgb_validity_logits'] = rgb_box_outputs['validity_logits']
 
             # Add confidence loss if available
             if 'conf_loss' in rgb_box_outputs:
@@ -620,6 +655,10 @@ class AquaSOT3DTracker(BaseModule):
             if gt_boxes is not None and 'rgb' in gt_boxes:
                 if 'total_loss' in rgb_box_outputs:
                     outputs['rgb_box_loss'] = rgb_box_outputs['total_loss']
+                # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                # Extract validity loss separately for calibration logging
+                if 'validity_loss' in rgb_box_outputs:
+                    outputs['rgb_validity_loss'] = rgb_box_outputs['validity_loss']
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Sonar box prediction now uses Sonar-view fused features instead of original features
@@ -639,7 +678,8 @@ class AquaSOT3DTracker(BaseModule):
                 target_boxes=gt_boxes.get('sonar') if gt_boxes and 'sonar' in gt_boxes else None,
                 target_labels=None,
                 validity_mask=is_sonar_valid,
-                has_object=has_object_sonar
+                has_object=has_object_sonar,
+                attention_mask=sonar_att_mask  # CRITICAL FIX (Audit 2025120902): Pass attention mask
             )
             outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
             outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
@@ -647,6 +687,13 @@ class AquaSOT3DTracker(BaseModule):
             # Add confidence prediction if available
             if 'pred_confidence' in sonar_box_outputs:
                 outputs['sonar_confidence'] = sonar_box_outputs['pred_confidence']
+
+            # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+            # Add validity prediction for fusion routing
+            if 'validity_final' in sonar_box_outputs:
+                outputs['sonar_validity'] = sonar_box_outputs['validity_final']
+            if 'validity_logits' in sonar_box_outputs:
+                outputs['sonar_validity_logits'] = sonar_box_outputs['validity_logits']
 
             # Add confidence loss if available
             if 'conf_loss' in sonar_box_outputs:
@@ -656,6 +703,10 @@ class AquaSOT3DTracker(BaseModule):
             if gt_boxes is not None and 'sonar' in gt_boxes:
                 if 'total_loss' in sonar_box_outputs:
                     outputs['sonar_box_loss'] = sonar_box_outputs['total_loss']
+                # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                # Extract validity loss separately for calibration logging
+                if 'validity_loss' in sonar_box_outputs:
+                    outputs['sonar_validity_loss'] = sonar_box_outputs['validity_loss']
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion box prediction REMOVED. Primary tracking output now comes from:
@@ -685,7 +736,14 @@ class AquaSOT3DTracker(BaseModule):
         has_object: Optional[torch.Tensor] = None,
         return_losses: bool = True,
         return_intermediate: bool = False,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Attention masks for padded regions
+        # Search region masks
+        rgb_att_mask: Optional[torch.Tensor] = None,
+        sonar_att_mask: Optional[torch.Tensor] = None,
+        # Template region masks (for edge cases where template has padding)
+        rgb_template_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_att_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Complete forward pass of AquaSOT-3D tracker using template-search paradigm.
@@ -716,6 +774,12 @@ class AquaSOT3DTracker(BaseModule):
                 - 'rgb_search_metadata': List of dicts with scale/padding info
                 - 'sonar_search_metadata': List of dicts with scale/padding info
                 (CRITICAL FIX for Audit 2025111411 Finding 4)
+            rgb_att_mask: Optional attention mask for RGB search [B, H, W], 1=valid, 0=padded
+                (CRITICAL FIX for Audit 2025120902 Issue 15, 17 Revised)
+            sonar_att_mask: Optional attention mask for Sonar search [B, H, W], 1=valid, 0=padded
+                (CRITICAL FIX for Audit 2025120902 Issue 15, 17 Revised)
+            rgb_template_att_mask: Optional attention mask for RGB template [B, H, W], 1=valid, 0=padded
+            sonar_template_att_mask: Optional attention mask for Sonar template [B, H, W], 1=valid, 0=padded
 
         Returns:
             Dictionary containing:
@@ -756,8 +820,15 @@ class AquaSOT3DTracker(BaseModule):
         # ARCHITECTURE CHANGE (Audit 2025112104):
         # Extract template and search features. Template-search interaction
         # happens via self-attention in ViT backbone (one-stream processing).
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+        # Pass attention masks to backbone for proper padding handling
+        # Both template and search masks are passed to handle edge cases
         backbone_outputs = self.extract_backbone_features(
-            rgb_template, rgb_search, sonar_template, sonar_search
+            rgb_template, rgb_search, sonar_template, sonar_search,
+            rgb_search_att_mask=rgb_att_mask,
+            sonar_search_att_mask=sonar_att_mask,
+            rgb_template_att_mask=rgb_template_att_mask,
+            sonar_template_att_mask=sonar_template_att_mask
         )
 
         # Use search features for prediction (template info already encoded via attention)
@@ -890,6 +961,7 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         # CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX): Pass has_object flags
         # CRITICAL FIX (Audit 2025112508 Finding 2): Now uses inferred validity
+        # CRITICAL FIX (Audit 2025120902): Pass attention masks to heads
         box_outputs = self.predict_boxes(
             rgb_features, sonar_features, fused_features,
             gt_boxes=gt_boxes if return_losses else None,
@@ -897,7 +969,9 @@ class AquaSOT3DTracker(BaseModule):
             is_sonar_valid=is_sonar_valid,  # May be inferred from fusion
             has_object_rgb=has_object_rgb,
             has_object_sonar=has_object_sonar,
-            has_object=has_object
+            has_object=has_object,
+            rgb_att_mask=rgb_att_mask,  # Pass attention masks to heads
+            sonar_att_mask=sonar_att_mask
         )
 
         # =====================================================

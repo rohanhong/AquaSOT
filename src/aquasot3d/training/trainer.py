@@ -541,6 +541,14 @@ class Trainer:
             is_valid_rgb = batch.get('is_valid_rgb', None)
             is_valid_sonar = batch.get('is_valid_sonar', None)
 
+            # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+            # Extract attention masks for proper padding handling in backbone/head
+            rgb_att_mask = batch.get('rgb_att_mask', None)
+            sonar_att_mask = batch.get('sonar_att_mask', None)
+            # CRITICAL FIX (Audit 2025120909): Extract template attention masks
+            rgb_template_att_mask = batch.get('rgb_template_att_mask', None)
+            sonar_template_att_mask = batch.get('sonar_template_att_mask', None)
+
             # Forward pass with optional AMP
             if self.use_amp:
                 with autocast():
@@ -556,7 +564,11 @@ class Trainer:
                         is_sonar_valid=is_valid_sonar,
                         has_object_rgb=has_object_rgb,
                         has_object_sonar=has_object_sonar,
-                        has_object=has_object
+                        has_object=has_object,
+                        rgb_att_mask=rgb_att_mask,
+                        sonar_att_mask=sonar_att_mask,
+                        rgb_template_att_mask=rgb_template_att_mask,
+                        sonar_template_att_mask=sonar_template_att_mask
                     )
                     # Use LossManager for all losses (handles model-internal losses with scheduling)
                     total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -577,7 +589,11 @@ class Trainer:
                     is_sonar_valid=is_valid_sonar,
                     has_object_rgb=has_object_rgb,
                     has_object_sonar=has_object_sonar,
-                    has_object=has_object
+                    has_object=has_object,
+                    rgb_att_mask=rgb_att_mask,
+                    sonar_att_mask=sonar_att_mask,
+                    rgb_template_att_mask=rgb_template_att_mask,
+                    sonar_template_att_mask=sonar_template_att_mask
                 )
                 # Use LossManager for all losses (handles model-internal losses with scheduling)
                 total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -931,6 +947,14 @@ class Trainer:
                 is_valid_rgb = batch.get('is_valid_rgb', None)
                 is_valid_sonar = batch.get('is_valid_sonar', None)
 
+                # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+                # Extract attention masks for proper padding handling in backbone/head
+                rgb_att_mask = batch.get('rgb_att_mask', None)
+                sonar_att_mask = batch.get('sonar_att_mask', None)
+                # CRITICAL FIX (Audit 2025120909): Extract template attention masks
+                rgb_template_att_mask = batch.get('rgb_template_att_mask', None)
+                sonar_template_att_mask = batch.get('sonar_template_att_mask', None)
+
                 # Forward pass
                 if self.use_amp:
                     with autocast():
@@ -946,7 +970,11 @@ class Trainer:
                             is_sonar_valid=is_valid_sonar,
                             has_object_rgb=has_object_rgb,
                             has_object_sonar=has_object_sonar,
-                            has_object=has_object
+                            has_object=has_object,
+                            rgb_att_mask=rgb_att_mask,
+                            sonar_att_mask=sonar_att_mask,
+                            rgb_template_att_mask=rgb_template_att_mask,
+                            sonar_template_att_mask=sonar_template_att_mask
                         )
                         # Use LossManager for all losses (handles model-internal losses with scheduling)
                         total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -967,7 +995,11 @@ class Trainer:
                         is_sonar_valid=is_valid_sonar,
                         has_object_rgb=has_object_rgb,
                         has_object_sonar=has_object_sonar,
-                        has_object=has_object
+                        has_object=has_object,
+                        rgb_att_mask=rgb_att_mask,
+                        sonar_att_mask=sonar_att_mask,
+                        rgb_template_att_mask=rgb_template_att_mask,
+                        sonar_template_att_mask=sonar_template_att_mask
                     )
                     # Use LossManager for all losses (handles model-internal losses with scheduling)
                     total_loss, loss_dict = self.loss_manager.compute_losses(
@@ -1056,12 +1088,15 @@ class Trainer:
         summary += "=" * 60 + "\n"
 
         # Define ordered metric groups for clear output
+        # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution): Added validity losses
         metric_groups = [
             ("Box Losses (raw)", ['rgb_box', 'sonar_box']),
             ("Confidence Losses (raw)", ['rgb_conf', 'sonar_conf']),
+            ("Validity Losses (raw)", ['rgb_validity', 'sonar_validity']),  # Head validity for fusion routing
             ("Auxiliary Losses (raw)", ['aux_rgb', 'aux_sonar']),
             ("Consistency Losses (raw)", ['geometric_consistency', 'representation_consistency', 'view_consistency']),
             ("Weighted Contributions", ['rgb_box_weighted', 'sonar_box_weighted', 'rgb_conf_weighted', 'sonar_conf_weighted',
+                                        'rgb_validity_weighted', 'sonar_validity_weighted',
                                         'aux_rgb_weighted', 'aux_sonar_weighted',
                                         'geometric_consistency_weighted', 'representation_consistency_weighted', 'view_consistency_weighted']),
             ("Summary", ['total', 'validity_rate', 'validity_rate_rgb', 'validity_rate_sonar', 'invalid_samples']),

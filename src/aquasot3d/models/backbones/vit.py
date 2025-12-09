@@ -365,10 +365,41 @@ class ViTBackbone(BaseModule):
             )
             raise
 
+    def _convert_spatial_mask_to_token_mask(
+        self,
+        spatial_mask: torch.Tensor,
+        target_size: int,
+        batch_size: int
+    ) -> torch.Tensor:
+        """
+        Convert spatial attention mask [B, H, W] to token-level mask [B, N].
+
+        Args:
+            spatial_mask: Spatial mask [B, H, W], 1=valid, 0=padded
+            target_size: Target image size (template_size or search_size)
+            batch_size: Batch size
+
+        Returns:
+            Token mask [B, N] where N = (target_size // patch_size)^2
+        """
+        patch_h = target_size // self.patch_size
+        patch_w = target_size // self.patch_size
+
+        # Use average pooling - patch is valid if >50% pixels are valid
+        mask_pooled = torch.nn.functional.adaptive_avg_pool2d(
+            spatial_mask.unsqueeze(1).float(),
+            (patch_h, patch_w)
+        ).squeeze(1)  # [B, patch_h, patch_w]
+
+        token_mask = (mask_pooled > 0.5).float().reshape(batch_size, -1)  # [B, N]
+        return token_mask
+
     def forward(
         self,
         x_template: torch.Tensor,
-        x_search: torch.Tensor
+        x_search: torch.Tensor,
+        template_att_mask: Optional[torch.Tensor] = None,
+        search_att_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         OSTrack one-stream forward pass: process template and search jointly.
@@ -377,30 +408,36 @@ class ViTBackbone(BaseModule):
         Migrated to template-search paradigm. Concatenates template and search tokens
         before transformer, enabling cross-attention between regions.
 
+        CRITICAL FIX (Audit 2025120902 Issue 15, 17 - COMPLETE REVISION):
+        Proper attention masking implementation:
+        1. Convert spatial masks to token-level masks
+        2. Add pos_embed FIRST, then apply token mask
+        3. Create additive attention bias (padded positions get -inf)
+        4. Apply mask inside transformer via custom attention wrapper
+        5. Re-apply mask after transformer for safety
+
         Args:
-            x_template: Template image [B, C, template_size, template_size] (e.g., [B, 3, 128, 128])
-            x_search: Search image [B, C, search_size, search_size] (e.g., [B, 3, 256, 256])
+            x_template: Template image [B, C, template_size, template_size]
+            x_search: Search image [B, C, search_size, search_size]
+            template_att_mask: Optional attention mask for template [B, H, W]
+                               (1 = valid, 0 = padded)
+            search_att_mask: Optional attention mask for search [B, H, W]
+                             (1 = valid, 0 = padded)
 
         Returns:
             Tuple of (feat_template, feat_search):
-                - feat_template: [B, N_z, D] where N_z = (template_size // patch_size)^2
-                - feat_search: [B, N_x, D] where N_x = (search_size // patch_size)^2
-
-        Example:
-            >>> template = torch.randn(4, 3, 128, 128)
-            >>> search = torch.randn(4, 3, 256, 256)
-            >>> feat_z, feat_x = backbone(template, search)
-            >>> print(feat_z.shape)  # [4, 64, 768]
-            >>> print(feat_x.shape)  # [4, 256, 768]
+                - feat_template: [B, N_z, D]
+                - feat_search: [B, N_x, D]
         """
         B = x_template.shape[0]
+        device = x_template.device
 
         # Apply channel adapter if needed (for Sonar)
         if self.channel_adapter is not None:
             x_template = self.channel_adapter(x_template)
             x_search = self.channel_adapter(x_search)
 
-        # 1. Patch embedding
+        # === Step 1: Patch embedding ===
         tokens_z = self.vit.patch_embed(x_template)  # [B, N_z, D]
         tokens_x = self.vit.patch_embed(x_search)    # [B, N_x, D]
 
@@ -412,32 +449,220 @@ class ViTBackbone(BaseModule):
             B, H_x, W_x, D = tokens_x.shape
             tokens_x = tokens_x.reshape(B, H_x * W_x, D)
 
-        # 2. Add SEPARATE positional embeddings (OSTrack key innovation)
+        N_z = tokens_z.shape[1]  # num_patches_template
+        N_x = tokens_x.shape[1]  # num_patches_search
+
+        # === Step 2: Add positional embeddings FIRST ===
+        # This is critical - pos_embed must be added before masking
         tokens_z = tokens_z + self.pos_embed_z  # [B, N_z, D]
         tokens_x = tokens_x + self.pos_embed_x  # [B, N_x, D]
 
-        # 3. Concatenate template and search tokens (ONE-STREAM)
+        # === Step 3: Process attention masks ===
+        # Convert spatial masks to token-level masks
+        mask_z = None
+        mask_x = None
+
+        if template_att_mask is not None:
+            if template_att_mask.dim() == 3:  # [B, H, W]
+                mask_z = self._convert_spatial_mask_to_token_mask(
+                    template_att_mask, self.template_size, B
+                )
+            else:
+                mask_z = template_att_mask.float()
+        else:
+            # Default: all template tokens valid
+            mask_z = torch.ones(B, N_z, device=device)
+
+        if search_att_mask is not None:
+            if search_att_mask.dim() == 3:  # [B, H, W]
+                mask_x = self._convert_spatial_mask_to_token_mask(
+                    search_att_mask, self.search_size, B
+                )
+            else:
+                mask_x = search_att_mask.float()
+        else:
+            # Default: all search tokens valid
+            mask_x = torch.ones(B, N_x, device=device)
+
+        # === Step 4: Apply token mask AFTER pos_embed ===
+        # Zero out padded tokens so they don't contribute values
+        tokens_z = tokens_z * mask_z.unsqueeze(-1)  # [B, N_z, D]
+        tokens_x = tokens_x * mask_x.unsqueeze(-1)  # [B, N_x, D]
+
+        # === Step 5: Concatenate for one-stream processing ===
         tokens = torch.cat([tokens_z, tokens_x], dim=1)  # [B, N_z + N_x, D]
+        combined_mask = torch.cat([mask_z, mask_x], dim=1)  # [B, N_z + N_x]
+
+        # === Step 6: Create additive attention bias ===
+        # For proper masking, we need to set attention scores to -inf for padded positions
+        # attention_bias: [B, 1, N, N] or [B, num_heads, N, N]
+        # Where padded KEY positions get -inf (so softmax gives them 0 weight)
+        N_total = N_z + N_x
+
+        # Key mask: which positions should be ignored as keys
+        # combined_mask: 1 = valid, 0 = padded
+        # We want attention scores to padded keys to be -inf
+        key_padding_mask = (combined_mask < 0.5)  # [B, N], True = padded
+
+        # Create attention bias: [B, 1, 1, N] - broadcast across queries and heads
+        # Set to -inf for padded key positions
+        attn_bias = torch.zeros(B, 1, 1, N_total, device=device, dtype=tokens.dtype)
+        attn_bias.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
 
         # Apply position dropout
         if hasattr(self.vit, 'pos_drop'):
             tokens = self.vit.pos_drop(tokens)
 
-        # 4. Transformer blocks (self-attention across BOTH template and search)
+        # === Step 7: Transformer blocks with attention masking ===
         if hasattr(self.vit, 'blocks'):
             for blk in self.vit.blocks:
-                tokens = blk(tokens)
+                # Try to pass attention bias if block supports it
+                # Different timm versions have different signatures
+                try:
+                    # Newer timm versions may support attn_mask parameter
+                    if hasattr(blk, 'attn') and hasattr(blk.attn, 'forward'):
+                        # Custom forward with attention bias
+                        tokens = self._block_forward_with_mask(blk, tokens, attn_bias)
+                    else:
+                        tokens = blk(tokens)
+                except TypeError:
+                    # Fallback: standard forward without mask
+                    tokens = blk(tokens)
 
-        # 5. Final layer norm
+        # === Step 8: Re-apply mask after transformer ===
+        # Ensure padded positions remain zeroed (attention may leak small values)
+        tokens = tokens * combined_mask.unsqueeze(-1)
+
+        # === Step 9: Final layer norm ===
         if hasattr(self.vit, 'norm'):
             tokens = self.vit.norm(tokens)
 
-        # 6. Split back into template and search features
-        N_z = self.num_patches_template
-        feat_template = tokens[:, :N_z, :]      # [B, N_z, D]
-        feat_search = tokens[:, N_z:, :]        # [B, N_x, D]
+        # Re-apply mask after norm (norm may introduce non-zero values for padded tokens)
+        tokens = tokens * combined_mask.unsqueeze(-1)
+
+        # === Step 10: Split back into template and search ===
+        feat_template = tokens[:, :N_z, :]  # [B, N_z, D]
+        feat_search = tokens[:, N_z:, :]    # [B, N_x, D]
 
         return feat_template, feat_search
+
+    def _block_forward_with_mask(
+        self,
+        blk: nn.Module,
+        x: torch.Tensor,
+        attn_bias: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass through a transformer block with attention masking.
+
+        This manually applies the block components to inject attention bias.
+
+        Args:
+            blk: Transformer block (timm Block)
+            x: Input tokens [B, N, D]
+            attn_bias: Attention bias [B, 1, 1, N], -inf for padded positions
+
+        Returns:
+            Output tokens [B, N, D]
+        """
+        # Standard transformer block: x = x + attn(norm1(x)), x = x + mlp(norm2(x))
+
+        # Pre-norm for attention
+        if hasattr(blk, 'norm1'):
+            x_norm = blk.norm1(x)
+        else:
+            x_norm = x
+
+        # Attention with masking
+        if hasattr(blk, 'attn'):
+            attn_out = self._attention_with_mask(blk.attn, x_norm, attn_bias)
+        else:
+            attn_out = x_norm
+
+        # Residual connection
+        if hasattr(blk, 'drop_path1'):
+            x = x + blk.drop_path1(attn_out)
+        elif hasattr(blk, 'drop_path'):
+            x = x + blk.drop_path(attn_out)
+        else:
+            x = x + attn_out
+
+        # Pre-norm for MLP
+        if hasattr(blk, 'norm2'):
+            x_norm = blk.norm2(x)
+        else:
+            x_norm = x
+
+        # MLP
+        if hasattr(blk, 'mlp'):
+            mlp_out = blk.mlp(x_norm)
+        else:
+            mlp_out = x_norm
+
+        # Residual connection
+        if hasattr(blk, 'drop_path2'):
+            x = x + blk.drop_path2(mlp_out)
+        elif hasattr(blk, 'drop_path'):
+            x = x + blk.drop_path(mlp_out)
+        else:
+            x = x + mlp_out
+
+        return x
+
+    def _attention_with_mask(
+        self,
+        attn_module: nn.Module,
+        x: torch.Tensor,
+        attn_bias: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Apply attention with additive attention bias for masking.
+
+        Args:
+            attn_module: timm Attention module
+            x: Input [B, N, D]
+            attn_bias: Attention bias [B, 1, 1, N], -inf for padded positions
+
+        Returns:
+            Attention output [B, N, D]
+        """
+        B, N, C = x.shape
+
+        # Get QKV projection
+        if hasattr(attn_module, 'qkv'):
+            qkv = attn_module.qkv(x)  # [B, N, 3*D]
+            qkv = qkv.reshape(B, N, 3, attn_module.num_heads, C // attn_module.num_heads)
+            qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, B, heads, N, head_dim]
+            q, k, v = qkv[0], qkv[1], qkv[2]
+        else:
+            # Fallback for different attention implementations
+            return attn_module(x)
+
+        # Compute attention scores
+        scale = (C // attn_module.num_heads) ** -0.5
+        attn = (q @ k.transpose(-2, -1)) * scale  # [B, heads, N, N]
+
+        # Apply attention bias (masking padded keys with -inf)
+        # attn_bias is [B, 1, 1, N], broadcast to [B, heads, N, N]
+        attn = attn + attn_bias
+
+        # Softmax (padded positions get 0 weight due to -inf)
+        attn = attn.softmax(dim=-1)
+
+        # Apply attention dropout if exists
+        if hasattr(attn_module, 'attn_drop'):
+            attn = attn_module.attn_drop(attn)
+
+        # Apply attention to values
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)  # [B, N, D]
+
+        # Output projection
+        if hasattr(attn_module, 'proj'):
+            x = attn_module.proj(x)
+        if hasattr(attn_module, 'proj_drop'):
+            x = attn_module.proj_drop(x)
+
+        return x
 
 
     def get_num_patches(self, img_size: int) -> int:

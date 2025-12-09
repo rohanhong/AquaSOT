@@ -208,6 +208,54 @@ class TrackingEvaluator:
             'sequences': self.sequence_results
         }
 
+    def _compute_padding_ratio(self, crop_metadata: Dict) -> float:
+        """
+        Compute the padding ratio of a crop region.
+
+        CRITICAL FIX (Audit 2025120902 Issue 9 Revised):
+        Matches online_evaluator._compute_padding_ratio() for consistency.
+
+        Padding ratio indicates what fraction of the crop lies outside
+        the original image boundary. High padding (>0.3) suggests the
+        target may be occluded or out-of-frame.
+
+        Args:
+            crop_metadata: Dictionary containing crop parameters:
+                - crop_x1, crop_y1: Top-left corner of crop (can be negative)
+                - crop_sz: Size of crop window
+                - original_width, original_height: Source image dimensions
+
+        Returns:
+            Padding ratio in [0, 1], where 0 = fully valid, 1 = fully padded
+        """
+        if not crop_metadata:
+            return 0.0  # Assume valid if no metadata
+
+        # Extract crop parameters
+        crop_x1 = crop_metadata.get('crop_x1', 0)
+        crop_y1 = crop_metadata.get('crop_y1', 0)
+        crop_sz = crop_metadata.get('crop_sz', 256)
+        orig_w = crop_metadata.get('original_width', crop_sz)
+        orig_h = crop_metadata.get('original_height', crop_sz)
+
+        # Compute crop boundaries
+        crop_x2 = crop_x1 + crop_sz
+        crop_y2 = crop_y1 + crop_sz
+
+        # Compute padding on each side (how much lies outside image)
+        pad_left = max(0, -crop_x1)
+        pad_top = max(0, -crop_y1)
+        pad_right = max(0, crop_x2 - orig_w)
+        pad_bottom = max(0, crop_y2 - orig_h)
+
+        # Compute padded area (approximate rectangle intersection)
+        # Simplified: sum of padded margins times crop size
+        pad_area = (pad_left + pad_right) * crop_sz + (pad_top + pad_bottom) * max(0, crop_sz - pad_left - pad_right)
+        total_area = crop_sz * crop_sz
+
+        padding_ratio = pad_area / max(total_area, 1)
+        return min(1.0, padding_ratio)
+
     def _compute_quality_diagnostics(self, predictions: Dict) -> Dict:
         """
         Compute quality score diagnostics for failure analysis.
@@ -410,41 +458,75 @@ class TrackingEvaluator:
             'template_sonar_metadata': template_sonar_metadata,
         }
 
-        # CRITICAL FIX (Audit 2025112504 Finding 1):
-        # Extract and pass modality visibility flags for conditional fusion
-        # These flags enable ConditionalG2DCMA to route single/zero modality scenarios
-        # collate_fn_template_search already stacked these as float32 tensors
-        is_rgb_valid = batch.get('is_valid_rgb')      # [B] float32 tensor
-        is_sonar_valid = batch.get('is_valid_sonar')  # [B] float32 tensor
-        has_object_rgb = batch.get('has_object_rgb')  # [B] float32 tensor
-        has_object_sonar = batch.get('has_object_sonar')  # [B] float32 tensor
-        has_object = batch.get('has_object')          # [B] float32 tensor
+        # CRITICAL FIX (Audit 2025120902 Issue 9 + Revised): Self-inferred validity
+        # Original fix removed GT visibility (correct - no GT leakage).
+        # However, ConditionalG2DCMA needs validity hints to bypass unreliable modalities.
+        # Without validity hints, fusion always assumes both modalities are valid,
+        # causing model to use corrupted features from heavily-padded crops.
+        #
+        # Solution: Self-infer validity from padding ratio (NOT from GT!)
+        # This matches online evaluation and real deployment behavior.
+        #
+        # Validity inference: If padding_ratio >= PADDING_THRESHOLD, modality is invalid
+        # because the crop is mostly outside the image boundary.
+        VALIDITY_PADDING_THRESHOLD = 0.3  # Same threshold as online evaluator
 
-        # Convert float32 to bool for model forward (model expects Optional[Tensor])
-        # Keep on CPU initially, model will move to device internally
-        if is_rgb_valid is not None:
-            is_rgb_valid = is_rgb_valid.bool().to(self.device)
-        if is_sonar_valid is not None:
-            is_sonar_valid = is_sonar_valid.bool().to(self.device)
+        batch_size = rgb_template.shape[0]
 
-        # has_object flags stay as float32 for loss masking (needed for confidence heads)
-        if has_object_rgb is not None:
-            has_object_rgb = has_object_rgb.to(self.device)
-        if has_object_sonar is not None:
-            has_object_sonar = has_object_sonar.to(self.device)
-        if has_object is not None:
-            has_object = has_object.to(self.device)
+        # Compute padding-based validity for each sample in batch
+        inferred_rgb_valid = []
+        inferred_sonar_valid = []
 
-        # Run model with full visibility context for proper routing
+        for i in range(batch_size):
+            # Compute RGB padding ratio
+            rgb_meta = rgb_metadata_list[i] if i < len(rgb_metadata_list) else {}
+            rgb_padding_ratio = self._compute_padding_ratio(rgb_meta)
+            rgb_valid = rgb_padding_ratio < VALIDITY_PADDING_THRESHOLD
+
+            # Compute Sonar padding ratio
+            sonar_meta = sonar_metadata_list[i] if i < len(sonar_metadata_list) else {}
+            sonar_padding_ratio = self._compute_padding_ratio(sonar_meta)
+            sonar_valid = sonar_padding_ratio < VALIDITY_PADDING_THRESHOLD
+
+            inferred_rgb_valid.append(rgb_valid)
+            inferred_sonar_valid.append(sonar_valid)
+
+        # Convert to tensors
+        is_rgb_valid = torch.tensor(inferred_rgb_valid, dtype=torch.bool, device=self.device)
+        is_sonar_valid = torch.tensor(inferred_sonar_valid, dtype=torch.bool, device=self.device)
+
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Extract attention masks
+        # Attention masks mark valid (non-padded) regions in search crops
+        # The batch contains pre-computed masks from the dataloader
+        rgb_att_mask = batch.get('rgb_att_mask', None)
+        sonar_att_mask = batch.get('sonar_att_mask', None)
+        # CRITICAL FIX (Audit 2025120909): Extract template attention masks
+        rgb_template_att_mask = batch.get('rgb_template_att_mask', None)
+        sonar_template_att_mask = batch.get('sonar_template_att_mask', None)
+
+        # Move masks to device if they exist
+        if rgb_att_mask is not None:
+            rgb_att_mask = rgb_att_mask.to(self.device)
+        if sonar_att_mask is not None:
+            sonar_att_mask = sonar_att_mask.to(self.device)
+        if rgb_template_att_mask is not None:
+            rgb_template_att_mask = rgb_template_att_mask.to(self.device)
+        if sonar_template_att_mask is not None:
+            sonar_template_att_mask = sonar_template_att_mask.to(self.device)
+
+        # Run model with SELF-INFERRED validity (not GT!)
+        # This enables ConditionalG2DCMA to properly bypass unreliable modalities
         outputs = self.model(
             rgb_template, rgb_search, sonar_template, sonar_search,
-            is_rgb_valid=is_rgb_valid,
-            is_sonar_valid=is_sonar_valid,
-            has_object_rgb=has_object_rgb,
-            has_object_sonar=has_object_sonar,
-            has_object=has_object,
+            is_rgb_valid=is_rgb_valid,  # Self-inferred from padding ratio
+            is_sonar_valid=is_sonar_valid,  # Self-inferred from padding ratio
+            # has_object_*: Not needed in evaluation (only for training loss)
             metadata=metadata,
-            return_losses=False  # Evaluation mode (no loss computation)
+            return_losses=False,  # Evaluation mode (no loss computation)
+            rgb_att_mask=rgb_att_mask,
+            sonar_att_mask=sonar_att_mask,
+            rgb_template_att_mask=rgb_template_att_mask,
+            sonar_template_att_mask=sonar_template_att_mask
         )
 
         # Extract predictions with quality scores
@@ -622,9 +704,96 @@ class TrackingEvaluator:
         if 'fusion_weights' in outputs:
             predictions['fusion_weights'] = outputs['fusion_weights'].cpu().numpy().tolist()
 
-        # CRITICAL FIX (Audit 2025112101 Phase 4.2): Extract scenario labels
-        # Classify each frame into modality availability scenarios
-        if 'is_rgb_valid' in outputs and 'is_sonar_valid' in outputs:
+        # =====================================================================
+        # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+        # Use head validity outputs for prediction gating (replaces padding-only)
+        # =====================================================================
+        # The box head now outputs learned validity predictions that combine
+        # padding ratio and objectness for SOTA-aligned fusion routing.
+        # Priority for gating: validity_final > validity > confidence > quality
+        #
+        # Thresholds (from audit spec):
+        # - RGB validity: 0.35 (more lenient, RGB typically more reliable)
+        # - Sonar validity: 0.4 (stricter, sonar more prone to false positives)
+        # - Fallback confidence: 0.3 (same as before)
+        RGB_VALIDITY_THRESHOLD = 0.35
+        SONAR_VALIDITY_THRESHOLD = 0.4
+        CONFIDENCE_VALIDITY_THRESHOLD = 0.3  # Fallback when validity not available
+
+        # Extract RGB validity from head outputs (preferred) or fallback to confidence
+        rgb_valid_values = []
+        if 'rgb_validity' in outputs and outputs['rgb_validity'] is not None:
+            # CRITICAL FIX: Use head validity (includes padding + objectness learning)
+            rgb_valid_values = outputs['rgb_validity'].cpu().numpy().tolist()
+            rgb_threshold = RGB_VALIDITY_THRESHOLD
+        elif 'rgb_objectness' in outputs and outputs['rgb_objectness'] is not None:
+            rgb_valid_values = outputs['rgb_objectness'].cpu().numpy().tolist()
+            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+        elif 'rgb_confidence' in outputs and outputs['rgb_confidence'] is not None:
+            rgb_valid_values = outputs['rgb_confidence'].cpu().numpy().tolist()
+            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+        elif 'rgb_quality' in outputs and outputs['rgb_quality'] is not None:
+            rgb_valid_values = outputs['rgb_quality'].cpu().numpy().tolist()
+            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+        else:
+            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+
+        # Extract Sonar validity from head outputs (preferred) or fallback to confidence
+        sonar_valid_values = []
+        if 'sonar_validity' in outputs and outputs['sonar_validity'] is not None:
+            # CRITICAL FIX: Use head validity (includes padding + objectness learning)
+            sonar_valid_values = outputs['sonar_validity'].cpu().numpy().tolist()
+            sonar_threshold = SONAR_VALIDITY_THRESHOLD
+        elif 'sonar_objectness' in outputs and outputs['sonar_objectness'] is not None:
+            sonar_valid_values = outputs['sonar_objectness'].cpu().numpy().tolist()
+            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+        elif 'sonar_confidence' in outputs and outputs['sonar_confidence'] is not None:
+            sonar_valid_values = outputs['sonar_confidence'].cpu().numpy().tolist()
+            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+        elif 'sonar_quality' in outputs and outputs['sonar_quality'] is not None:
+            sonar_valid_values = outputs['sonar_quality'].cpu().numpy().tolist()
+            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+        else:
+            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+
+        # Apply validity/confidence gating to predictions
+        # Replace bbox with None if validity is below threshold
+        if rgb_valid_values and len(rgb_valid_values) == len(predictions.get('rgb_pred', [])):
+            for i, val in enumerate(rgb_valid_values):
+                if val < rgb_threshold:
+                    predictions['rgb_pred'][i] = None  # Mark as invalid prediction
+
+        if sonar_valid_values and len(sonar_valid_values) == len(predictions.get('sonar_pred', [])):
+            for i, val in enumerate(sonar_valid_values):
+                if val < sonar_threshold:
+                    predictions['sonar_pred'][i] = None  # Mark as invalid prediction
+
+        # Store validity values for analysis/debugging
+        predictions['rgb_validity'] = rgb_valid_values
+        predictions['sonar_validity'] = sonar_valid_values
+
+        # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+        # Classify each frame into modality availability scenarios using HEAD VALIDITY
+        # This uses learned validity (not GT or padding-only) for consistent evaluation
+        if rgb_valid_values and sonar_valid_values:
+            # Convert validity values to boolean using thresholds
+            for i in range(min(len(rgb_valid_values), len(sonar_valid_values))):
+                rgb_valid = rgb_valid_values[i] >= rgb_threshold
+                sonar_valid = sonar_valid_values[i] >= sonar_threshold
+
+                # Classify scenario based on head validity
+                if rgb_valid and sonar_valid:
+                    scenario = 'dual'
+                elif rgb_valid and not sonar_valid:
+                    scenario = 'single_rgb'
+                elif not rgb_valid and sonar_valid:
+                    scenario = 'single_sonar'
+                else:
+                    scenario = 'zero'
+
+                predictions['scenario_labels'].append(scenario)
+        elif 'is_rgb_valid' in outputs and 'is_sonar_valid' in outputs:
+            # Fallback to passed-in validity (padding-based) if head validity not available
             is_rgb_valid = outputs['is_rgb_valid'].cpu()  # [B] boolean tensor
             is_sonar_valid = outputs['is_sonar_valid'].cpu()  # [B] boolean tensor
 
@@ -732,8 +901,11 @@ class TrackingEvaluator:
 
         aggregated = {}
 
-        # Aggregate for each modality (standard metrics)
-        for modality in ['rgb', 'sonar', 'fusion']:
+        # CRITICAL FIX (Audit 2025120902 Issue 18): Remove 'fusion' from modality list
+        # Fusion boxes were removed in architecture update (Audit 2025112313)
+        # Previous code still iterated ['rgb', 'sonar', 'fusion'] causing errors
+        # Now only aggregate metrics for RGB and Sonar modalities
+        for modality in ['rgb', 'sonar']:  # Removed 'fusion'
             # Extract metrics for this modality
             modality_metrics = [
                 seq_metrics[modality]
@@ -747,7 +919,8 @@ class TrackingEvaluator:
 
         # CRITICAL FIX (Audit 2025112101 Phase 4.2):
         # Aggregate per-scenario metrics
-        for modality in ['rgb', 'sonar', 'fusion']:
+        # CRITICAL FIX (Audit 2025120902 Issue 18): Remove 'fusion' from modality list
+        for modality in ['rgb', 'sonar']:  # Removed 'fusion'
             scenario_key = f'{modality}_scenarios'
 
             # Extract scenario metrics for this modality
@@ -824,7 +997,8 @@ class TrackingEvaluator:
         print("EVALUATION SUMMARY")
         print("=" * 70)
 
-        for modality in ['rgb', 'sonar', 'fusion']:
+        # CRITICAL FIX (Audit 2025120902 Issue 18): Remove 'fusion' from modality list
+        for modality in ['rgb', 'sonar']:  # Removed 'fusion'
             if modality not in self.overall_metrics:
                 continue
 
@@ -836,14 +1010,14 @@ class TrackingEvaluator:
             print(f"  Avg Center Error:   {metrics.get('avg_center_error_mean', 0.0):.2f} ± {metrics.get('avg_center_error_std', 0.0):.2f} px")
             print(f"  Mean IoU:           {metrics.get('mean_iou_mean', 0.0):.4f} ± {metrics.get('mean_iou_std', 0.0):.4f}")
 
-        # CRITICAL FIX (Audit 2025112101 Phase 4.2):
-        # Print per-scenario metrics for FUSION (primary output)
-        if 'fusion_scenarios' in self.overall_metrics:
+        # CRITICAL FIX (Audit 2025120902 Issue 18): Print per-scenario metrics for RGB (primary)
+        # Previously printed fusion_scenarios which no longer exists
+        if 'rgb_scenarios' in self.overall_metrics:
             print("\n" + "=" * 70)
-            print("PER-SCENARIO PERFORMANCE (Fusion)")
+            print("PER-SCENARIO PERFORMANCE (RGB)")
             print("=" * 70)
 
-            scenario_metrics = self.overall_metrics['fusion_scenarios']
+            scenario_metrics = self.overall_metrics['rgb_scenarios']
 
             for scenario, scenario_name in [
                 ('dual', 'Dual-Modality (RGB + Sonar)'),
@@ -889,14 +1063,16 @@ class TrackingEvaluator:
         total_sequences = len(self.sequence_results)
         lines.append(f"  Total Sequences: {total_sequences}")
 
-        if 'fusion' in self.overall_metrics:
-            total_frames = self.overall_metrics['fusion'].get('total_frames', 0)
+        # CRITICAL FIX (Audit 2025120902 Issue 18): Use 'rgb' instead of 'fusion'
+        if 'rgb' in self.overall_metrics:
+            total_frames = self.overall_metrics['rgb'].get('total_frames', 0)
             lines.append(f"  Total Frames: {total_frames}")
 
         lines.append("")
 
         # Per-modality results
-        for modality in ['rgb', 'sonar', 'fusion']:
+        # CRITICAL FIX (Audit 2025120902 Issue 18): Remove 'fusion' from modality list
+        for modality in ['rgb', 'sonar']:  # Removed 'fusion'
             if modality not in self.overall_metrics:
                 continue
 

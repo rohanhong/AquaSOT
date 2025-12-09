@@ -363,7 +363,14 @@ class MultiModalBackbone(nn.Module):
         rgb_template: torch.Tensor,
         rgb_search: torch.Tensor,
         sonar_template: torch.Tensor,
-        sonar_search: torch.Tensor
+        sonar_search: torch.Tensor,
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Attention masks for padded regions
+        # Search masks
+        rgb_search_att_mask: Optional[torch.Tensor] = None,
+        sonar_search_att_mask: Optional[torch.Tensor] = None,
+        # Template masks (for edge cases where template has padding)
+        rgb_template_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_att_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, Any]:
         """
         Forward pass through both modalities using template-search paradigm.
@@ -374,11 +381,19 @@ class MultiModalBackbone(nn.Module):
         CRITICAL FIX (Audit 2025112503 Finding 4):
         Support single-modality forward pass when allow_single_modality=True.
 
+        CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+        Now accepts attention masks for proper padding handling in transformer.
+        Both template and search masks are supported.
+
         Args:
             rgb_template: RGB template (B, 3, template_size, template_size)
             rgb_search: RGB search (B, 3, search_size, search_size)
             sonar_template: Sonar template (B, 1, template_size, template_size)
             sonar_search: Sonar search (B, 1, search_size, search_size)
+            rgb_search_att_mask: Optional attention mask for RGB search [B, H, W], 1=valid, 0=padded
+            sonar_search_att_mask: Optional attention mask for Sonar search [B, H, W], 1=valid, 0=padded
+            rgb_template_att_mask: Optional attention mask for RGB template [B, H, W], 1=valid, 0=padded
+            sonar_template_att_mask: Optional attention mask for Sonar template [B, H, W], 1=valid, 0=padded
 
         Returns:
             Dictionary containing features from available modalities:
@@ -398,8 +413,13 @@ class MultiModalBackbone(nn.Module):
         outputs = {'rgb': {}, 'sonar': {}}
 
         # Extract RGB template-search features (if RGB backbone exists)
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Pass attention masks
         if self.rgb_backbone is not None:
-            rgb_feat_template, rgb_feat_search = self.rgb_backbone(rgb_template, rgb_search)
+            rgb_feat_template, rgb_feat_search = self.rgb_backbone(
+                rgb_template, rgb_search,
+                template_att_mask=rgb_template_att_mask,  # Template mask (can be None)
+                search_att_mask=rgb_search_att_mask  # Search mask (can be None)
+            )
             outputs['rgb'] = {
                 'template_features': rgb_feat_template,
                 'search_features': rgb_feat_search,
@@ -412,8 +432,13 @@ class MultiModalBackbone(nn.Module):
             }
 
         # Extract Sonar template-search features (if Sonar encoder exists)
+        # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Pass attention masks
         if self.sonar_encoder is not None:
-            sonar_feat_template, sonar_feat_search = self.sonar_encoder(sonar_template, sonar_search)
+            sonar_feat_template, sonar_feat_search = self.sonar_encoder(
+                sonar_template, sonar_search,
+                template_att_mask=sonar_template_att_mask,  # Template mask (can be None)
+                search_att_mask=sonar_search_att_mask  # Search mask (can be None)
+            )
             outputs['sonar'] = {
                 'template_features': sonar_feat_template,
                 'search_features': sonar_feat_search,

@@ -139,6 +139,24 @@ class OnlineTrackingEvaluator:
         self.template_scan_frames = template_scan_frames or self.TEMPLATE_SCAN_FRAMES
         self.enable_template_quality_filter = enable_template_quality_filter
 
+        # CRITICAL FIX (Audit 2025120902 Issue 3): Lost-state detector parameters
+        # When tracking confidence stays low for too long, trigger global re-detection
+        self.lost_state_threshold = 5  # Consecutive low-conf frames to trigger lost state
+        self.global_search_expansion = 4.0  # Expansion factor for global re-detection
+        self._consecutive_low_conf_rgb = 0  # Counter for RGB
+        self._consecutive_low_conf_sonar = 0  # Counter for Sonar
+        self._lost_state_count = 0  # Count of lost state recoveries
+
+        # CRITICAL FIX (Audit 2025120909): Template bank and recovery freeze
+        # Template bank: Store multiple templates to allow fallback during drift
+        # Recovery freeze: Prevent template updates during lost state recovery
+        self.template_bank_size = 3  # Number of templates to store
+        self.recovery_freeze_frames = 10  # Frames to freeze template after lost recovery
+        self._template_bank_rgb = []  # List of (template_tensor, metadata, mask)
+        self._template_bank_sonar = []  # List of (template_tensor, metadata, mask)
+        self._frames_since_recovery = float('inf')  # Frames since last lost recovery
+        self._in_recovery_freeze = False  # Flag to prevent template updates
+
         logger.info(
             f"OnlineTrackingEvaluator initialized: "
             f"template_size={template_size}, search_size={search_size}, "
@@ -273,25 +291,39 @@ class OnlineTrackingEvaluator:
         rgb_state = rgb_gt_bbox.copy()
         sonar_state = sonar_gt_bbox.copy()
 
-        # Crop and cache templates from first visible frame
-        rgb_template, rgb_template_mask = self._crop_region(
+        # CRITICAL FIX (Audit 2025120909): Capture template metadata for GeometryGatedAttention
+        # Template metadata is needed for consistent radial binning in geometric gating fusion
+        rgb_template, rgb_template_meta = self._crop_region(
             frame0_data['rgb_img'],
             rgb_gt_bbox,
             self.template_size,
             self.template_area_factor,
-            is_sonar=False
+            is_sonar=False,
+            return_metadata=True  # CRITICAL: Capture metadata
         )
-        sonar_template, sonar_template_mask = self._crop_region(
+        sonar_template, sonar_template_meta = self._crop_region(
             frame0_data['sonar_img'],
             sonar_gt_bbox,
             self.template_size,
             self.template_area_factor,
-            is_sonar=True
+            is_sonar=True,
+            return_metadata=True  # CRITICAL: Capture metadata
         )
+
+        # CRITICAL FIX (Audit 2025120909): Generate template attention masks
+        rgb_template_att_mask = self._generate_attention_mask(rgb_template_meta, output_size=self.template_size)
+        sonar_template_att_mask = self._generate_attention_mask(sonar_template_meta, output_size=self.template_size)
 
         # Move templates to device
         rgb_template = rgb_template.unsqueeze(0).to(self.device)
         sonar_template = sonar_template.unsqueeze(0).to(self.device)
+
+        # CRITICAL FIX (Audit 2025120909): Initialize template bank with first templates
+        # Store initial templates as the first entries in the bank
+        self._template_bank_rgb = [(rgb_template.clone(), rgb_template_meta.copy(), rgb_template_att_mask.clone())]
+        self._template_bank_sonar = [(sonar_template.clone(), sonar_template_meta.copy(), sonar_template_att_mask.clone())]
+        self._frames_since_recovery = float('inf')  # Reset recovery counter
+        self._in_recovery_freeze = False  # Not in recovery at start
 
         # For template frame, prediction = GT (initialization)
         predictions['rgb_pred'].append(rgb_gt_bbox.copy())
@@ -333,6 +365,16 @@ class OnlineTrackingEvaluator:
                     rgb_conf_prev, sonar_conf_prev
                 )
 
+                # CRITICAL FIX (Audit 2025120902 Issue 3): Global re-detection override
+                # When lost state triggered, use much larger search area for recovery
+                if hasattr(self, '_trigger_global_search') and self._trigger_global_search:
+                    rgb_search_factor = self.global_search_expansion
+                    sonar_search_factor = self.global_search_expansion
+                    self._trigger_global_search = False  # Reset flag
+                    logger.debug(
+                        f"Frame {frame_idx}: Global search triggered with factor={self.global_search_expansion}"
+                    )
+
                 # Track if expansion is active
                 if rgb_search_factor > self._base_search_area_factor * 1.1:
                     expansion_count += 1
@@ -363,34 +405,68 @@ class OnlineTrackingEvaluator:
                 # === CRITICAL FIX (Audit 2025120401 Finding 1): Build metadata for fusion ===
                 # GeometryGatedAttention requires sonar_letterbox_metadata for correct radial binning
                 # Without this, geometric gating degrades to no-geometry baseline
+                # CRITICAL FIX (Audit 2025120909): Include TEMPLATE metadata for proper geometry
                 metadata = {
                     'rgb_search_metadata': [rgb_search_meta],
                     'sonar_search_metadata': [sonar_search_meta],  # List format for tracker.py
-                    'sonar_metadata': [sonar_search_meta]  # Alternative key used by tracker
+                    'sonar_metadata': [sonar_search_meta],  # Alternative key used by tracker
+                    # CRITICAL FIX (Audit 2025120909): Add template metadata
+                    'rgb_template_metadata': [rgb_template_meta],
+                    'sonar_template_metadata': [sonar_template_meta],
                 }
 
-                # === CRITICAL FIX (Audit 2025120403 Issue 4): NO GT visibility in model forward ===
-                # Previous implementation leaked GT occlusion status to model, masking true routing failures.
-                # Model must predict objectness from features alone, not from GT hints.
-                # Occlusion status is determined AFTER prediction using confidence/objectness scores.
+                # === CRITICAL FIX (Audit 2025120902 Issue 7): Self-inferred validity for fusion ===
+                # Instead of removing is_valid (which disables conditional fusion),
+                # derive validity from previous frame's confidence and current padding ratio.
+                # This enables ConditionalG2DCMA to properly bypass unreliable modalities.
+
+                # Check GT occlusion status (for prediction storage, NOT for model input)
                 rgb_gt_occluded = np.sum(np.abs(rgb_gt_bbox)) == 0
                 sonar_gt_occluded = np.sum(np.abs(sonar_gt_bbox)) == 0
 
-                # CRITICAL FIX (Audit 2025120403 Issue 4):
-                # DO NOT pass GT-derived is_rgb_valid/is_sonar_valid to model!
-                # Model should always assume both modalities are valid during inference.
-                # Routing decisions must come from model's own confidence predictions.
+                # Compute padding ratios to detect off-screen crops
+                rgb_padding_ratio_pre = self._compute_padding_ratio(rgb_search_meta)
+                sonar_padding_ratio_pre = self._compute_padding_ratio(sonar_search_meta)
+
+                # Self-infer validity from confidence + padding (NOT from GT!)
+                # Validity threshold: conf > 0.5 AND padding < 0.3
+                VALIDITY_CONF_THRESHOLD = 0.5
+                VALIDITY_PADDING_THRESHOLD = 0.3
+
+                inferred_rgb_valid = (
+                    rgb_conf_prev > VALIDITY_CONF_THRESHOLD and
+                    rgb_padding_ratio_pre < VALIDITY_PADDING_THRESHOLD
+                )
+                inferred_sonar_valid = (
+                    sonar_conf_prev > VALIDITY_CONF_THRESHOLD and
+                    sonar_padding_ratio_pre < VALIDITY_PADDING_THRESHOLD
+                )
+
+                # Convert to tensor for model forward
+                is_rgb_valid_tensor = torch.tensor([inferred_rgb_valid], dtype=torch.bool, device=self.device)
+                is_sonar_valid_tensor = torch.tensor([inferred_sonar_valid], dtype=torch.bool, device=self.device)
 
                 # === Model forward pass ===
-                # CRITICAL FIX (Audit 2025120401 Finding 1): Pass metadata to model
-                # CRITICAL FIX (Audit 2025120403 Issue 4): Remove GT validity leakage
+                # CRITICAL FIX (Audit 2025120902 Issue 7): Pass self-inferred validity
+                # This enables ConditionalG2DCMA to bypass unreliable modalities
+                # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Pass attention masks
+                # Generate attention masks from crop metadata for proper padding handling
+                rgb_att_mask = self._generate_attention_mask(rgb_search_meta, output_size=self.search_size)
+                sonar_att_mask = self._generate_attention_mask(sonar_search_meta, output_size=self.search_size)
+
+                # CRITICAL FIX (Audit 2025120909): Pass TEMPLATE attention masks
+                # Template masks mark valid (non-padded) regions in template crops
                 outputs = self.model(
                     rgb_template, rgb_search,
                     sonar_template, sonar_search,
-                    # is_rgb_valid=REMOVED - model must infer from features
-                    # is_sonar_valid=REMOVED - model must infer from features
+                    is_rgb_valid=is_rgb_valid_tensor,    # Self-inferred, NOT GT
+                    is_sonar_valid=is_sonar_valid_tensor,  # Self-inferred, NOT GT
                     return_losses=False,
-                    metadata=metadata
+                    metadata=metadata,
+                    rgb_att_mask=rgb_att_mask,  # Search attention mask
+                    sonar_att_mask=sonar_att_mask,  # Search attention mask
+                    rgb_template_att_mask=rgb_template_att_mask,  # Template attention mask
+                    sonar_template_att_mask=sonar_template_att_mask  # Template attention mask
                 )
 
                 # === Extract and denormalize predictions ===
@@ -398,28 +474,46 @@ class OnlineTrackingEvaluator:
                 rgb_pred_norm = outputs['rgb_boxes'][0].cpu().numpy()  # [cx, cy, w, h]
                 sonar_pred_norm = outputs['sonar_boxes'][0].cpu().numpy()
 
-                # CRITICAL FIX (Audit 2025120403 Issue 9): Use objectness, not quality
-                # Quality scores indicate "how good" the prediction is but can be high even
-                # when the model is confidently wrong (locked on wrong peak).
-                # Objectness indicates "is there an object" which better triggers recovery.
-                #
+                # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                # Use head validity outputs for state/template update decisions
                 # Priority order:
-                # 1. objectness - direct object presence indicator
-                # 2. confidence - alternative name for objectness in some models
-                # 3. quality - fallback (less reliable for recovery triggering)
+                # 1. validity_final - learned validity (combines padding + objectness)
+                # 2. validity - learned validity (before fallback rule)
+                # 3. objectness - direct object presence indicator
+                # 4. confidence - alternative name for objectness
+                # 5. quality - fallback (less reliable)
+                #
+                # Thresholds (from audit spec):
+                # - RGB validity: 0.35 (more lenient)
+                # - Sonar validity: 0.4 (stricter)
+                RGB_VALIDITY_THRESHOLD = 0.35
+                SONAR_VALIDITY_THRESHOLD = 0.4
 
-                # RGB confidence extraction
+                # RGB validity/confidence extraction
+                if 'rgb_validity' in outputs and outputs['rgb_validity'] is not None:
+                    rgb_validity_value = outputs['rgb_validity'][0].cpu().item()
+                    rgb_is_valid_head = rgb_validity_value >= RGB_VALIDITY_THRESHOLD
+                else:
+                    rgb_validity_value = None
+                    rgb_is_valid_head = None
+
                 if 'rgb_objectness' in outputs and outputs['rgb_objectness'] is not None:
                     rgb_conf_prev = outputs['rgb_objectness'][0].cpu().item()
                 elif 'rgb_confidence' in outputs and outputs['rgb_confidence'] is not None:
                     rgb_conf_prev = outputs['rgb_confidence'][0].cpu().item()
                 elif 'rgb_quality' in outputs and outputs['rgb_quality'] is not None:
-                    # Fallback to quality (less reliable)
                     rgb_conf_prev = outputs['rgb_quality'][0].cpu().item()
                 else:
-                    rgb_conf_prev = 0.5  # Conservative default triggers moderate expansion
+                    rgb_conf_prev = 0.5  # Conservative default
 
-                # Sonar confidence extraction
+                # Sonar validity/confidence extraction
+                if 'sonar_validity' in outputs and outputs['sonar_validity'] is not None:
+                    sonar_validity_value = outputs['sonar_validity'][0].cpu().item()
+                    sonar_is_valid_head = sonar_validity_value >= SONAR_VALIDITY_THRESHOLD
+                else:
+                    sonar_validity_value = None
+                    sonar_is_valid_head = None
+
                 if 'sonar_objectness' in outputs and outputs['sonar_objectness'] is not None:
                     sonar_conf_prev = outputs['sonar_objectness'][0].cpu().item()
                 elif 'sonar_confidence' in outputs and outputs['sonar_confidence'] is not None:
@@ -450,78 +544,321 @@ class OnlineTrackingEvaluator:
                 )
 
                 # === Update state for next frame ===
-                # CRITICAL FIX (Audit 2025120403 Issue 2 & 7): Use sanitized predictions
-                # State update based on sanitized prediction validity and confidence
+                # CRITICAL FIX (Audit 2025120902 Issue 1): Padding-aware state update
+                # Skip state update when crop has high padding ratio (>0.3) to prevent drift
+                # Also implements cross-modality re-anchor for recovery
 
-                # RGB state update - use confidence-based decision (not GT occlusion)
-                if rgb_pred_sanitized is not None and rgb_conf_prev >= self.confidence_low:
+                # Compute padding ratios for both modalities
+                rgb_padding_ratio = self._compute_padding_ratio(rgb_search_meta)
+                sonar_padding_ratio = self._compute_padding_ratio(sonar_search_meta)
+
+                # Thresholds for state update decisions
+                PADDING_THRESHOLD = 0.3  # Skip update if padding > 30%
+                CONF_THRESHOLD = self.confidence_low  # From config
+
+                # Track last valid states for cross-modal re-anchor
+                if not hasattr(self, '_last_valid_rgb_state'):
+                    self._last_valid_rgb_state = rgb_state.copy()
+                if not hasattr(self, '_last_valid_sonar_state'):
+                    self._last_valid_sonar_state = sonar_state.copy()
+
+                # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                # Use head validity for state update decisions when available
+                # Fallback to confidence + padding if head validity not available
+
+                # RGB state update - use head validity if available, else fallback
+                if rgb_is_valid_head is not None:
+                    # Use learned head validity (preferred - single forward)
+                    rgb_update_valid = (
+                        rgb_pred_sanitized is not None and
+                        rgb_is_valid_head
+                    )
+                else:
+                    # Fallback to confidence + padding (backward compatibility)
+                    rgb_update_valid = (
+                        rgb_pred_sanitized is not None and
+                        rgb_conf_prev >= CONF_THRESHOLD and
+                        rgb_padding_ratio < PADDING_THRESHOLD
+                    )
+
+                if rgb_update_valid:
                     rgb_state = rgb_pred_sanitized.copy()
-                # else: keep previous state (low confidence or invalid prediction)
+                    self._last_valid_rgb_state = rgb_state.copy()
+                # else: keep previous state
 
-                # Sonar state update
-                if sonar_pred_sanitized is not None and sonar_conf_prev >= self.confidence_low:
+                # Sonar state update with cross-modal re-anchor
+                # Use head validity if available, else fallback
+                if sonar_is_valid_head is not None:
+                    # Use learned head validity (preferred - single forward)
+                    sonar_update_valid = (
+                        sonar_pred_sanitized is not None and
+                        sonar_is_valid_head
+                    )
+                else:
+                    # Fallback to confidence + padding
+                    sonar_update_valid = (
+                        sonar_pred_sanitized is not None and
+                        sonar_conf_prev >= CONF_THRESHOLD and
+                        sonar_padding_ratio < PADDING_THRESHOLD
+                    )
+
+                if sonar_update_valid:
                     sonar_state = sonar_pred_sanitized.copy()
+                    self._last_valid_sonar_state = sonar_state.copy()
+                elif not sonar_update_valid:
+                    # CRITICAL FIX (Audit 2025120902 Issue 1): Cross-modal re-anchor
+                    # When sonar is unreliable (invalid head validity or low conf), re-anchor to RGB
+                    # This prevents unbounded sonar drift by using RGB as primary anchor
+                    if rgb_update_valid:
+                        # Re-center sonar search on RGB state to avoid divergence
+                        # Note: This assumes RGB and Sonar have similar FOV, which may not be exact
+                        # but is better than letting sonar drift off-screen
+                        sonar_invalid_reason = (
+                            f"validity={sonar_validity_value:.2f}" if sonar_validity_value is not None
+                            else f"conf={sonar_conf_prev:.2f}, padding={sonar_padding_ratio:.2f}"
+                        )
+                        logger.debug(
+                            f"Frame {frame_idx}: Sonar re-anchoring to RGB ({sonar_invalid_reason})"
+                        )
+                        # Use scaled RGB state as sonar anchor (approximate cross-modal alignment)
+                        # This follows PrDiMP/OSTrack multi-cam primary-modality anchor pattern
+                        sonar_state = self._last_valid_rgb_state.copy()
+                    # else: keep previous sonar state
+
+                # === CRITICAL FIX (Audit 2025120902 - Head-Validity Solution): Lost-state detector ===
+                # Track consecutive invalid frames to detect tracking failure
+                # Use head validity when available, else fallback to confidence
+                if rgb_is_valid_head is not None:
+                    rgb_is_invalid = not rgb_is_valid_head
+                else:
+                    rgb_is_invalid = rgb_conf_prev < CONF_THRESHOLD
+
+                if sonar_is_valid_head is not None:
+                    sonar_is_invalid = not sonar_is_valid_head
+                else:
+                    sonar_is_invalid = sonar_conf_prev < CONF_THRESHOLD
+
+                if rgb_is_invalid:
+                    self._consecutive_low_conf_rgb += 1
+                else:
+                    self._consecutive_low_conf_rgb = 0
+
+                if sonar_is_invalid:
+                    self._consecutive_low_conf_sonar += 1
+                else:
+                    self._consecutive_low_conf_sonar = 0
+
+                # Check if in lost state (both modalities consistently low confidence)
+                in_lost_state = (
+                    self._consecutive_low_conf_rgb >= self.lost_state_threshold and
+                    self._consecutive_low_conf_sonar >= self.lost_state_threshold
+                )
+
+                if in_lost_state:
+                    # TRIGGER GLOBAL RE-DETECTION
+                    # Expand search area to cover larger region centered on last valid position
+                    # Use image center as fallback if no valid position
+                    logger.warning(
+                        f"Frame {frame_idx}: LOST STATE detected "
+                        f"(rgb_low_conf_streak={self._consecutive_low_conf_rgb}, "
+                        f"sonar_low_conf_streak={self._consecutive_low_conf_sonar}). "
+                        f"Triggering global re-detection."
+                    )
+
+                    # Reset states to image center for global search
+                    H_rgb, W_rgb = rgb_img_size
+                    H_sonar, W_sonar = sonar_img_size
+
+                    # Use larger bbox centered at image center for global search
+                    # Size is 25% of image to give model a starting point
+                    rgb_state = np.array([
+                        W_rgb * 0.375, H_rgb * 0.375,  # x, y at 37.5%
+                        W_rgb * 0.25, H_rgb * 0.25     # w, h at 25%
+                    ], dtype=np.float32)
+
+                    sonar_state = np.array([
+                        W_sonar * 0.375, H_sonar * 0.375,
+                        W_sonar * 0.25, H_sonar * 0.25
+                    ], dtype=np.float32)
+
+                    # Mark for expanded search on next iteration
+                    # This is done by temporarily boosting search_area_factor
+                    self._trigger_global_search = True
+                    self._lost_state_count += 1
+
+                    # CRITICAL FIX (Audit 2025120909): Template recovery freeze
+                    # After lost state, freeze template updates to prevent drift contamination
+                    self._in_recovery_freeze = True
+                    self._frames_since_recovery = 0
+
+                    # CRITICAL FIX (Audit 2025120909): Revert to oldest template in bank
+                    # When in lost state, the current template may be corrupted by drift.
+                    # Revert to the first (oldest) template in the bank which was set during init.
+                    if self._template_bank_rgb:
+                        rgb_template, rgb_template_meta, rgb_template_att_mask = self._template_bank_rgb[0]
+                        logger.debug(f"Frame {frame_idx}: Reverted to initial RGB template from bank")
+                    if self._template_bank_sonar:
+                        sonar_template, sonar_template_meta, sonar_template_att_mask = self._template_bank_sonar[0]
+                        logger.debug(f"Frame {frame_idx}: Reverted to initial Sonar template from bank")
+
+                    # Reset confidence to high to force state update on next frame
+                    rgb_conf_prev = 0.9
+                    sonar_conf_prev = 0.9
+
+                    # Reset counters
+                    self._consecutive_low_conf_rgb = 0
+                    self._consecutive_low_conf_sonar = 0
 
                 # CRITICAL FIX (Audit 2025120403 Issue 8 & 21): Store None for occluded frames
                 # Instead of storing [0,0,0,0], store None to properly signal "no prediction".
                 # metrics.py _is_valid_bbox() will skip None entries during metric computation.
                 # This follows standard tracking benchmarks (LaSOT, GOT-10k) protocol.
+                #
+                # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                # Also store None when head validity is below threshold (invalid prediction)
+                # Priority: GT occlusion > head validity > store prediction
                 if rgb_gt_occluded:
-                    predictions['rgb_pred'].append(None)  # Not [0,0,0,0]
+                    predictions['rgb_pred'].append(None)  # GT occluded
+                elif rgb_is_valid_head is not None and not rgb_is_valid_head:
+                    predictions['rgb_pred'].append(None)  # Head validity invalid
                 else:
                     predictions['rgb_pred'].append(rgb_pred_sanitized)
 
                 if sonar_gt_occluded:
-                    predictions['sonar_pred'].append(None)  # Not [0,0,0,0]
+                    predictions['sonar_pred'].append(None)  # GT occluded
+                elif sonar_is_valid_head is not None and not sonar_is_valid_head:
+                    predictions['sonar_pred'].append(None)  # Head validity invalid
                 else:
                     predictions['sonar_pred'].append(sonar_pred_sanitized)
+
+                # Store validity values for analysis/debugging
+                if 'rgb_validity' not in predictions:
+                    predictions['rgb_validity'] = []
+                if 'sonar_validity' not in predictions:
+                    predictions['sonar_validity'] = []
+                predictions['rgb_validity'].append(rgb_validity_value if rgb_validity_value is not None else rgb_conf_prev)
+                predictions['sonar_validity'].append(sonar_validity_value if sonar_validity_value is not None else sonar_conf_prev)
 
                 predictions['rgb_gt'].append(rgb_gt_bbox)
                 predictions['sonar_gt'].append(sonar_gt_bbox)
 
-                # === CRITICAL FIX (Audit 2025120401 Finding 6): Template update ===
+                # === CRITICAL FIX (Audit 2025120902 Issue 2): Template update ===
                 # Update template periodically when tracking is confident
-                # This aligns with MixFormer-style dynamic template update during training
+                # Uses min_conf (not avg) + IoU check to prevent high-bias sonar from corrupting template
                 frames_since_update += 1
 
-                if self.enable_template_update:
-                    # CRITICAL FIX (Audit 2025120403 Issue 9): Use objectness, not GT occlusion
-                    # Template update decision based on model confidence, not GT visibility
-                    avg_conf = (rgb_conf_prev + sonar_conf_prev) / 2.0
+                # CRITICAL FIX (Audit 2025120909): Update recovery freeze counter
+                if self._in_recovery_freeze:
+                    self._frames_since_recovery += 1
+                    if self._frames_since_recovery >= self.recovery_freeze_frames:
+                        # Recovery period ended - allow template updates again
+                        self._in_recovery_freeze = False
+                        logger.debug(
+                            f"Frame {frame_idx}: Recovery freeze ended after {self._frames_since_recovery} frames"
+                        )
 
-                    # Check if we should update template (confidence-based, not GT-based)
+                if self.enable_template_update and not self._in_recovery_freeze:
+                    # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                    # Use head validity for template update gating when available
+                    # Fallback to min_conf when head validity not available
+
+                    # Determine if both modalities are valid for template update
+                    if rgb_is_valid_head is not None and sonar_is_valid_head is not None:
+                        # Use learned head validity (preferred - single forward)
+                        both_valid_for_update = rgb_is_valid_head and sonar_is_valid_head
+                        validity_for_log = f"rgb_validity={rgb_validity_value:.2f}, sonar_validity={sonar_validity_value:.2f}"
+                    else:
+                        # Fallback to min confidence threshold
+                        min_conf = min(rgb_conf_prev, sonar_conf_prev)
+                        both_valid_for_update = min_conf >= self.template_update_threshold
+                        validity_for_log = f"min_conf={min_conf:.2f}"
+
+                    # IoU check: new predictions should overlap reasonably with previous states
+                    # This prevents drift accumulation during template updates
+                    rgb_iou_with_prev = self._compute_bbox_iou(rgb_pred_sanitized, rgb_state)
+                    sonar_iou_with_prev = self._compute_bbox_iou(sonar_pred_sanitized, sonar_state)
+                    MIN_IOU_FOR_UPDATE = 0.2  # At least 20% overlap required
+
+                    # Boundary check: ensure predictions are not at image edge
+                    rgb_in_bounds = True
+                    sonar_in_bounds = True
+                    if rgb_pred_sanitized is not None:
+                        rx, ry, rw, rh = rgb_pred_sanitized
+                        margin = 5  # pixels
+                        rgb_in_bounds = (rx >= margin and ry >= margin and
+                                        rx + rw <= rgb_img_size[1] - margin and
+                                        ry + rh <= rgb_img_size[0] - margin)
+                    if sonar_pred_sanitized is not None:
+                        sx, sy, sw, sh = sonar_pred_sanitized
+                        sonar_in_bounds = (sx >= margin and sy >= margin and
+                                          sx + sw <= sonar_img_size[1] - margin and
+                                          sy + sh <= sonar_img_size[0] - margin)
+
+                    # Check if we should update template (validity/conf + IoU + boundary checks)
                     should_update = (
                         frames_since_update >= self.template_update_interval and
-                        avg_conf >= self.template_update_threshold and
+                        both_valid_for_update and  # Use head validity or min_conf
                         rgb_pred_sanitized is not None and
-                        sonar_pred_sanitized is not None
+                        sonar_pred_sanitized is not None and
+                        rgb_iou_with_prev >= MIN_IOU_FOR_UPDATE and  # IoU check
+                        sonar_iou_with_prev >= MIN_IOU_FOR_UPDATE and
+                        rgb_in_bounds and sonar_in_bounds  # Boundary check
                     )
 
                     if should_update:
                         # Update templates using sanitized prediction as bbox
                         # CRITICAL FIX (Audit 2025120403): Use sanitized predictions
-                        new_rgb_template, _ = self._crop_region(
+                        # CRITICAL FIX (Audit 2025120909): Capture template metadata on update
+                        new_rgb_template, new_rgb_template_meta = self._crop_region(
                             frame_data['rgb_img'],
                             rgb_pred_sanitized,  # Use sanitized prediction, not raw
                             self.template_size,
                             self.template_area_factor,
-                            is_sonar=False
+                            is_sonar=False,
+                            return_metadata=True  # CRITICAL: Capture metadata
                         )
-                        new_sonar_template, _ = self._crop_region(
+                        new_sonar_template, new_sonar_template_meta = self._crop_region(
                             frame_data['sonar_img'],
                             sonar_pred_sanitized,  # Use sanitized prediction, not raw
                             self.template_size,
                             self.template_area_factor,
-                            is_sonar=True
+                            is_sonar=True,
+                            return_metadata=True  # CRITICAL: Capture metadata
                         )
 
                         # Update cached templates
                         rgb_template = new_rgb_template.unsqueeze(0).to(self.device)
                         sonar_template = new_sonar_template.unsqueeze(0).to(self.device)
 
+                        # CRITICAL FIX (Audit 2025120909): Update template metadata and attention masks
+                        rgb_template_meta = new_rgb_template_meta
+                        sonar_template_meta = new_sonar_template_meta
+                        rgb_template_att_mask = self._generate_attention_mask(rgb_template_meta, output_size=self.template_size)
+                        sonar_template_att_mask = self._generate_attention_mask(sonar_template_meta, output_size=self.template_size)
+
+                        # CRITICAL FIX (Audit 2025120909): Add to template bank (FIFO, keep oldest at index 0)
+                        # Keep initial template at index 0, append new ones at the end
+                        # When bank is full, remove oldest non-initial template
+                        if len(self._template_bank_rgb) < self.template_bank_size:
+                            # Bank not full - just append
+                            self._template_bank_rgb.append((rgb_template.clone(), rgb_template_meta.copy(), rgb_template_att_mask.clone()))
+                            self._template_bank_sonar.append((sonar_template.clone(), sonar_template_meta.copy(), sonar_template_att_mask.clone()))
+                        else:
+                            # Bank full - remove oldest non-initial (index 1), keep initial (index 0)
+                            if len(self._template_bank_rgb) > 1:
+                                self._template_bank_rgb.pop(1)
+                                self._template_bank_sonar.pop(1)
+                            self._template_bank_rgb.append((rgb_template.clone(), rgb_template_meta.copy(), rgb_template_att_mask.clone()))
+                            self._template_bank_sonar.append((sonar_template.clone(), sonar_template_meta.copy(), sonar_template_att_mask.clone()))
+
                         # Reset counter
                         frames_since_update = 0
                         template_update_count += 1
+                        logger.debug(
+                            f"Frame {frame_idx}: Template updated (bank_size_rgb={len(self._template_bank_rgb)}) "
+                            f"({validity_for_log}, rgb_iou={rgb_iou_with_prev:.2f}, "
+                            f"sonar_iou={sonar_iou_with_prev:.2f})"
+                        )
 
         # Log expansion statistics
         if expansion_count > 0:
@@ -771,12 +1108,13 @@ class OnlineTrackingEvaluator:
         fallback_bbox: Optional[np.ndarray] = None
     ) -> Optional[np.ndarray]:
         """
-        Sanitize bbox: reject NaN/Inf, clamp to image bounds.
+        Sanitize bbox: reject NaN/Inf, STRICTLY clamp to image bounds.
 
-        CRITICAL FIX (Audit 2025120403 Issue 2 & 7):
-        - Filters out NaN/Inf predictions that cause metric explosion
-        - Clamps bbox to image boundaries to prevent drift
-        - Returns fallback or None for invalid inputs
+        CRITICAL FIX (Audit 2025120902 Issue 10):
+        - Previous soft clamp allowed x in [-0.5*w, W-0.5*w], letting drifted states persist
+        - Now uses STRICT clamping: x in [0, W-w], y in [0, H-h]
+        - Returns None (triggers recovery) if clamp distance exceeds 25% of box dimension
+        - This prevents off-screen drift from contaminating template updates
 
         Args:
             bbox: Input bbox [x, y, w, h] in XYWH format
@@ -784,7 +1122,7 @@ class OnlineTrackingEvaluator:
             fallback_bbox: Optional fallback bbox if input is invalid
 
         Returns:
-            Sanitized bbox or fallback/None if input is invalid
+            Sanitized bbox, fallback, or None if severely off-screen (triggers recovery)
         """
         if bbox is None:
             return fallback_bbox
@@ -802,14 +1140,33 @@ class OnlineTrackingEvaluator:
             logger.warning(f"Invalid bbox dimensions: w={w}, h={h}, using fallback")
             return fallback_bbox
 
-        # Clamp dimensions to reasonable range (max 2x image size)
-        w = np.clip(w, 1.0, W * 2)
-        h = np.clip(h, 1.0, H * 2)
+        # Clamp dimensions to reasonable range (max 1.5x image size)
+        w_original = w
+        h_original = h
+        w = np.clip(w, 1.0, W * 1.5)
+        h = np.clip(h, 1.0, H * 1.5)
 
-        # Clamp position to keep bbox mostly within image
-        # Allow partial overlap (up to 50% outside)
-        x = np.clip(x, -w * 0.5, W - w * 0.5)
-        y = np.clip(y, -h * 0.5, H - h * 0.5)
+        # CRITICAL FIX (Audit 2025120902 Issue 10): STRICT boundary clamping
+        # Force bbox to stay FULLY inside image bounds
+        x_original = x
+        y_original = y
+        x = np.clip(x, 0.0, max(0.0, W - w))
+        y = np.clip(y, 0.0, max(0.0, H - h))
+
+        # Calculate clamp distance - if too large, bbox was severely off-screen
+        # Return None to trigger recovery path instead of using corrupted state
+        x_clamp_dist = abs(x - x_original)
+        y_clamp_dist = abs(y - y_original)
+
+        # If clamp moved bbox by more than 25% of its dimension, it was off-screen
+        # This indicates tracking failure - return None to force recovery
+        if x_clamp_dist > 0.25 * w_original or y_clamp_dist > 0.25 * h_original:
+            logger.debug(
+                f"Bbox severely off-screen: original=({x_original:.1f}, {y_original:.1f}), "
+                f"clamped=({x:.1f}, {y:.1f}), clamp_dist=({x_clamp_dist:.1f}, {y_clamp_dist:.1f}), "
+                f"returning None to trigger recovery"
+            )
+            return None  # Force recovery path
 
         return np.array([x, y, w, h], dtype=np.float32)
 
@@ -836,6 +1193,150 @@ class OnlineTrackingEvaluator:
             return False
         x, y, w, h = bbox
         return w >= min_size and h >= min_size
+
+    def _compute_padding_ratio(self, crop_metadata: Dict) -> float:
+        """
+        Compute the padding ratio of a crop region.
+
+        CRITICAL FIX (Audit 2025120902 Issue 1):
+        Detects when crop extends significantly beyond image bounds.
+        High padding ratio indicates unreliable features (mostly background/padding).
+
+        Args:
+            crop_metadata: Crop metadata dict with pad_* keys
+
+        Returns:
+            Padding ratio in [0, 1]. 0 = no padding, 1 = all padding
+        """
+        if crop_metadata is None:
+            return 0.0
+
+        # Get padding amounts (in crop space before resize)
+        pad_left = crop_metadata.get('pad_left', 0)
+        pad_right = crop_metadata.get('pad_right', 0)
+        pad_top = crop_metadata.get('pad_top', 0)
+        pad_bottom = crop_metadata.get('pad_bottom', 0)
+
+        # Get crop size
+        crop_sz = crop_metadata.get('crop_sz', 256)
+        if crop_sz <= 0:
+            return 0.0
+
+        # Total padding area vs crop area
+        total_padding = pad_left + pad_right + pad_top + pad_bottom
+        # Approximate padding area ratio (using perimeter-based estimate)
+        # More accurate would be: (pad_left + pad_right) * crop_sz + (pad_top + pad_bottom) * (crop_sz - pad_left - pad_right)
+        # Simplified: total padding pixels / total crop pixels
+        pad_area = (pad_left + pad_right) * crop_sz + (pad_top + pad_bottom) * max(0, crop_sz - pad_left - pad_right)
+        total_area = crop_sz * crop_sz
+
+        padding_ratio = pad_area / max(total_area, 1)
+        return min(1.0, padding_ratio)
+
+    def _generate_attention_mask(self, crop_metadata: Dict, output_size: int = 256) -> torch.Tensor:
+        """
+        Generate attention mask from crop metadata.
+
+        CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
+        Creates attention mask for padded regions to pass to the model backbone.
+        The mask marks valid (non-padded) regions as 1 and padded regions as 0.
+
+        Args:
+            crop_metadata: Dictionary containing crop parameters:
+                - crop_x1, crop_y1: Crop origin (can be negative if padded)
+                - crop_sz: Original crop size before resize
+                - original_width, original_height: Source image dimensions
+                - output_size: Final output size after resize
+            output_size: Target mask size (default: 256 for search region)
+
+        Returns:
+            Attention mask tensor [1, output_size, output_size] where 1=valid, 0=padded
+        """
+        if not crop_metadata:
+            # No metadata - assume all valid
+            return torch.ones((1, output_size, output_size), dtype=torch.float32, device=self.device)
+
+        # Extract crop parameters
+        crop_x1 = crop_metadata.get('crop_x1', 0)
+        crop_y1 = crop_metadata.get('crop_y1', 0)
+        crop_sz = crop_metadata.get('crop_sz', output_size)
+        orig_w = crop_metadata.get('original_width', crop_metadata.get('original_size', (output_size, output_size))[1])
+        orig_h = crop_metadata.get('original_height', crop_metadata.get('original_size', (output_size, output_size))[0])
+
+        # Compute crop boundaries
+        crop_x2 = crop_x1 + crop_sz
+        crop_y2 = crop_y1 + crop_sz
+
+        # Compute padding on each side (in crop space before resize)
+        pad_left = max(0, -crop_x1)
+        pad_top = max(0, -crop_y1)
+        pad_right = max(0, crop_x2 - orig_w)
+        pad_bottom = max(0, crop_y2 - orig_h)
+
+        # Scale padding to output size
+        resize_factor = output_size / crop_sz
+        pad_left_out = int(pad_left * resize_factor)
+        pad_top_out = int(pad_top * resize_factor)
+        pad_right_out = int(pad_right * resize_factor)
+        pad_bottom_out = int(pad_bottom * resize_factor)
+
+        # Create mask: 1 for valid, 0 for padded
+        mask = torch.ones((1, output_size, output_size), dtype=torch.float32, device=self.device)
+
+        if pad_top_out > 0:
+            mask[:, :pad_top_out, :] = 0
+        if pad_bottom_out > 0:
+            mask[:, -pad_bottom_out:, :] = 0
+        if pad_left_out > 0:
+            mask[:, :, :pad_left_out] = 0
+        if pad_right_out > 0:
+            mask[:, :, -pad_right_out:] = 0
+
+        return mask
+
+    def _compute_bbox_iou(self, bbox1: np.ndarray, bbox2: np.ndarray) -> float:
+        """
+        Compute IoU between two bboxes in XYWH format.
+
+        CRITICAL FIX (Audit 2025120902 Issue 2):
+        Used for template update validation - only update if IoU with previous state > threshold.
+
+        Args:
+            bbox1: First bbox [x, y, w, h]
+            bbox2: Second bbox [x, y, w, h]
+
+        Returns:
+            IoU value in [0, 1]
+        """
+        if bbox1 is None or bbox2 is None:
+            return 0.0
+
+        x1, y1, w1, h1 = bbox1
+        x2, y2, w2, h2 = bbox2
+
+        # Convert to xyxy
+        x1_min, y1_min, x1_max, y1_max = x1, y1, x1 + w1, y1 + h1
+        x2_min, y2_min, x2_max, y2_max = x2, y2, x2 + w2, y2 + h2
+
+        # Intersection
+        inter_x_min = max(x1_min, x2_min)
+        inter_y_min = max(y1_min, y2_min)
+        inter_x_max = min(x1_max, x2_max)
+        inter_y_max = min(y1_max, y2_max)
+
+        inter_w = max(0, inter_x_max - inter_x_min)
+        inter_h = max(0, inter_y_max - inter_y_min)
+        inter_area = inter_w * inter_h
+
+        # Union
+        area1 = w1 * h1
+        area2 = w2 * h2
+        union_area = area1 + area2 - inter_area
+
+        if union_area <= 0:
+            return 0.0
+
+        return inter_area / union_area
 
     def _evaluate_template_quality(
         self,

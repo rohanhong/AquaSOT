@@ -70,11 +70,14 @@ class LossManager(nn.Module):
         # Default loss weights
         # ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed, auxiliary heads added
         # CONTINUOUS FLOW DESIGN (Audit 2025112306 Phase 5): Added confidence loss weights
+        # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution): Added validity loss weights
         self.loss_weights = loss_weights or {
             'rgb_box': 1.0,
             'rgb_conf': 1.0,  # Objectness confidence for RGB
+            'rgb_validity': 1.0,  # Head validity for RGB fusion routing
             'sonar_box': 1.0,
             'sonar_conf': 1.0,  # Objectness confidence for Sonar
+            'sonar_validity': 1.0,  # Head validity for Sonar fusion routing
             'aux_rgb': 0.5,  # Auxiliary head for RGB (pre-fusion)
             'aux_sonar': 0.5,  # Auxiliary head for Sonar (pre-fusion)
             'geometric_consistency': 0.5,
@@ -217,6 +220,10 @@ class LossManager(nn.Module):
                 # Box losses from CenterHead (includes score_loss on heatmap!)
                 'rgb_box_loss': 'rgb_box',
                 'sonar_box_loss': 'sonar_box',
+                # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+                # Validity losses from CenterHead for calibration monitoring
+                'rgb_validity_loss': 'rgb_validity',
+                'sonar_validity_loss': 'sonar_validity',
                 # Consistency losses
                 'geometric_consistency': 'geometric_consistency',
                 'representation_consistency': 'representation_consistency',

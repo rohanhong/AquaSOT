@@ -116,7 +116,21 @@ class RadialProfileExtractor(BaseModule):
         # Compute per-sample sensor origins
         sensor_origins = []  # List of (cx, cy) tuples
         for meta in metadata_list:
-            if meta is not None and 'scale' in meta:
+            # CRITICAL FIX (Audit 2025120909): Use direct sensor_origin_x/y if available
+            # These are pre-computed in crop_metadata_to_letterbox considering:
+            # - Source image dimensions (where sensor actually is)
+            # - Crop position relative to source
+            # - Resize factor and padding
+            # The old approach assumed sensor at bottom of CROP, which was WRONG for
+            # target-centered crops that don't include the sensor origin.
+            if meta is not None and 'sensor_origin_x' in meta and 'sensor_origin_y' in meta:
+                # Best case: use pre-computed sensor origin in output coordinates
+                # Note: sensor_origin is in PIXEL (letterbox output) coordinates
+                # Keep in pixel coordinates - later code (y_grid_pixels) also uses pixel space
+                cx = meta['sensor_origin_x']
+                cy = meta['sensor_origin_y']
+            elif meta is not None and 'scale' in meta:
+                # Fallback: old computation (for backward compatibility with non-crop metadata)
                 scale = meta.get('scale', 1.0)
                 pad_top = meta.get('pad_top', 0)
                 original_height = meta.get('original_height', H)
@@ -212,33 +226,23 @@ class RadialProfileExtractor(BaseModule):
 
                 meta = unified_meta if unified_meta else meta
 
-            if meta is not None and 'new_size' in meta:
-                # Use new_size (after resize, before padding) + padding to get letterbox size
+            # CRITICAL FIX (Audit 2025120902 Issue 11): Use explicit output_size from metadata
+            # Previous approach used heuristic estimation which was fragile
+            # Now metadata contains explicit output_size from preprocessing, use it directly
+            if meta is not None and 'output_size' in meta:
+                # Best case: output_size is explicitly stored in metadata
+                # This is the most reliable method, set during preprocessing
+                target_size = meta['output_size']
+                if isinstance(target_size, (tuple, list)):
+                    target_size = target_size[0]  # Use height (assume square)
+                stride = target_size / H  # pixels per feature cell
+            elif meta is not None and 'new_size' in meta:
+                # Fallback: Use new_size (after resize, before padding) + padding
                 new_h, new_w = meta['new_size']
                 pad_top = meta.get('pad_top', 0)
-                # Letterbox height = new_h (scaled image) + total padding
-                # In letterbox, total_height = target_size (fixed, e.g., 512)
-                # We can infer: target_size = new_h + pad_top + pad_bottom
-                # But we don't have pad_bottom. Instead, observe that letterbox maintains square:
-                # If new_h + pad_top < target_size, there's pad_bottom = target_size - new_h - pad_top
-                # However, the simplest approach: assume target_size is the final image dimension
-                # which equals feature_map_size * stride. We can infer from new_size:
-                # Scale factor tells us: new_h = original_h * scale
-                # Letterbox adds padding to reach target_size (typically square)
-                # For simplicity, if we know the feature came from a fixed target_size:
-                # stride = target_size / H_feature
-                # We can infer target_size from: scale * original_height + padding = target_size
-                original_h = meta.get('original_height', new_h)
-                scale = meta.get('scale', 1.0)
-                # Letterbox target size (square): typically scale * original + padding fills to target
-                # A robust estimate: target_size = new_h + pad_top + pad_bottom
-                # Since letterbox makes square, if pad_top exists, total padding is distributed
-                # For letterbox: target_size is fixed (e.g., 256 for OSTrack-256). We can compute as:
-                # target_size ≈ new_h + 2 * pad_top (assuming symmetric, though may not be exact)
-                # Better: infer from scale and original: if scale < 1, padding added to reach target
-                # Most robust: use fixed target_size assumption (256 for search, 128 for template)
-                # Since we're processing search features here, target_size = 256 is typical (OSTrack-256)
-                target_size = new_h + 2 * pad_top  # Approximation (may over/underestimate)
+                pad_bottom = meta.get('pad_bottom', pad_top)  # Assume symmetric if not specified
+                # More accurate: use both top and bottom padding
+                target_size = new_h + pad_top + pad_bottom
                 stride = target_size / H  # pixels per feature cell
             elif meta is not None and 'scale' in meta:
                 # Fallback: estimate from scale

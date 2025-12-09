@@ -189,6 +189,13 @@ class TemplateSearchDataset(Dataset):
                 f"scan_frames={self.template_scan_frames}"
             )
 
+        # CRITICAL FIX (Audit 2025120902 Issue 5): Negative sampling for sonar objectness calibration
+        # Training data has sparse sonar occlusion, causing objectness to always predict 1.0
+        # Negative samples have search crop centered away from target, simulating "no object" scenarios
+        # This is essential for calibrating objectness head to distinguish presence/absence
+        self.negative_sample_prob = 0.1  # 10% of samples are negative
+        self.negative_offset_range = (2.0, 4.0)  # Offset center by 2-4x bbox size
+
         # Multi-sequence support (PRESERVED from FrameSequenceDataset)
         self.is_multi_sequence = isinstance(
             base_dataset, MultiSequenceRGBSonarDataset
@@ -273,24 +280,27 @@ class TemplateSearchDataset(Dataset):
         # 3. Process template (crop around target bbox)
         # Always process both sensors (target visibility handled by None checks)
         # CRITICAL FIX (Audit 2025112507 Finding 3): Capture crop metadata for bbox transformation
+        # CRITICAL FIX (Audit 2025120909): Capture template attention masks
         if template_sample['rgb_img'] is not None:
-            rgb_template, rgb_crop_meta = self._crop_template(
+            rgb_template, rgb_template_att_mask, rgb_crop_meta = self._crop_template(
                 template_sample['rgb_img'],
                 template_sample['rgb_bbox'],
                 self.template_size
             )
         else:
             rgb_template = None
+            rgb_template_att_mask = np.zeros((self.template_size, self.template_size), dtype=np.float32)
             rgb_crop_meta = None
 
         if template_sample['sonar_img'] is not None:
-            sonar_template, sonar_crop_meta = self._crop_template(
+            sonar_template, sonar_template_att_mask, sonar_crop_meta = self._crop_template(
                 template_sample['sonar_img'],
                 template_sample['sonar_bbox'],
                 self.template_size
             )
         else:
             sonar_template = None
+            sonar_template_att_mask = np.zeros((self.template_size, self.template_size), dtype=np.float32)
             sonar_crop_meta = None
 
         # 4. Process search using TEMPLATE-CENTERED CROP
@@ -325,6 +335,55 @@ class TemplateSearchDataset(Dataset):
         else:
             sonar_template_cx, sonar_template_cy = None, None
 
+        # CRITICAL FIX (Audit 2025120902 Issue 5): Negative sampling for objectness calibration
+        # Decide if this sample should be a negative sample (target not in search crop)
+        # This is essential for training objectness head to output low values when no target
+        is_negative_sample = np.random.rand() < self.negative_sample_prob
+
+        # Compute negative offset if this is a negative sample
+        # Offset the search crop center by 2-4x bbox size in random direction
+        negative_offset_rgb = None
+        negative_offset_sonar = None
+
+        if is_negative_sample:
+            # For RGB
+            rgb_bbox_search = search_sample.get('rgb_bbox', None)
+            if rgb_bbox_search is not None:
+                if isinstance(rgb_bbox_search, torch.Tensor):
+                    rgb_bbox_np = rgb_bbox_search.cpu().numpy()
+                else:
+                    rgb_bbox_np = rgb_bbox_search
+                # Offset by 2-4x bbox diagonal in random direction
+                rgb_diag = np.sqrt(rgb_bbox_np[2]**2 + rgb_bbox_np[3]**2)
+                offset_mag = np.random.uniform(
+                    self.negative_offset_range[0],
+                    self.negative_offset_range[1]
+                ) * rgb_diag
+                offset_angle = np.random.uniform(0, 2 * np.pi)
+                negative_offset_rgb = (
+                    offset_mag * np.cos(offset_angle),
+                    offset_mag * np.sin(offset_angle)
+                )
+
+            # For Sonar - critical for objectness calibration
+            sonar_bbox_search = search_sample.get('sonar_bbox', None)
+            if sonar_bbox_search is not None:
+                if isinstance(sonar_bbox_search, torch.Tensor):
+                    sonar_bbox_np = sonar_bbox_search.cpu().numpy()
+                else:
+                    sonar_bbox_np = sonar_bbox_search
+                # Offset by 2-4x bbox diagonal in random direction
+                sonar_diag = np.sqrt(sonar_bbox_np[2]**2 + sonar_bbox_np[3]**2)
+                offset_mag = np.random.uniform(
+                    self.negative_offset_range[0],
+                    self.negative_offset_range[1]
+                ) * sonar_diag
+                offset_angle = np.random.uniform(0, 2 * np.pi)
+                negative_offset_sonar = (
+                    offset_mag * np.cos(offset_angle),
+                    offset_mag * np.sin(offset_angle)
+                )
+
         # Process RGB Search
         if search_sample['rgb_img'] is not None:
             rgb_search_raw = search_sample['rgb_img']  # Raw [H, W, 3] numpy array (after augmentation)
@@ -356,14 +415,26 @@ class TemplateSearchDataset(Dataset):
             # the search bbox (rgb_bbox_original) center, which IS the current frame GT.
             # The jitter is applied inside _crop_search_region via center_jitter_factor.
 
+            # CRITICAL FIX (Audit 2025120902 Issue 5): Apply negative sample offset
+            # For negative samples, offset the crop center so target is outside
+            rgb_crop_center_override = None
+            if is_negative_sample and negative_offset_rgb is not None:
+                # Compute original center and apply offset
+                orig_cx = rgb_bbox_original[0] + rgb_bbox_original[2] / 2
+                orig_cy = rgb_bbox_original[1] + rgb_bbox_original[3] / 2
+                rgb_crop_center_override = (
+                    orig_cx + negative_offset_rgb[0],
+                    orig_cy + negative_offset_rgb[1]
+                )
+
             rgb_search, rgb_att_mask, rgb_search_meta = self._crop_search_region(
                 rgb_search_raw,
                 rgb_bbox_original,
                 output_size=self.search_size,
                 area_factor=self.search_area_factor,
-                center_jitter_factor=self.center_jitter_factor,
+                center_jitter_factor=self.center_jitter_factor if not is_negative_sample else 0.0,
                 scale_jitter_factor=self.scale_jitter_factor,
-                crop_center_override=None  # Use current frame GT center
+                crop_center_override=rgb_crop_center_override  # Offset for negative samples
             )
         else:
             rgb_search_raw = None
@@ -400,14 +471,26 @@ class TemplateSearchDataset(Dataset):
             # Same fix as RGB branch - see comments above.
             # crop_center_override=None uses sonar_bbox_original (current frame GT) center.
 
+            # CRITICAL FIX (Audit 2025120902 Issue 5): Apply negative sample offset for sonar
+            # This is especially important for sonar objectness calibration
+            sonar_crop_center_override = None
+            if is_negative_sample and negative_offset_sonar is not None:
+                # Compute original center and apply offset
+                orig_cx = sonar_bbox_original[0] + sonar_bbox_original[2] / 2
+                orig_cy = sonar_bbox_original[1] + sonar_bbox_original[3] / 2
+                sonar_crop_center_override = (
+                    orig_cx + negative_offset_sonar[0],
+                    orig_cy + negative_offset_sonar[1]
+                )
+
             sonar_search, sonar_att_mask, sonar_search_meta = self._crop_search_region(
                 sonar_search_raw,
                 sonar_bbox_original,
                 output_size=self.search_size,
                 area_factor=self.search_area_factor,
-                center_jitter_factor=self.center_jitter_factor,
+                center_jitter_factor=self.center_jitter_factor if not is_negative_sample else 0.0,
                 scale_jitter_factor=self.scale_jitter_factor,
-                crop_center_override=None  # Use current frame GT center
+                crop_center_override=sonar_crop_center_override  # Offset for negative samples
             )
         else:
             sonar_search_raw = None
@@ -594,6 +677,20 @@ class TemplateSearchDataset(Dataset):
         has_object_sonar = search_sample.get('has_object_sonar', None)
         has_object = search_sample.get('has_object', None)
 
+        # CRITICAL FIX (Audit 2025120902 Issue 5): Override has_object for negative samples
+        # For negative samples, target is NOT in the search crop (by design)
+        # This is essential for training objectness head to output low values
+        if is_negative_sample:
+            has_object_rgb = False
+            has_object_sonar = False
+            has_object = False
+            # Also set GT boxes to zero for negative samples
+            # (target not in crop = no valid GT)
+            search_bbox_rgb_normalized = np.zeros(4, dtype=np.float32)
+            search_bbox_sonar_normalized = np.zeros(4, dtype=np.float32)
+            search_bbox_rgb_pixels = np.zeros(4, dtype=np.float32)
+            search_bbox_sonar_pixels = np.zeros(4, dtype=np.float32)
+
         # Use base dataset's is_valid flag (target visibility)
         # base_dataset already computes is_valid correctly based on target visibility:
         # - zero-modality: target not visible in either sensor (is_valid=False)
@@ -616,6 +713,9 @@ class TemplateSearchDataset(Dataset):
             # CRITICAL FIX (Audit 2025112602): Add attention masks for padded regions
             'rgb_att_mask': rgb_att_mask,               # [H, W] binary mask (1=valid, 0=padded)
             'sonar_att_mask': sonar_att_mask,           # [H, W] binary mask (1=valid, 0=padded)
+            # CRITICAL FIX (Audit 2025120909): Add template attention masks
+            'rgb_template_att_mask': rgb_template_att_mask,     # [H, W] template mask (1=valid, 0=padded)
+            'sonar_template_att_mask': sonar_template_att_mask, # [H, W] template mask (1=valid, 0=padded)
             'is_valid': is_valid,                       # General validity flag
             'is_valid_rgb': search_sample['is_rgb_valid'],
             'is_valid_sonar': search_sample['is_sonar_valid'],
@@ -1027,7 +1127,7 @@ class TemplateSearchDataset(Dataset):
         image: torch.Tensor,
         bbox: np.ndarray,
         crop_size: int
-    ) -> Tuple[torch.Tensor, Dict]:
+    ) -> Tuple[torch.Tensor, np.ndarray, Dict]:
         """
         Crop template region around target bbox using OSTrack methodology.
 
@@ -1040,14 +1140,19 @@ class TemplateSearchDataset(Dataset):
         - Detects and handles already-normalized input from augmentation pipeline
         - Prevents double normalization by using _denormalize_image_if_needed()
 
+        CRITICAL FIX (Audit 2025120909): Generate template attention mask
+        - Templates can have padding when target is near image boundary
+        - Mask marks valid (non-padded) regions for ViT attention masking
+
         Args:
             image: [3, H, W] or [1, H, W] tensor (from base_dataset)
             bbox: [x, y, w, h] in XYWH pixel format (numpy array)
             crop_size: Target crop size (e.g., 256)
 
         Returns:
-            Tuple of (crop_tensor, crop_metadata):
+            Tuple of (crop_tensor, attention_mask, crop_metadata):
                 - crop_tensor: Cropped template [C, crop_size, crop_size]
+                - attention_mask: [crop_size, crop_size] binary mask (1=valid, 0=padded)
                 - crop_metadata: Dict with transformation parameters
         """
         # CRITICAL FIX (Audit 2025120301): Detect modality from channel count
@@ -1140,6 +1245,10 @@ class TemplateSearchDataset(Dataset):
             'resize_factor': resize_factor,
             'pad_left': x1_pad,
             'pad_top': y1_pad,
+            'pad_right': x2_pad,
+            'pad_bottom': y2_pad,
+            'original_size': (H, W),
+            'output_size': crop_size,
             # Legacy keys for backward compatibility
             'crop_width': crop_sz,
             'crop_height': crop_sz,
@@ -1147,6 +1256,26 @@ class TemplateSearchDataset(Dataset):
             'letterbox_pad_left': int(x1_pad * resize_factor),
             'letterbox_pad_top': int(y1_pad * resize_factor),
         }
+
+        # CRITICAL FIX (Audit 2025120909): Generate attention mask for template
+        # Mask marks valid (non-padded) regions: 1=valid, 0=padded
+        # This is used by ViT to exclude padded tokens from attention
+        att_mask_full = np.ones((crop_sz, crop_sz), dtype=np.float32)
+        if y1_pad > 0:
+            att_mask_full[:y1_pad, :] = 0
+        if y2_pad > 0:
+            att_mask_full[-y2_pad:, :] = 0
+        if x1_pad > 0:
+            att_mask_full[:, :x1_pad] = 0
+        if x2_pad > 0:
+            att_mask_full[:, -x2_pad:] = 0
+
+        # Resize mask to match crop_size
+        att_mask_resized = cv2.resize(
+            att_mask_full,
+            (crop_size, crop_size),
+            interpolation=cv2.INTER_NEAREST  # Use nearest to preserve binary values
+        )
 
         # Convert to tensor and apply normalization
         if crop_resized.ndim == 2:  # Grayscale (sonar)
@@ -1156,7 +1285,7 @@ class TemplateSearchDataset(Dataset):
             crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float() / 255.0
             crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
 
-        return crop_tensor, crop_metadata
+        return crop_tensor, att_mask_resized, crop_metadata
 
     def _letterbox(self, img: np.ndarray, target_size: int) -> Tuple[np.ndarray, Dict]:
         """
@@ -1640,6 +1769,17 @@ def template_search_collate_fn(batch: List[Dict]) -> Dict:
         'sonar_att_mask': torch.stack([
             torch.from_numpy(b['sonar_att_mask']) if isinstance(b['sonar_att_mask'], np.ndarray)
             else b['sonar_att_mask']
+            for b in batch
+        ]),
+        # CRITICAL FIX (Audit 2025120909): Add template attention masks
+        'rgb_template_att_mask': torch.stack([
+            torch.from_numpy(b['rgb_template_att_mask']) if isinstance(b['rgb_template_att_mask'], np.ndarray)
+            else b['rgb_template_att_mask']
+            for b in batch
+        ]),
+        'sonar_template_att_mask': torch.stack([
+            torch.from_numpy(b['sonar_template_att_mask']) if isinstance(b['sonar_template_att_mask'], np.ndarray)
+            else b['sonar_template_att_mask']
             for b in batch
         ]),
         'is_valid': torch.tensor([b['is_valid'] for b in batch], dtype=torch.bool),
