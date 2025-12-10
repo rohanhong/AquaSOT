@@ -49,6 +49,9 @@ from aquasot3d.models.fusion.dcma import (
     build_dcma,
     build_dcma_lite,
     build_conditional_dcma,
+    # CRITICAL FIX (Audit 2025121001 Issue 8): IdentityFusion for single-modality ablation
+    IdentityFusion,
+    build_identity_fusion,
     # Backward compatibility aliases
     G2DCMA,
     G2DCMALite,
@@ -85,6 +88,10 @@ __all__ = [
     # Conditional DCMA
     'ConditionalDCMA',
     'build_conditional_dcma',
+
+    # IdentityFusion for single-modality ablation
+    'IdentityFusion',
+    'build_identity_fusion',
 
     # Backward compatibility aliases (deprecated, use new names)
     'G2DCMA',

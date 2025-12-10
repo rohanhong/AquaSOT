@@ -368,3 +368,242 @@ def normalize_bbox(
     h_norm = h / img_size
 
     return np.array([cx, cy, w_norm, h_norm])
+
+
+def target_centered_crop(
+    img: np.ndarray,
+    bbox: np.ndarray,
+    output_size: int = 256,
+    search_area_factor: float = 4.0,
+    is_rgb: bool = True
+) -> Tuple[np.ndarray, Dict, np.ndarray]:
+    """
+    Target-centered crop for online inference.
+
+    CRITICAL FIX (Audit 2025121001 Issue 5):
+    Implements target-centered cropping for OnlineTracker to match training distribution.
+    Training uses target-centered crops with search_area_factor, but inference was using
+    full-frame letterbox preprocessing - causing train/test distribution mismatch.
+
+    This function:
+    1. Computes search region centered on target bbox
+    2. Handles boundary cases with symmetric padding
+    3. Resizes to output_size
+    4. Returns metadata and attention mask for padded regions
+
+    Args:
+        img: Input image [H, W] for grayscale or [H, W, C] for RGB
+        bbox: Target bounding box in CXCYWH normalized format [cx, cy, w, h] in [0, 1]
+        output_size: Output size (typically 256 for OSTrack-256)
+        search_area_factor: Factor to expand target bbox for search region (default: 4.0)
+        is_rgb: True for RGB images, False for sonar
+
+    Returns:
+        Tuple of (cropped_image, metadata, attention_mask):
+            - cropped_image: [output_size, output_size, C] or [output_size, output_size]
+            - metadata: Dict with crop transformation parameters
+            - attention_mask: [output_size, output_size] binary mask, 1=valid, 0=padded
+
+    Example:
+        >>> img = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
+        >>> bbox = np.array([0.5, 0.5, 0.1, 0.1])  # Centered target
+        >>> cropped, meta, mask = target_centered_crop(img, bbox, 256, 4.0, is_rgb=True)
+        >>> print(cropped.shape)  # (256, 256, 3)
+    """
+    h, w = img.shape[:2]
+
+    # Convert normalized bbox to pixel coordinates
+    cx, cy, bw, bh = bbox
+    cx_px = cx * w
+    cy_px = cy * h
+    bw_px = bw * w
+    bh_px = bh * h
+
+    # Compute search region size (based on target size and search_area_factor)
+    # Following OSTrack/MixFormer convention: search_size = sqrt(target_area * search_area_factor)
+    target_area = bw_px * bh_px
+    search_side = np.sqrt(target_area * search_area_factor)
+
+    # Ensure minimum search size
+    search_side = max(search_side, 32)
+
+    # Crop region (square, centered on target)
+    crop_sz = int(search_side)
+    x1 = int(cx_px - crop_sz / 2)
+    y1 = int(cy_px - crop_sz / 2)
+    x2 = x1 + crop_sz
+    y2 = y1 + crop_sz
+
+    # Compute padding for boundary handling
+    pad_left = max(0, -x1)
+    pad_top = max(0, -y1)
+    pad_right = max(0, x2 - w)
+    pad_bottom = max(0, y2 - h)
+
+    # Clamp crop coordinates to image bounds
+    x1_clamped = max(0, x1)
+    y1_clamped = max(0, y1)
+    x2_clamped = min(w, x2)
+    y2_clamped = min(h, y2)
+
+    # Extract crop from image
+    if is_rgb and img.ndim == 3:
+        crop = img[y1_clamped:y2_clamped, x1_clamped:x2_clamped, :]
+    else:
+        crop = img[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
+
+    # Create attention mask (1 for valid pixels, 0 for padded)
+    # Initially all zeros, will mark valid region after padding
+    mask_crop = np.ones((y2_clamped - y1_clamped, x2_clamped - x1_clamped), dtype=np.float32)
+
+    # Apply padding if needed
+    if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
+        # Determine padding value
+        if is_rgb:
+            pad_value = (114, 114, 114)
+        else:
+            pad_value = 127
+
+        # Pad the crop
+        crop = cv2.copyMakeBorder(
+            crop,
+            pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT,
+            value=pad_value
+        )
+
+        # Expand mask with zeros for padded regions
+        mask_crop = cv2.copyMakeBorder(
+            mask_crop,
+            pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT,
+            value=0
+        )
+
+    # Resize to output size
+    resize_factor = output_size / crop_sz
+    crop_resized = cv2.resize(crop, (output_size, output_size), interpolation=cv2.INTER_LINEAR)
+    mask_resized = cv2.resize(mask_crop, (output_size, output_size), interpolation=cv2.INTER_NEAREST)
+
+    # Build metadata (crop-style, can be converted to letterbox format if needed)
+    metadata = {
+        # Crop parameters
+        'crop_x1': x1,
+        'crop_y1': y1,
+        'crop_sz': crop_sz,
+        'resize_factor': resize_factor,
+
+        # Padding in crop space (before resize)
+        'pad_left': pad_left,
+        'pad_top': pad_top,
+        'pad_right': pad_right,
+        'pad_bottom': pad_bottom,
+
+        # Original image size
+        'original_size': (h, w),
+        'output_size': output_size,
+
+        # For coordinate inverse transform
+        'scale': resize_factor,
+        'original_height': h,
+        'original_width': w,
+
+        # Target info for reference
+        'target_bbox': bbox.tolist(),
+        'search_area_factor': search_area_factor,
+    }
+
+    return crop_resized, metadata, mask_resized
+
+
+def preprocess_target_centered(
+    img: np.ndarray,
+    bbox: np.ndarray,
+    output_size: int = 256,
+    search_area_factor: float = 4.0,
+    is_rgb: bool = True,
+    rgb_mean: Optional[Union[list, tuple, np.ndarray]] = None,
+    rgb_std: Optional[Union[list, tuple, np.ndarray]] = None,
+    sonar_mean: float = 0.5,
+    sonar_std: float = 0.5,
+    device: str = 'cuda'
+) -> Tuple[torch.Tensor, Dict, torch.Tensor]:
+    """
+    Complete target-centered preprocessing pipeline for online inference.
+
+    CRITICAL FIX (Audit 2025121001 Issue 5):
+    Unified target-centered preprocessing that matches training pipeline:
+    1. Target-centered crop with search_area_factor
+    2. Normalization with config-driven parameters
+    3. Returns metadata and attention mask
+
+    Args:
+        img: Input image (uint8 numpy array) [H, W, C] or [H, W]
+        bbox: Target bbox in CXCYWH normalized format [cx, cy, w, h]
+        output_size: Output size (256 for template, 256 for search)
+        search_area_factor: Factor to expand target for search region
+        is_rgb: True for RGB, False for sonar
+        rgb_mean: RGB normalization mean [R, G, B]
+        rgb_std: RGB normalization std [R, G, B]
+        sonar_mean: Sonar normalization mean
+        sonar_std: Sonar normalization std
+        device: Target device ('cuda' or 'cpu')
+
+    Returns:
+        Tuple of (preprocessed_tensor, metadata, attention_mask_tensor):
+            - preprocessed_tensor: [1, C, H, W] normalized tensor
+            - metadata: Crop transformation metadata
+            - attention_mask_tensor: [1, H, W] binary mask tensor
+
+    Example:
+        >>> tensor, meta, mask = preprocess_target_centered(
+        ...     img, bbox, 256, 4.0, is_rgb=True,
+        ...     rgb_mean=[0.485, 0.456, 0.406],
+        ...     rgb_std=[0.229, 0.224, 0.225]
+        ... )
+    """
+    # Channel validation
+    if is_rgb:
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        elif img.shape[-1] != 3:
+            raise ValueError(f"RGB image must have 3 channels, got {img.shape[-1]}")
+    else:
+        if img.ndim == 3:
+            img = img[:, :, 0]
+
+    # Step 1: Target-centered crop with attention mask
+    crop, metadata, mask = target_centered_crop(
+        img, bbox, output_size, search_area_factor, is_rgb
+    )
+
+    # Step 2: Normalize to [0, 1]
+    crop_float = crop.astype(np.float32) / 255.0
+
+    # Step 3: Apply normalization
+    if is_rgb:
+        if rgb_mean is None:
+            rgb_mean = [0.485, 0.456, 0.406]
+        if rgb_std is None:
+            rgb_std = [0.229, 0.224, 0.225]
+
+        mean = np.array(rgb_mean).reshape(1, 1, 3)
+        std = np.array(rgb_std).reshape(1, 1, 3)
+        crop_normalized = (crop_float - mean) / std
+
+        # HWC to CHW
+        img_tensor = torch.from_numpy(crop_normalized).permute(2, 0, 1).unsqueeze(0)
+    else:
+        crop_normalized = (crop_float - sonar_mean) / sonar_std
+
+        # HW to 1HW
+        img_tensor = torch.from_numpy(crop_normalized).unsqueeze(0).unsqueeze(0)
+
+    # Convert mask to tensor
+    mask_tensor = torch.from_numpy(mask).unsqueeze(0)  # [1, H, W]
+
+    # Move to device
+    img_tensor = img_tensor.float().to(device)
+    mask_tensor = mask_tensor.float().to(device)
+
+    return img_tensor, metadata, mask_tensor

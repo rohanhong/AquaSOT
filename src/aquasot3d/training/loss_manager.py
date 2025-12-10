@@ -224,6 +224,8 @@ class LossManager(nn.Module):
                 # Validity losses from CenterHead for calibration monitoring
                 'rgb_validity_loss': 'rgb_validity',
                 'sonar_validity_loss': 'sonar_validity',
+                # CRITICAL FIX (Audit 2025121001 Issue 4): Routing validity loss from ConditionalDCMA
+                'routing_validity_loss': 'routing_validity',
                 # Consistency losses
                 'geometric_consistency': 'geometric_consistency',
                 'representation_consistency': 'representation_consistency',
@@ -437,11 +439,17 @@ class LossManager(nn.Module):
 
         # Define loss name mapping from model internal names to config keys
         # ARCHITECTURE UPDATE (Audit 2025112313): Fusion removed, auxiliary + view consistency added
+        # CRITICAL FIX (Audit 2025121001 Issue 10): Added validity loss mappings
         loss_name_map = {
             'rgb_box_loss': 'rgb_box',
             'sonar_box_loss': 'sonar_box',
             'rgb_conf_loss': 'rgb_conf',
             'sonar_conf_loss': 'sonar_conf',
+            # CRITICAL FIX (Audit 2025121001 Issue 10): Validity losses for fusion routing
+            'rgb_validity_loss': 'rgb_validity',
+            'sonar_validity_loss': 'sonar_validity',
+            # CRITICAL FIX (Audit 2025121001 Issue 4): Routing validity loss from ConditionalDCMA
+            'routing_validity_loss': 'routing_validity',
             'aux_rgb_loss': 'aux_rgb',
             'aux_sonar_loss': 'aux_sonar',
             'geometric_consistency': 'geometric_consistency',

@@ -810,33 +810,69 @@ class ConditionalDCMA(BaseModule):
         """
         Conditional fusion with modality-aware routing.
 
+        ARCHITECTURE UPDATE (Audit 2025121001 Issue 3):
+        Geometry gating has been removed. Letterbox metadata parameters are kept
+        for API compatibility but are no longer used. Fusion routing now relies on:
+        1. Head validity outputs (rgb_validity/sonar_validity) - preferred
+        2. Backbone confidence estimators - fallback when validity not passed
+
         Args:
             rgb_features: RGB feature maps [B, C_rgb, H_rgb, W_rgb]
             sonar_features: Sonar feature maps [B, C_sonar, H_sonar, W_sonar]
             is_rgb_valid: [B] boolean tensor, True if RGB has valid target (optional)
+                If None, inferred from backbone confidence estimators.
             is_sonar_valid: [B] boolean tensor, True if Sonar has valid target (optional)
-            rgb_pyramid: Optional multi-scale RGB features
+                If None, inferred from backbone confidence estimators.
+            rgb_pyramid: Optional multi-scale RGB features for deformable attention
             return_consistency: Whether to compute consistency losses
-            sonar_letterbox_metadata: Unused, kept for API compatibility
-            rgb_letterbox_metadata: Unused, kept for API compatibility
+            sonar_letterbox_metadata: DEPRECATED - kept for API compatibility only.
+                Previously used for geometry gating (now removed).
+            rgb_letterbox_metadata: DEPRECATED - kept for API compatibility only.
+                Previously used for geometry gating (now removed).
 
         Returns:
-            dict containing fusion results
+            dict containing:
+                - fused_features: [B, embed_dim, H, W] fused feature maps
+                - rgb_view_fused: [B, embed_dim, H, W] RGB-view fused features
+                - sonar_view_fused: [B, embed_dim, H, W] Sonar-view fused features
+                - routing_info: dict with routing statistics
+                - consistency_losses: dict with consistency loss values (if return_consistency)
+                - inferred_is_rgb_valid: [B] inferred RGB validity
+                - inferred_is_sonar_valid: [B] inferred Sonar validity
         """
         B, C_rgb, H_rgb, W_rgb = rgb_features.shape
         B_s, C_sonar, H_sonar, W_sonar = sonar_features.shape
 
         assert B == B_s, f"Batch size mismatch: RGB={B}, Sonar={B_s}"
 
-        # Automatic validity inference if not provided
-        if is_rgb_valid is None or is_sonar_valid is None:
-            rgb_conf_scores = self.routing_rgb_confidence(rgb_features)
-            sonar_conf_scores = self.routing_sonar_confidence(sonar_features)
+        # CRITICAL FIX (Audit 2025121001 Issue 4): Always compute routing confidence
+        # During training with GT is_valid: provides supervision signal for confidence estimators
+        # During inference without is_valid: enables automatic modality routing
+        rgb_conf_scores = self.routing_rgb_confidence(rgb_features)
+        sonar_conf_scores = self.routing_sonar_confidence(sonar_features)
 
-            if is_rgb_valid is None:
-                is_rgb_valid = rgb_conf_scores > self.confidence_threshold
-            if is_sonar_valid is None:
-                is_sonar_valid = sonar_conf_scores > self.confidence_threshold
+        # Store original GT for loss computation (before potentially being overwritten)
+        gt_rgb_valid = is_rgb_valid
+        gt_sonar_valid = is_sonar_valid
+
+        # Use GT validity if provided, otherwise infer from confidence scores
+        if is_rgb_valid is None:
+            is_rgb_valid = rgb_conf_scores > self.confidence_threshold
+        if is_sonar_valid is None:
+            is_sonar_valid = sonar_conf_scores > self.confidence_threshold
+
+        # CRITICAL FIX (Audit 2025121001 Issue 4): Compute routing validity loss
+        # BCE loss between predicted confidence and GT validity, enables learned routing
+        routing_validity_loss = torch.tensor(0.0, device=rgb_features.device)
+        if gt_rgb_valid is not None and gt_sonar_valid is not None:
+            gt_rgb_float = gt_rgb_valid.float() if gt_rgb_valid.dtype == torch.bool else gt_rgb_valid
+            gt_sonar_float = gt_sonar_valid.float() if gt_sonar_valid.dtype == torch.bool else gt_sonar_valid
+            # Ensure confidence scores are squeezed to match GT shape
+            rgb_conf_squeezed = rgb_conf_scores.squeeze(-1) if rgb_conf_scores.dim() > 1 else rgb_conf_scores
+            sonar_conf_squeezed = sonar_conf_scores.squeeze(-1) if sonar_conf_scores.dim() > 1 else sonar_conf_scores
+            rgb_bce = F.binary_cross_entropy(rgb_conf_squeezed, gt_rgb_float, reduction='mean')
+            sonar_bce = F.binary_cross_entropy(sonar_conf_squeezed, gt_sonar_float, reduction='mean')
+            routing_validity_loss = (rgb_bce + sonar_bce) / 2
 
         # Convert to bool if needed
         if is_rgb_valid.dtype != torch.bool:
@@ -942,7 +978,12 @@ class ConditionalDCMA(BaseModule):
             'consistency_losses': consistency_losses if return_consistency else None,
             'view_consistency_loss': view_consistency_loss_accum,
             'inferred_is_rgb_valid': is_rgb_valid,
-            'inferred_is_sonar_valid': is_sonar_valid
+            'inferred_is_sonar_valid': is_sonar_valid,
+            # CRITICAL FIX (Audit 2025121001 Issue 4): Routing validity supervision loss
+            'routing_validity_loss': routing_validity_loss,
+            # Also output confidence scores for downstream use (e.g., output selection)
+            'routing_rgb_confidence': rgb_conf_scores,
+            'routing_sonar_confidence': sonar_conf_scores
         }
 
         return output
@@ -985,3 +1026,155 @@ ConditionalG2DCMA = ConditionalDCMA
 build_g2_dcma = build_dcma
 build_g2_dcma_lite = build_dcma_lite
 build_conditional_g2_dcma = build_conditional_dcma
+
+
+# =============================================================================
+# IdentityFusion for Single-Modality Ablation Experiments
+# =============================================================================
+# CRITICAL FIX (Audit 2025121001 Issue 8): IdentityFusion for single-modality ablation
+# This is a pass-through fusion module that directly returns the input features
+# without cross-modal fusion, for ablation experiments where only one modality is used.
+
+@FUSION_REGISTRY.register("identity_fusion")
+class IdentityFusion(BaseModule):
+    """
+    Identity fusion for single-modality ablation experiments.
+
+    This module is used when only one modality (RGB or Sonar) is available.
+    It simply projects the available modality features to the fusion dimension
+    without performing any cross-modal fusion.
+
+    Args:
+        rgb_channels: Number of RGB input channels
+        sonar_channels: Number of Sonar input channels
+        embed_dim: Output embedding dimension
+        active_modality: Which modality to use ('rgb' or 'sonar')
+
+    Example:
+        >>> fusion = IdentityFusion(768, 768, 256, active_modality='rgb')
+        >>> outputs = fusion(rgb_features, sonar_features)
+        >>> # outputs['fused_features'] == projected rgb_features
+    """
+
+    def __init__(
+        self,
+        rgb_channels: int = 768,
+        sonar_channels: int = 768,
+        embed_dim: int = 256,
+        active_modality: str = 'rgb'  # 'rgb' or 'sonar'
+    ):
+        super().__init__()
+        self.rgb_channels = rgb_channels
+        self.sonar_channels = sonar_channels
+        self.embed_dim = embed_dim
+        self.active_modality = active_modality
+
+        # Projection layers
+        if active_modality == 'rgb':
+            self.projection = nn.Conv2d(rgb_channels, embed_dim, kernel_size=1)
+        elif active_modality == 'sonar':
+            self.projection = nn.Conv2d(sonar_channels, embed_dim, kernel_size=1)
+        else:
+            raise ValueError(f"Unknown active_modality: {active_modality}. Must be 'rgb' or 'sonar'")
+
+        self.logger.info(f"Initialized IdentityFusion (active_modality={active_modality})")
+
+    def forward(
+        self,
+        rgb_features: torch.Tensor,
+        sonar_features: torch.Tensor,
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None,
+        rgb_pyramid: Optional[List[torch.Tensor]] = None,
+        return_consistency: bool = True,
+        sonar_letterbox_metadata: Union[dict, List[dict], None] = None,
+        rgb_letterbox_metadata: Union[dict, List[dict], None] = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Identity forward pass - returns projected single-modality features.
+
+        Args:
+            rgb_features: RGB features [B, C_rgb, H, W]
+            sonar_features: Sonar features [B, C_sonar, H, W]
+            is_rgb_valid: Ignored (kept for API compatibility)
+            is_sonar_valid: Ignored (kept for API compatibility)
+            rgb_pyramid: Ignored (kept for API compatibility)
+            return_consistency: Ignored (no consistency in single modality)
+            sonar_letterbox_metadata: Ignored (kept for API compatibility)
+            rgb_letterbox_metadata: Ignored (kept for API compatibility)
+
+        Returns:
+            dict containing:
+                - fused_features: [B, embed_dim, H, W] projected features
+                - rgb_view_fused: Same as fused_features (for compatibility)
+                - sonar_view_fused: Same as fused_features (for compatibility)
+                - routing_info: dict with modality usage statistics
+                - consistency_losses: Empty dict (no cross-modal consistency)
+        """
+        B = rgb_features.shape[0]
+
+        # Select and project the active modality
+        if self.active_modality == 'rgb':
+            source_features = rgb_features
+            is_valid = is_rgb_valid if is_rgb_valid is not None else torch.ones(B, dtype=torch.bool, device=rgb_features.device)
+        else:
+            source_features = sonar_features
+            # Handle potential size mismatch (sonar may have different resolution)
+            target_h, target_w = rgb_features.shape[2:]
+            if source_features.shape[2:] != (target_h, target_w):
+                source_features = F.interpolate(
+                    source_features, size=(target_h, target_w),
+                    mode='bilinear', align_corners=False
+                )
+            is_valid = is_sonar_valid if is_sonar_valid is not None else torch.ones(B, dtype=torch.bool, device=sonar_features.device)
+
+        # Project to embedding dimension
+        fused_features = self.projection(source_features)
+
+        # Routing info for compatibility
+        routing_info = {
+            'num_dual': 0,
+            'num_single_rgb': B if self.active_modality == 'rgb' else 0,
+            'num_single_sonar': B if self.active_modality == 'sonar' else 0,
+            'num_zero': 0,
+            'routing_confidence': 1.0,
+            'active_modality': self.active_modality
+        }
+
+        return {
+            'fused_features': fused_features,
+            'rgb_view_fused': fused_features,  # Same for compatibility
+            'sonar_view_fused': fused_features,  # Same for compatibility
+            'routing_info': routing_info,
+            'consistency_losses': {},  # No consistency losses in single-modality
+            'inferred_is_rgb_valid': torch.ones(B, dtype=torch.bool, device=rgb_features.device) if self.active_modality == 'rgb' else torch.zeros(B, dtype=torch.bool, device=rgb_features.device),
+            'inferred_is_sonar_valid': torch.ones(B, dtype=torch.bool, device=sonar_features.device) if self.active_modality == 'sonar' else torch.zeros(B, dtype=torch.bool, device=sonar_features.device)
+        }
+
+
+def build_identity_fusion(
+    rgb_channels: int = 768,
+    sonar_channels: int = 768,
+    embed_dim: int = 256,
+    active_modality: str = 'rgb',
+    **kwargs
+) -> IdentityFusion:
+    """
+    Build IdentityFusion from configuration.
+
+    Args:
+        rgb_channels: RGB input channels
+        sonar_channels: Sonar input channels
+        embed_dim: Output embedding dimension
+        active_modality: Which modality to use ('rgb' or 'sonar')
+        **kwargs: Ignored (for API compatibility)
+
+    Returns:
+        IdentityFusion instance
+    """
+    return IdentityFusion(
+        rgb_channels=rgb_channels,
+        sonar_channels=sonar_channels,
+        embed_dim=embed_dim,
+        active_modality=active_modality
+    )

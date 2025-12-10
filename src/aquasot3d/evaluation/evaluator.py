@@ -62,7 +62,14 @@ class TrackingEvaluator:
         save_predictions: bool = False,
         verbose: bool = True,
         search_size: int = 256,
-        additional_metrics: Optional[List[str]] = None
+        additional_metrics: Optional[List[str]] = None,
+        # CRITICAL FIX (Audit 2025121001 Issue 12): Configurable validity thresholds
+        # These thresholds control prediction gating in evaluation
+        # Set to 0.0 to disable gating (evaluate all predictions)
+        rgb_validity_threshold: float = 0.0,  # Default: disabled (evaluate all)
+        sonar_validity_threshold: float = 0.0,  # Default: disabled (evaluate all)
+        confidence_validity_threshold: float = 0.0,  # Fallback threshold
+        enable_validity_gating: bool = False  # Master switch for gating
     ):
         self.model = model
         self.dataloader = dataloader
@@ -72,6 +79,12 @@ class TrackingEvaluator:
         self.verbose = verbose
         self.search_size = search_size
         self.additional_metrics = additional_metrics or []
+
+        # CRITICAL FIX (Audit 2025121001 Issue 12): Store configurable thresholds
+        self.rgb_validity_threshold = rgb_validity_threshold
+        self.sonar_validity_threshold = sonar_validity_threshold
+        self.confidence_validity_threshold = confidence_validity_threshold
+        self.enable_validity_gating = enable_validity_gating
 
         # Create output directory
         if self.output_dir:
@@ -458,42 +471,58 @@ class TrackingEvaluator:
             'template_sonar_metadata': template_sonar_metadata,
         }
 
-        # CRITICAL FIX (Audit 2025120902 Issue 9 + Revised): Self-inferred validity
-        # Original fix removed GT visibility (correct - no GT leakage).
-        # However, ConditionalDCMA needs validity hints to bypass unreliable modalities.
-        # Without validity hints, fusion always assumes both modalities are valid,
-        # causing model to use corrupted features from heavily-padded crops.
+        # CRITICAL FIX (Audit 2025121001 Issue 9): Unified validity inference
+        # Previous approach: Pre-compute validity from padding ratio before model forward.
+        # Problem: This bypasses the model's learned routing confidence estimators.
         #
-        # Solution: Self-infer validity from padding ratio (NOT from GT!)
-        # This matches online evaluation and real deployment behavior.
+        # New approach: Model-first validity with padding hard fallback
+        # 1. Let model infer validity via ConditionalDCMA's routing confidence (is_*_valid=None)
+        # 2. Only force invalid when padding_ratio >= 0.5 (severe boundary crop)
+        # This aligns training (learned routing) with inference behavior.
         #
-        # Validity inference: If padding_ratio >= PADDING_THRESHOLD, modality is invalid
-        # because the crop is mostly outside the image boundary.
-        VALIDITY_PADDING_THRESHOLD = 0.3  # Same threshold as online evaluator
+        # Hard fallback threshold: 0.5 means more than half the crop is padding
+        HARD_INVALID_PADDING_THRESHOLD = 0.5
 
         batch_size = rgb_template.shape[0]
 
-        # Compute padding-based validity for each sample in batch
-        inferred_rgb_valid = []
-        inferred_sonar_valid = []
+        # Compute hard invalid flags based on severe padding only
+        hard_rgb_invalid = []
+        hard_sonar_invalid = []
 
         for i in range(batch_size):
             # Compute RGB padding ratio
             rgb_meta = rgb_metadata_list[i] if i < len(rgb_metadata_list) else {}
             rgb_padding_ratio = self._compute_padding_ratio(rgb_meta)
-            rgb_valid = rgb_padding_ratio < VALIDITY_PADDING_THRESHOLD
+            rgb_hard_invalid = rgb_padding_ratio >= HARD_INVALID_PADDING_THRESHOLD
 
             # Compute Sonar padding ratio
             sonar_meta = sonar_metadata_list[i] if i < len(sonar_metadata_list) else {}
             sonar_padding_ratio = self._compute_padding_ratio(sonar_meta)
-            sonar_valid = sonar_padding_ratio < VALIDITY_PADDING_THRESHOLD
+            sonar_hard_invalid = sonar_padding_ratio >= HARD_INVALID_PADDING_THRESHOLD
 
-            inferred_rgb_valid.append(rgb_valid)
-            inferred_sonar_valid.append(sonar_valid)
+            hard_rgb_invalid.append(rgb_hard_invalid)
+            hard_sonar_invalid.append(sonar_hard_invalid)
 
-        # Convert to tensors
-        is_rgb_valid = torch.tensor(inferred_rgb_valid, dtype=torch.bool, device=self.device)
-        is_sonar_valid = torch.tensor(inferred_sonar_valid, dtype=torch.bool, device=self.device)
+        # Only force invalid for severe padding cases; otherwise let model infer
+        # None means: "let ConditionalDCMA use its learned routing confidence"
+        # False means: "force this modality to be treated as invalid"
+        has_any_hard_invalid = any(hard_rgb_invalid) or any(hard_sonar_invalid)
+
+        if has_any_hard_invalid:
+            # Some samples have severe padding - provide explicit validity
+            # True = let model decide, False = force invalid
+            is_rgb_valid = torch.tensor(
+                [not inv for inv in hard_rgb_invalid],
+                dtype=torch.bool, device=self.device
+            )
+            is_sonar_valid = torch.tensor(
+                [not inv for inv in hard_sonar_invalid],
+                dtype=torch.bool, device=self.device
+            )
+        else:
+            # No severe padding - let model infer validity via routing confidence
+            is_rgb_valid = None
+            is_sonar_valid = None
 
         # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Extract attention masks
         # Attention masks mark valid (non-padded) regions in search crops
@@ -514,12 +543,15 @@ class TrackingEvaluator:
         if sonar_template_att_mask is not None:
             sonar_template_att_mask = sonar_template_att_mask.to(self.device)
 
-        # Run model with SELF-INFERRED validity (not GT!)
-        # This enables ConditionalDCMA to properly bypass unreliable modalities
+        # CRITICAL FIX (Audit 2025121001 Issue 9): Model-first validity inference
+        # is_rgb_valid/is_sonar_valid:
+        #   - None: Let model infer via ConditionalDCMA routing confidence (normal case)
+        #   - False: Force invalid (only when padding >= 50%, hard fallback)
+        #   - True: Let model decide (non-severely-padded samples in mixed batch)
         outputs = self.model(
             rgb_template, rgb_search, sonar_template, sonar_search,
-            is_rgb_valid=is_rgb_valid,  # Self-inferred from padding ratio
-            is_sonar_valid=is_sonar_valid,  # Self-inferred from padding ratio
+            is_rgb_valid=is_rgb_valid,  # None or hard-fallback tensor
+            is_sonar_valid=is_sonar_valid,  # None or hard-fallback tensor
             # has_object_*: Not needed in evaluation (only for training loss)
             metadata=metadata,
             return_losses=False,  # Evaluation mode (no loss computation)
@@ -712,61 +744,59 @@ class TrackingEvaluator:
         # padding ratio and objectness for SOTA-aligned fusion routing.
         # Priority for gating: validity_final > validity > confidence > quality
         #
-        # Thresholds (from audit spec):
-        # - RGB validity: 0.35 (more lenient, RGB typically more reliable)
-        # - Sonar validity: 0.4 (stricter, sonar more prone to false positives)
-        # - Fallback confidence: 0.3 (same as before)
-        RGB_VALIDITY_THRESHOLD = 0.35
-        SONAR_VALIDITY_THRESHOLD = 0.4
-        CONFIDENCE_VALIDITY_THRESHOLD = 0.3  # Fallback when validity not available
+        # CRITICAL FIX (Audit 2025121001 Issue 12): Thresholds are now configurable
+        # Default behavior: gating disabled (threshold=0.0) to evaluate all predictions
+        # Enable with enable_validity_gating=True and set appropriate thresholds
 
         # Extract RGB validity from head outputs (preferred) or fallback to confidence
         rgb_valid_values = []
         if 'rgb_validity' in outputs and outputs['rgb_validity'] is not None:
             # CRITICAL FIX: Use head validity (includes padding + objectness learning)
             rgb_valid_values = outputs['rgb_validity'].cpu().numpy().tolist()
-            rgb_threshold = RGB_VALIDITY_THRESHOLD
+            rgb_threshold = self.rgb_validity_threshold
         elif 'rgb_objectness' in outputs and outputs['rgb_objectness'] is not None:
             rgb_valid_values = outputs['rgb_objectness'].cpu().numpy().tolist()
-            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            rgb_threshold = self.confidence_validity_threshold
         elif 'rgb_confidence' in outputs and outputs['rgb_confidence'] is not None:
             rgb_valid_values = outputs['rgb_confidence'].cpu().numpy().tolist()
-            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            rgb_threshold = self.confidence_validity_threshold
         elif 'rgb_quality' in outputs and outputs['rgb_quality'] is not None:
             rgb_valid_values = outputs['rgb_quality'].cpu().numpy().tolist()
-            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            rgb_threshold = self.confidence_validity_threshold
         else:
-            rgb_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            rgb_threshold = self.confidence_validity_threshold
 
         # Extract Sonar validity from head outputs (preferred) or fallback to confidence
         sonar_valid_values = []
         if 'sonar_validity' in outputs and outputs['sonar_validity'] is not None:
             # CRITICAL FIX: Use head validity (includes padding + objectness learning)
             sonar_valid_values = outputs['sonar_validity'].cpu().numpy().tolist()
-            sonar_threshold = SONAR_VALIDITY_THRESHOLD
+            sonar_threshold = self.sonar_validity_threshold
         elif 'sonar_objectness' in outputs and outputs['sonar_objectness'] is not None:
             sonar_valid_values = outputs['sonar_objectness'].cpu().numpy().tolist()
-            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            sonar_threshold = self.confidence_validity_threshold
         elif 'sonar_confidence' in outputs and outputs['sonar_confidence'] is not None:
             sonar_valid_values = outputs['sonar_confidence'].cpu().numpy().tolist()
-            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            sonar_threshold = self.confidence_validity_threshold
         elif 'sonar_quality' in outputs and outputs['sonar_quality'] is not None:
             sonar_valid_values = outputs['sonar_quality'].cpu().numpy().tolist()
-            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            sonar_threshold = self.confidence_validity_threshold
         else:
-            sonar_threshold = CONFIDENCE_VALIDITY_THRESHOLD
+            sonar_threshold = self.confidence_validity_threshold
 
-        # Apply validity/confidence gating to predictions
+        # Apply validity/confidence gating to predictions (only if enabled)
+        # CRITICAL FIX (Audit 2025121001 Issue 12): Gating controlled by enable_validity_gating
         # Replace bbox with None if validity is below threshold
-        if rgb_valid_values and len(rgb_valid_values) == len(predictions.get('rgb_pred', [])):
-            for i, val in enumerate(rgb_valid_values):
-                if val < rgb_threshold:
-                    predictions['rgb_pred'][i] = None  # Mark as invalid prediction
+        if self.enable_validity_gating:
+            if rgb_valid_values and len(rgb_valid_values) == len(predictions.get('rgb_pred', [])):
+                for i, val in enumerate(rgb_valid_values):
+                    if val < rgb_threshold:
+                        predictions['rgb_pred'][i] = None  # Mark as invalid prediction
 
-        if sonar_valid_values and len(sonar_valid_values) == len(predictions.get('sonar_pred', [])):
-            for i, val in enumerate(sonar_valid_values):
-                if val < sonar_threshold:
-                    predictions['sonar_pred'][i] = None  # Mark as invalid prediction
+            if sonar_valid_values and len(sonar_valid_values) == len(predictions.get('sonar_pred', [])):
+                for i, val in enumerate(sonar_valid_values):
+                    if val < sonar_threshold:
+                        predictions['sonar_pred'][i] = None  # Mark as invalid prediction
 
         # Store validity values for analysis/debugging
         predictions['rgb_validity'] = rgb_valid_values

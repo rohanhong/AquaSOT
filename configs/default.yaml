@@ -56,6 +56,19 @@ data:
     random_erase: 0.3         # Random erasing probability
     erase_ratio: [0.02, 0.2]  # Erasing area ratio range
 
+  # CRITICAL FIX (Audit 2025121001 Issue 13): Modality dropout for robustness training
+  # Randomly drops modalities during training to train single/zero-modality operation
+  # This helps the model learn to handle sensor failures and partial observability
+  modality_dropout:
+    enabled: false            # Master switch for modality dropout
+    p_drop_rgb: 0.1           # Probability of dropping RGB modality
+    p_drop_sonar: 0.1         # Probability of dropping Sonar modality
+    p_drop_both: 0.02         # Probability of dropping both modalities
+    mode: zero                # Dropout mode: 'zero' or 'noise'
+    # Adaptive dropout settings (curriculum learning)
+    adaptive: false           # Enable adaptive dropout with curriculum
+    warmup_epochs: 50         # Epochs to ramp up dropout rates
+
   normalize:
     rgb_mean: [0.485, 0.456, 0.406]  # ImageNet RGB mean
     rgb_std: [0.229, 0.224, 0.225]   # ImageNet RGB std
@@ -95,13 +108,21 @@ model:
     embed_dim: 768            # Fusion embedding dimension
     num_heads: 8              # Multi-head attention heads
     num_layers: 2             # Number of fusion layers
-    use_quality_gating: true  # Enable quality-based gating
-    quality_threshold: 0.5    # Quality gating threshold
+    # CRITICAL FIX (Audit 2025121001 Issue 15): Removed use_quality_gating/quality_threshold
+    # These fields were not implemented in ConditionalDCMA. Routing now uses:
+    # 1. Head validity outputs (rgb_validity/sonar_validity) - preferred
+    # 2. Backbone confidence (routing_rgb_confidence/routing_sonar_confidence) - fallback
+    confidence_threshold: 0.3  # Routing confidence threshold (used when validity not available)
     use_deformable: true      # Enable deformable attention
     num_points: 4             # Deformable attention points
     num_levels: 1             # Feature pyramid levels
     component_consistency_weight: 0.1       # Component consistency loss weight
     representation_consistency_weight: 0.1  # Representation consistency loss weight
+    # CRITICAL FIX (Audit 2025121001 Issue 8): IdentityFusion for single-modality ablation
+    # To run single-modality experiments without cross-modal fusion, use:
+    #   type: identity_fusion
+    #   embed_dim: 768
+    #   active_modality: rgb  # or 'sonar' for sonar-only experiments
 
   heads:
     rgb_box:
@@ -156,13 +177,18 @@ training:
   loss_weights:
     rgb_box: 1.0              # RGB box regression loss weight
     rgb_conf: 1.0             # RGB confidence loss weight
+    # CRITICAL FIX (Audit 2025121001 Issue 14): Add validity loss weights for fusion routing
+    rgb_validity: 1.0         # RGB validity loss weight (head-validity for fusion routing)
     sonar_box: 1.0            # Sonar box regression loss weight
     sonar_conf: 1.0           # Sonar confidence loss weight
+    sonar_validity: 1.0       # Sonar validity loss weight (head-validity for fusion routing)
     aux_rgb: 0.3              # Auxiliary RGB loss weight
     aux_sonar: 0.3            # Auxiliary Sonar loss weight
     geometric_consistency: 0.5      # Geometric consistency loss weight
     representation_consistency: 0.3 # Representation consistency loss weight
     view_consistency: 0.1     # View consistency loss weight
+    # CRITICAL FIX (Audit 2025121001 Issue 4): Routing validity loss for ConditionalDCMA
+    routing_validity: 0.5     # Routing validity loss (BCE on confidence estimators)
 
   loss_schedule:
     enabled: false            # Enable loss weight scheduling
@@ -211,6 +237,15 @@ evaluation:
   metrics: [success_auc, precision_20, avg_center_error, mean_iou, success_0.5]
   evaluate_rgb: true          # Evaluate RGB predictions
   evaluate_sonar: true        # Evaluate Sonar predictions
+
+  # CRITICAL FIX (Audit 2025121001 Issue 12): Configurable validity gating
+  # Validity gating filters predictions based on learned validity scores
+  # Default: disabled to evaluate all predictions without filtering
+  validity_gating:
+    enabled: false            # Master switch for validity gating
+    rgb_threshold: 0.35       # RGB validity threshold (when enabled)
+    sonar_threshold: 0.40     # Sonar validity threshold (when enabled)
+    confidence_fallback: 0.30 # Fallback threshold for confidence/quality
 
   template_update:
     enabled: false            # Enable template update during tracking

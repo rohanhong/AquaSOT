@@ -740,6 +740,17 @@ class TemplateSearchDataset(Dataset):
         # - dual-modality: target visible in both sensors (is_valid=True)
         # Do not recompute here to preserve base_dataset's visibility logic
         is_valid = search_sample.get('is_valid', True)
+        is_valid_rgb = search_sample['is_rgb_valid']
+        is_valid_sonar = search_sample['is_sonar_valid']
+
+        # CRITICAL FIX (Audit 2025121001 Issue 6): Negative samples must set is_valid flags to False
+        # This ensures ConditionalDCMA routes correctly (bypass/zero-modality branch) and
+        # fusion/consistency losses are zeroed out for negative samples.
+        # The has_object flags are already set to False above (line 722-728).
+        if is_negative_sample:
+            is_valid = False
+            is_valid_rgb = False
+            is_valid_sonar = False
 
         return {
             # Init templates (anchor, from first frame)
@@ -772,9 +783,11 @@ class TemplateSearchDataset(Dataset):
             'rgb_template_dyn_att_mask': rgb_template_dyn_att_mask,     # [H, W] dyn template mask
             'sonar_template_dyn_att_mask': sonar_template_dyn_att_mask, # [H, W] dyn template mask
             # Validity flags
+            # CRITICAL FIX (Audit 2025121001 Issue 6): Use pre-computed validity flags
+            # that are set to False for negative samples
             'is_valid': is_valid,                       # General validity flag
-            'is_valid_rgb': search_sample['is_rgb_valid'],
-            'is_valid_sonar': search_sample['is_sonar_valid'],
+            'is_valid_rgb': is_valid_rgb,               # RGB validity (False for negative samples)
+            'is_valid_sonar': is_valid_sonar,           # Sonar validity (False for negative samples)
             'has_object_rgb': has_object_rgb,           # RGB objectness flag
             'has_object_sonar': has_object_sonar,       # Sonar objectness flag
             'has_object': has_object,                   # Combined objectness flag

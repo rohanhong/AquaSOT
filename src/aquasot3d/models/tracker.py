@@ -29,10 +29,16 @@ import logging
 
 from aquasot3d.core import BaseModule, TRACKER_REGISTRY
 from aquasot3d.models.backbones import BackboneFactory, MultiModalBackbone
-from aquasot3d.models.fusion import build_dcma, build_dcma_lite, build_conditional_dcma, ConditionalDCMA
+from aquasot3d.models.fusion import (
+    build_dcma, build_dcma_lite, build_conditional_dcma, ConditionalDCMA,
+    # CRITICAL FIX (Audit 2025121001 Issue 8): IdentityFusion for single-modality ablation
+    build_identity_fusion, IdentityFusion
+)
 from aquasot3d.models.heads import (
     build_box_head,
 )
+# CRITICAL FIX (Audit 2025121001 Issue 13): ModalityDropout for robustness training
+from aquasot3d.dataloader.transforms.modality_dropout import ModalityDropout, AdaptiveModalityDropout
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +132,17 @@ class AquaSOT3DTracker(BaseModule):
                 fusion_config_copy.pop('rgb_channels', None)
                 fusion_config_copy.pop('sonar_channels', None)
                 self.fusion = build_conditional_dcma(
+                    rgb_channels=self.rgb_feat_dim,
+                    sonar_channels=self.sonar_feat_dim,
+                    **fusion_config_copy
+                )
+            elif fusion_type == 'identity_fusion':
+                # CRITICAL FIX (Audit 2025121001 Issue 8): IdentityFusion for single-modality ablation
+                # IdentityFusion passes through single-modality features without cross-modal fusion.
+                # Use active_modality config to select which modality to use ('rgb' or 'sonar').
+                fusion_config_copy.pop('rgb_channels', None)
+                fusion_config_copy.pop('sonar_channels', None)
+                self.fusion = build_identity_fusion(
                     rgb_channels=self.rgb_feat_dim,
                     sonar_channels=self.sonar_feat_dim,
                     **fusion_config_copy
@@ -229,6 +246,38 @@ class AquaSOT3DTracker(BaseModule):
         # =====================================================
         # Template-search paradigm has no internal state.
         # Template updates are managed externally via OnlineTracker.
+
+        # =====================================================
+        # 7. ModalityDropout for Robustness Training
+        # =====================================================
+        # CRITICAL FIX (Audit 2025121001 Issue 13): ModalityDropout for robustness training
+        # Randomly drops modalities during training to train single/zero-modality operation
+        modality_dropout_config = kwargs.get('modality_dropout', {})
+        if modality_dropout_config.get('enabled', False):
+            if modality_dropout_config.get('adaptive', False):
+                # Adaptive dropout with curriculum learning
+                self.modality_dropout = AdaptiveModalityDropout(
+                    p_drop_rgb_start=modality_dropout_config.get('p_drop_rgb', 0.05),
+                    p_drop_rgb_end=modality_dropout_config.get('p_drop_rgb', 0.1) * 2,
+                    p_drop_sonar_start=modality_dropout_config.get('p_drop_sonar', 0.05),
+                    p_drop_sonar_end=modality_dropout_config.get('p_drop_sonar', 0.1) * 2,
+                    p_drop_both_start=modality_dropout_config.get('p_drop_both', 0.01),
+                    p_drop_both_end=modality_dropout_config.get('p_drop_both', 0.02) * 2,
+                    warmup_epochs=modality_dropout_config.get('warmup_epochs', 50),
+                    mode=modality_dropout_config.get('mode', 'zero')
+                )
+                self.logger.info(f"Initialized AdaptiveModalityDropout: {self.modality_dropout}")
+            else:
+                # Standard modality dropout
+                self.modality_dropout = ModalityDropout(
+                    p_drop_rgb=modality_dropout_config.get('p_drop_rgb', 0.1),
+                    p_drop_sonar=modality_dropout_config.get('p_drop_sonar', 0.1),
+                    p_drop_both=modality_dropout_config.get('p_drop_both', 0.02),
+                    mode=modality_dropout_config.get('mode', 'zero')
+                )
+                self.logger.info(f"Initialized ModalityDropout: {self.modality_dropout}")
+        else:
+            self.modality_dropout = None
 
         self.logger.info(
             f"Initialized AquaSOT3DTracker: "
@@ -994,6 +1043,33 @@ class AquaSOT3DTracker(BaseModule):
                     aux_outputs['aux_sonar_loss'] = aux_sonar_loss * 0.3  # Lower weight
 
         # =====================================================
+        # Stage 1.75: Modality Dropout (Training Only)
+        # =====================================================
+        # CRITICAL FIX (Audit 2025121001 Issue 13): Apply modality dropout
+        # Randomly drops modalities to train single/zero-modality robustness.
+        # Applied AFTER auxiliary heads (so they always see original features)
+        # but BEFORE fusion (so fusion learns to handle missing modalities).
+        if self.training and self.modality_dropout is not None:
+            # Get current epoch for adaptive dropout (if applicable)
+            current_epoch = getattr(self, '_current_epoch', 0)
+
+            # Apply modality dropout to features
+            rgb_features, sonar_features, dropout_is_rgb_valid, dropout_is_sonar_valid = \
+                self.modality_dropout(rgb_features, sonar_features, current_epoch)
+
+            # Update validity flags based on dropout
+            # If a modality was dropped, mark it as invalid for fusion routing
+            if is_rgb_valid is not None:
+                is_rgb_valid = is_rgb_valid & dropout_is_rgb_valid
+            else:
+                is_rgb_valid = dropout_is_rgb_valid.expand(rgb_features.shape[0])
+
+            if is_sonar_valid is not None:
+                is_sonar_valid = is_sonar_valid & dropout_is_sonar_valid
+            else:
+                is_sonar_valid = dropout_is_sonar_valid.expand(sonar_features.shape[0])
+
+        # =====================================================
         # Stage 2: Cross-Modal Fusion
         # =====================================================
         # CRITICAL FIX (Audit 2025112508 Finding 2):
@@ -1098,6 +1174,11 @@ class AquaSOT3DTracker(BaseModule):
             # Add cross-view consistency loss
             if 'view_consistency_loss' in fusion_outputs:
                 losses['view_consistency'] = fusion_outputs['view_consistency_loss']
+
+            # CRITICAL FIX (Audit 2025121001 Issue 4): Routing validity loss from ConditionalDCMA
+            # This supervises the confidence estimators for automatic modality routing
+            if 'routing_validity_loss' in fusion_outputs:
+                losses['routing_validity_loss'] = fusion_outputs['routing_validity_loss']
 
             # ARCHITECTURE UPDATE (Audit 2025112313 - Auxiliary Heads):
             # Add auxiliary losses for feature degradation prevention
