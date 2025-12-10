@@ -148,6 +148,11 @@ class ViTBackbone(BaseModule):
         self.pos_embed_z = nn.Parameter(torch.zeros(1, self.num_patches_template, self.embed_dim))
         self.pos_embed_x = nn.Parameter(torch.zeros(1, self.num_patches_search, self.embed_dim))
 
+        # DUAL-TEMPLATE SUPPORT (MixFormer-style):
+        # Dynamic template has separate positional embedding to distinguish from init template
+        # This enables the model to learn different attention patterns for init vs dynamic
+        self.pos_embed_z_dyn = nn.Parameter(torch.zeros(1, self.num_patches_template, self.embed_dim))
+
         # Initialize from pretrained pos_embed via interpolation
         if 'pretrained_pos_embed' in locals():
             # Remove cls token if exists
@@ -156,6 +161,11 @@ class ViTBackbone(BaseModule):
 
             # Interpolate to template size (may not need if already correct size)
             self.pos_embed_z.data = self._interpolate_pos_embed(
+                pretrained_pos_embed, self.num_patches_template
+            )
+
+            # Dynamic template uses same initialization as init template
+            self.pos_embed_z_dyn.data = self._interpolate_pos_embed(
                 pretrained_pos_embed, self.num_patches_template
             )
 
@@ -545,6 +555,152 @@ class ViTBackbone(BaseModule):
         feat_search = tokens[:, N_z:, :]    # [B, N_x, D]
 
         return feat_template, feat_search
+
+    def forward_dual_template(
+        self,
+        x_template_init: torch.Tensor,
+        x_template_dyn: torch.Tensor,
+        x_search: torch.Tensor,
+        template_init_att_mask: Optional[torch.Tensor] = None,
+        template_dyn_att_mask: Optional[torch.Tensor] = None,
+        search_att_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        MixFormer-style dual-template forward pass.
+
+        Processes [template_init, template_dyn, search] jointly through transformer,
+        enabling cross-attention between all three regions.
+
+        Args:
+            x_template_init: Initial template (first frame) [B, C, H, W]
+            x_template_dyn: Dynamic template (updated) [B, C, H, W]
+            x_search: Search region [B, C, H, W]
+            template_init_att_mask: Attention mask for init template [B, H, W]
+            template_dyn_att_mask: Attention mask for dynamic template [B, H, W]
+            search_att_mask: Attention mask for search [B, H, W]
+
+        Returns:
+            Tuple of (feat_template_init, feat_template_dyn, feat_search):
+                - feat_template_init: [B, N_z, D]
+                - feat_template_dyn: [B, N_z, D]
+                - feat_search: [B, N_x, D]
+        """
+        B = x_template_init.shape[0]
+        device = x_template_init.device
+
+        # Apply channel adapter if needed (for Sonar)
+        if self.channel_adapter is not None:
+            x_template_init = self.channel_adapter(x_template_init)
+            x_template_dyn = self.channel_adapter(x_template_dyn)
+            x_search = self.channel_adapter(x_search)
+
+        # === Step 1: Patch embedding ===
+        tokens_z_init = self.vit.patch_embed(x_template_init)  # [B, N_z, D]
+        tokens_z_dyn = self.vit.patch_embed(x_template_dyn)    # [B, N_z, D]
+        tokens_x = self.vit.patch_embed(x_search)              # [B, N_x, D]
+
+        # Handle dynamic_img_size mode (flatten if needed)
+        if tokens_z_init.dim() == 4:
+            B, H_z, W_z, D = tokens_z_init.shape
+            tokens_z_init = tokens_z_init.reshape(B, H_z * W_z, D)
+        if tokens_z_dyn.dim() == 4:
+            B, H_z, W_z, D = tokens_z_dyn.shape
+            tokens_z_dyn = tokens_z_dyn.reshape(B, H_z * W_z, D)
+        if tokens_x.dim() == 4:
+            B, H_x, W_x, D = tokens_x.shape
+            tokens_x = tokens_x.reshape(B, H_x * W_x, D)
+
+        N_z = tokens_z_init.shape[1]  # num_patches_template
+        N_x = tokens_x.shape[1]       # num_patches_search
+
+        # === Step 2: Add SEPARATE positional embeddings ===
+        # Init template: pos_embed_z
+        # Dynamic template: pos_embed_z_dyn (learnable, distinct from init)
+        # Search: pos_embed_x
+        tokens_z_init = tokens_z_init + self.pos_embed_z      # [B, N_z, D]
+        tokens_z_dyn = tokens_z_dyn + self.pos_embed_z_dyn    # [B, N_z, D]
+        tokens_x = tokens_x + self.pos_embed_x                # [B, N_x, D]
+
+        # === Step 3: Process attention masks ===
+        mask_z_init = None
+        mask_z_dyn = None
+        mask_x = None
+
+        if template_init_att_mask is not None:
+            if template_init_att_mask.dim() == 3:
+                mask_z_init = self._convert_spatial_mask_to_token_mask(
+                    template_init_att_mask, self.template_size, B
+                )
+            else:
+                mask_z_init = template_init_att_mask.float()
+        else:
+            mask_z_init = torch.ones(B, N_z, device=device)
+
+        if template_dyn_att_mask is not None:
+            if template_dyn_att_mask.dim() == 3:
+                mask_z_dyn = self._convert_spatial_mask_to_token_mask(
+                    template_dyn_att_mask, self.template_size, B
+                )
+            else:
+                mask_z_dyn = template_dyn_att_mask.float()
+        else:
+            mask_z_dyn = torch.ones(B, N_z, device=device)
+
+        if search_att_mask is not None:
+            if search_att_mask.dim() == 3:
+                mask_x = self._convert_spatial_mask_to_token_mask(
+                    search_att_mask, self.search_size, B
+                )
+            else:
+                mask_x = search_att_mask.float()
+        else:
+            mask_x = torch.ones(B, N_x, device=device)
+
+        # === Step 4: Apply token mask AFTER pos_embed ===
+        tokens_z_init = tokens_z_init * mask_z_init.unsqueeze(-1)
+        tokens_z_dyn = tokens_z_dyn * mask_z_dyn.unsqueeze(-1)
+        tokens_x = tokens_x * mask_x.unsqueeze(-1)
+
+        # === Step 5: Concatenate for one-stream processing ===
+        # Order: [T_init | T_dyn | Search]
+        tokens = torch.cat([tokens_z_init, tokens_z_dyn, tokens_x], dim=1)
+        combined_mask = torch.cat([mask_z_init, mask_z_dyn, mask_x], dim=1)
+
+        # === Step 6: Create additive attention bias ===
+        N_total = 2 * N_z + N_x
+        key_padding_mask = (combined_mask < 0.5)
+        attn_bias = torch.zeros(B, 1, 1, N_total, device=device, dtype=tokens.dtype)
+        attn_bias.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+
+        # Apply position dropout
+        if hasattr(self.vit, 'pos_drop'):
+            tokens = self.vit.pos_drop(tokens)
+
+        # === Step 7: Transformer blocks with attention masking ===
+        if hasattr(self.vit, 'blocks'):
+            for blk in self.vit.blocks:
+                try:
+                    if hasattr(blk, 'attn') and hasattr(blk.attn, 'forward'):
+                        tokens = self._block_forward_with_mask(blk, tokens, attn_bias)
+                    else:
+                        tokens = blk(tokens)
+                except TypeError:
+                    tokens = blk(tokens)
+
+        # === Step 8: Re-apply mask after transformer ===
+        tokens = tokens * combined_mask.unsqueeze(-1)
+
+        # === Step 9: Final layer norm ===
+        if hasattr(self.vit, 'norm'):
+            tokens = self.vit.norm(tokens)
+        tokens = tokens * combined_mask.unsqueeze(-1)
+
+        # === Step 10: Split back into three parts ===
+        feat_template_init = tokens[:, :N_z, :]           # [B, N_z, D]
+        feat_template_dyn = tokens[:, N_z:2*N_z, :]       # [B, N_z, D]
+        feat_search = tokens[:, 2*N_z:, :]                # [B, N_x, D]
+
+        return feat_template_init, feat_template_dyn, feat_search
 
     def _block_forward_with_mask(
         self,

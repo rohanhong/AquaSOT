@@ -385,6 +385,12 @@ class Trainer:
             # Removed backward compatibility for frame sequence format (legacy temporal architecture)
 
             # Extract template-search pairs
+            # DUAL-TEMPLATE SUPPORT (MixFormer-style):
+            # Check if dual templates are available (use_dual_template=True or rgb_template_dyn present)
+            use_dual_template = batch.get('use_dual_template', False)
+            if isinstance(use_dual_template, torch.Tensor):
+                use_dual_template = use_dual_template[0].item() if use_dual_template.numel() > 0 else False
+
             if 'rgb_template' in batch and batch['rgb_template'] is not None:
                 # Template-search format (RGB available)
                 batch_size = batch['rgb_template'].shape[0]
@@ -392,6 +398,19 @@ class Trainer:
                 rgb_search = batch['rgb_search']  # [B, 3, 256, 256] OSTrack-256
                 sonar_template = batch.get('sonar_template', None)  # [B, 1, 128, 128]
                 sonar_search = batch.get('sonar_search', None)  # [B, 1, 256, 256]
+
+                # Dual-template: extract dynamic templates
+                if use_dual_template:
+                    rgb_template_dyn = batch.get('rgb_template_dyn', rgb_template)
+                    sonar_template_dyn = batch.get('sonar_template_dyn', sonar_template)
+                    rgb_template_dyn_att_mask = batch.get('rgb_template_dyn_att_mask', None)
+                    sonar_template_dyn_att_mask = batch.get('sonar_template_dyn_att_mask', None)
+                else:
+                    rgb_template_dyn = None
+                    sonar_template_dyn = None
+                    rgb_template_dyn_att_mask = None
+                    sonar_template_dyn_att_mask = None
+
             elif 'sonar_template' in batch and batch['sonar_template'] is not None:
                 # Template-search format (Sonar only)
                 batch_size = batch['sonar_template'].shape[0]
@@ -399,6 +418,18 @@ class Trainer:
                 rgb_search = None
                 sonar_template = batch['sonar_template']  # [B, 1, 128, 128] OSTrack-256
                 sonar_search = batch['sonar_search']  # [B, 1, 256, 256] OSTrack-256
+
+                # Dual-template for sonar-only mode
+                if use_dual_template:
+                    rgb_template_dyn = None
+                    sonar_template_dyn = batch.get('sonar_template_dyn', sonar_template)
+                    rgb_template_dyn_att_mask = None
+                    sonar_template_dyn_att_mask = batch.get('sonar_template_dyn_att_mask', None)
+                else:
+                    rgb_template_dyn = None
+                    sonar_template_dyn = None
+                    rgb_template_dyn_att_mask = None
+                    sonar_template_dyn_att_mask = None
             else:
                 raise RuntimeError(
                     "Batch must contain template-search format with keys: "
@@ -550,8 +581,82 @@ class Trainer:
             sonar_template_att_mask = batch.get('sonar_template_att_mask', None)
 
             # Forward pass with optional AMP
+            # DUAL-TEMPLATE SUPPORT: Use forward_dual_template when available
             if self.use_amp:
                 with autocast():
+                    if use_dual_template and hasattr(self.model, 'forward_dual_template'):
+                        outputs = self.model.forward_dual_template(
+                            rgb_template_init=rgb_template,
+                            rgb_template_dyn=rgb_template_dyn,
+                            rgb_search=rgb_search,
+                            sonar_template_init=sonar_template,
+                            sonar_template_dyn=sonar_template_dyn,
+                            sonar_search=sonar_search,
+                            gt_boxes=gt_boxes,
+                            return_losses=True,
+                            metadata=metadata,
+                            is_rgb_valid=is_valid_rgb,
+                            is_sonar_valid=is_valid_sonar,
+                            has_object_rgb=has_object_rgb,
+                            has_object_sonar=has_object_sonar,
+                            has_object=has_object,
+                            rgb_att_mask=rgb_att_mask,
+                            sonar_att_mask=sonar_att_mask,
+                            rgb_template_init_att_mask=rgb_template_att_mask,
+                            rgb_template_dyn_att_mask=rgb_template_dyn_att_mask,
+                            sonar_template_init_att_mask=sonar_template_att_mask,
+                            sonar_template_dyn_att_mask=sonar_template_dyn_att_mask
+                        )
+                    else:
+                        outputs = self.model(
+                            rgb_template,
+                            rgb_search,
+                            sonar_template,
+                            sonar_search,
+                            gt_boxes=gt_boxes,
+                            return_losses=True,
+                            metadata=metadata,
+                            is_rgb_valid=is_valid_rgb,
+                            is_sonar_valid=is_valid_sonar,
+                            has_object_rgb=has_object_rgb,
+                            has_object_sonar=has_object_sonar,
+                            has_object=has_object,
+                            rgb_att_mask=rgb_att_mask,
+                            sonar_att_mask=sonar_att_mask,
+                            rgb_template_att_mask=rgb_template_att_mask,
+                            sonar_template_att_mask=sonar_template_att_mask
+                        )
+                    # Use LossManager for all losses (handles model-internal losses with scheduling)
+                    total_loss, loss_dict = self.loss_manager.compute_losses(
+                        outputs,
+                        batch,
+                        epoch=epoch
+                    )
+            else:
+                if use_dual_template and hasattr(self.model, 'forward_dual_template'):
+                    outputs = self.model.forward_dual_template(
+                        rgb_template_init=rgb_template,
+                        rgb_template_dyn=rgb_template_dyn,
+                        rgb_search=rgb_search,
+                        sonar_template_init=sonar_template,
+                        sonar_template_dyn=sonar_template_dyn,
+                        sonar_search=sonar_search,
+                        gt_boxes=gt_boxes,
+                        return_losses=True,
+                        metadata=metadata,
+                        is_rgb_valid=is_valid_rgb,
+                        is_sonar_valid=is_valid_sonar,
+                        has_object_rgb=has_object_rgb,
+                        has_object_sonar=has_object_sonar,
+                        has_object=has_object,
+                        rgb_att_mask=rgb_att_mask,
+                        sonar_att_mask=sonar_att_mask,
+                        rgb_template_init_att_mask=rgb_template_att_mask,
+                        rgb_template_dyn_att_mask=rgb_template_dyn_att_mask,
+                        sonar_template_init_att_mask=sonar_template_att_mask,
+                        sonar_template_dyn_att_mask=sonar_template_dyn_att_mask
+                    )
+                else:
                     outputs = self.model(
                         rgb_template,
                         rgb_search,
@@ -570,31 +675,6 @@ class Trainer:
                         rgb_template_att_mask=rgb_template_att_mask,
                         sonar_template_att_mask=sonar_template_att_mask
                     )
-                    # Use LossManager for all losses (handles model-internal losses with scheduling)
-                    total_loss, loss_dict = self.loss_manager.compute_losses(
-                        outputs,
-                        batch,
-                        epoch=epoch
-                    )
-            else:
-                outputs = self.model(
-                    rgb_template,
-                    rgb_search,
-                    sonar_template,
-                    sonar_search,
-                    gt_boxes=gt_boxes,
-                    return_losses=True,
-                    metadata=metadata,
-                    is_rgb_valid=is_valid_rgb,
-                    is_sonar_valid=is_valid_sonar,
-                    has_object_rgb=has_object_rgb,
-                    has_object_sonar=has_object_sonar,
-                    has_object=has_object,
-                    rgb_att_mask=rgb_att_mask,
-                    sonar_att_mask=sonar_att_mask,
-                    rgb_template_att_mask=rgb_template_att_mask,
-                    sonar_template_att_mask=sonar_template_att_mask
-                )
                 # Use LossManager for all losses (handles model-internal losses with scheduling)
                 total_loss, loss_dict = self.loss_manager.compute_losses(
                     outputs,

@@ -196,6 +196,12 @@ class TemplateSearchDataset(Dataset):
         self.negative_sample_prob = 0.1  # 10% of samples are negative
         self.negative_offset_range = (2.0, 4.0)  # Offset center by 2-4x bbox size
 
+        # DUAL-TEMPLATE SUPPORT (MixFormer-style):
+        # When enabled, returns two templates per modality:
+        # - template_init: First frame template (anchor, prevents drift)
+        # - template_dyn: Dynamic template (sampled from recent high-quality frames)
+        self.use_dual_template = (template_update_policy == 'mixformer')
+
         # Multi-sequence support (PRESERVED from FrameSequenceDataset)
         self.is_multi_sequence = isinstance(
             base_dataset, MultiSequenceRGBSonarDataset
@@ -264,9 +270,26 @@ class TemplateSearchDataset(Dataset):
         # 1. Sample search frame (current frame = index)
         search_sample = self.base_dataset[index]
 
-        # 2. Sample template frame based on policy
-        template_idx = self._sample_template_index(index)
-        template_sample = self.base_dataset[template_idx]
+        # 2. Sample template frame(s) based on policy
+        # DUAL-TEMPLATE SUPPORT (MixFormer-style):
+        if self.use_dual_template:
+            # Init template: first frame (anchor)
+            template_init_idx = self._sample_init_template_index(index)
+            template_init_sample = self.base_dataset[template_init_idx]
+            # Dyn template: recent frame (adaptive)
+            template_dyn_idx = self._sample_dyn_template_index(index)
+            template_dyn_sample = self.base_dataset[template_dyn_idx]
+            # For backward compatibility, use init as the "primary" template
+            template_idx = template_init_idx
+            template_sample = template_init_sample
+        else:
+            # Single template mode
+            template_idx = self._sample_template_index(index)
+            template_sample = self.base_dataset[template_idx]
+            template_init_idx = template_idx
+            template_init_sample = template_sample
+            template_dyn_idx = template_idx
+            template_dyn_sample = template_sample
 
         # CRITICAL FIX (Audit 2025112401 Finding 3):
         # Apply augmentation BEFORE letterbox to ensure bbox-aware transforms
@@ -302,6 +325,37 @@ class TemplateSearchDataset(Dataset):
             sonar_template = None
             sonar_template_att_mask = np.zeros((self.template_size, self.template_size), dtype=np.float32)
             sonar_crop_meta = None
+
+        # 3b. Process DYNAMIC template for dual-template mode
+        # These are the templates that will adapt to appearance changes
+        if self.use_dual_template:
+            # RGB dynamic template
+            if template_dyn_sample['rgb_img'] is not None:
+                rgb_template_dyn, rgb_template_dyn_att_mask, _ = self._crop_template(
+                    template_dyn_sample['rgb_img'],
+                    template_dyn_sample['rgb_bbox'],
+                    self.template_size
+                )
+            else:
+                rgb_template_dyn = None
+                rgb_template_dyn_att_mask = np.zeros((self.template_size, self.template_size), dtype=np.float32)
+
+            # Sonar dynamic template
+            if template_dyn_sample['sonar_img'] is not None:
+                sonar_template_dyn, sonar_template_dyn_att_mask, _ = self._crop_template(
+                    template_dyn_sample['sonar_img'],
+                    template_dyn_sample['sonar_bbox'],
+                    self.template_size
+                )
+            else:
+                sonar_template_dyn = None
+                sonar_template_dyn_att_mask = np.zeros((self.template_size, self.template_size), dtype=np.float32)
+        else:
+            # Single template mode: dyn = init
+            rgb_template_dyn = rgb_template
+            rgb_template_dyn_att_mask = rgb_template_att_mask
+            sonar_template_dyn = sonar_template
+            sonar_template_dyn_att_mask = sonar_template_att_mask
 
         # 4. Process search using TEMPLATE-CENTERED CROP
         # CRITICAL FIX (Audit 2025120102): Use Template bbox center to crop Search region
@@ -688,10 +742,18 @@ class TemplateSearchDataset(Dataset):
         is_valid = search_sample.get('is_valid', True)
 
         return {
-            'rgb_template': rgb_template,
+            # Init templates (anchor, from first frame)
+            'rgb_template': rgb_template,              # Backward compatible: init template
+            'rgb_template_init': rgb_template,         # Explicit init template
+            'sonar_template': sonar_template,          # Backward compatible: init template
+            'sonar_template_init': sonar_template,     # Explicit init template
+            # Dynamic templates (from recent high-quality frame)
+            'rgb_template_dyn': rgb_template_dyn,      # Dynamic template for appearance adaptation
+            'sonar_template_dyn': sonar_template_dyn,  # Dynamic template for appearance adaptation
+            # Search regions
             'rgb_search': rgb_search,
-            'sonar_template': sonar_template,
             'sonar_search': sonar_search,
+            # Bounding boxes
             'template_bbox': template_bbox_normalized,  # Normalized CXCYWH [0,1] (RGB)
             'search_bbox_rgb': search_bbox_rgb_normalized,      # RGB GT in target-centered crop
             'search_bbox_sonar': search_bbox_sonar_normalized,  # Sonar GT in target-centered crop
@@ -701,21 +763,34 @@ class TemplateSearchDataset(Dataset):
             # CRITICAL FIX (Audit 2025112602): Add attention masks for padded regions
             'rgb_att_mask': rgb_att_mask,               # [H, W] binary mask (1=valid, 0=padded)
             'sonar_att_mask': sonar_att_mask,           # [H, W] binary mask (1=valid, 0=padded)
-            # CRITICAL FIX (Audit 2025120909): Add template attention masks
-            'rgb_template_att_mask': rgb_template_att_mask,     # [H, W] template mask (1=valid, 0=padded)
-            'sonar_template_att_mask': sonar_template_att_mask, # [H, W] template mask (1=valid, 0=padded)
+            # Template attention masks (init)
+            'rgb_template_att_mask': rgb_template_att_mask,     # [H, W] init template mask
+            'sonar_template_att_mask': sonar_template_att_mask, # [H, W] init template mask
+            'rgb_template_init_att_mask': rgb_template_att_mask,     # Explicit init mask
+            'sonar_template_init_att_mask': sonar_template_att_mask, # Explicit init mask
+            # Template attention masks (dynamic)
+            'rgb_template_dyn_att_mask': rgb_template_dyn_att_mask,     # [H, W] dyn template mask
+            'sonar_template_dyn_att_mask': sonar_template_dyn_att_mask, # [H, W] dyn template mask
+            # Validity flags
             'is_valid': is_valid,                       # General validity flag
             'is_valid_rgb': search_sample['is_rgb_valid'],
             'is_valid_sonar': search_sample['is_sonar_valid'],
             'has_object_rgb': has_object_rgb,           # RGB objectness flag
             'has_object_sonar': has_object_sonar,       # Sonar objectness flag
             'has_object': has_object,                   # Combined objectness flag
+            # Frame info
             'gap': index - template_idx,
+            'gap_init': index - template_init_idx,      # Gap from init template
+            'gap_dyn': index - template_dyn_idx,        # Gap from dyn template
             'sequence_name': search_sample.get('sequence_name', 'default'),
-            'template_frame_id': template_idx + 1,  # 1-based
+            'template_frame_id': template_idx + 1,      # 1-based (backward compat)
+            'template_init_frame_id': template_init_idx + 1,  # 1-based
+            'template_dyn_frame_id': template_dyn_idx + 1,    # 1-based
             'search_frame_id': index + 1,
             'rgb_metadata': rgb_metadata,
             'sonar_metadata': sonar_metadata,
+            # Dual template mode flag
+            'use_dual_template': self.use_dual_template,
         }
 
     def _sample_template_index(self, search_idx: int) -> int:
@@ -842,6 +917,84 @@ class TemplateSearchDataset(Dataset):
 
         else:
             raise ValueError(f"Unknown template update policy: {self.update_policy}")
+
+    def _sample_init_template_index(self, search_idx: int) -> int:
+        """
+        Sample INIT template index (always first frame of sequence).
+
+        For MixFormer dual-template strategy, the init template is always
+        from the first frame and serves as an anchor to prevent drift.
+
+        Args:
+            search_idx: Search frame index
+
+        Returns:
+            Init template frame index (first frame of sequence)
+        """
+        # Determine sequence boundaries
+        if self.is_multi_sequence:
+            seq_name = self.base_dataset.get_frame_sequence(search_idx)
+            seq_info = self.sequence_ranges[seq_name]
+            seq_start = seq_info['start']
+        else:
+            seq_start = 0
+
+        # Use quality filtering if enabled
+        if self.enable_template_quality_filter:
+            template_idx, _ = self._select_best_template_frame_for_sequence(
+                seq_start, search_idx
+            )
+            return template_idx
+
+        # Otherwise just use first frame
+        return seq_start
+
+    def _sample_dyn_template_index(self, search_idx: int) -> int:
+        """
+        Sample DYNAMIC template index (recent high-quality frame).
+
+        For MixFormer dual-template strategy, the dynamic template is
+        sampled from recent frames with gap sampling to learn diverse
+        template-search relationships.
+
+        Args:
+            search_idx: Search frame index
+
+        Returns:
+            Dynamic template frame index
+        """
+        # Determine sequence boundaries
+        if self.is_multi_sequence:
+            seq_name = self.base_dataset.get_frame_sequence(search_idx)
+            seq_info = self.sequence_ranges[seq_name]
+            seq_start = seq_info['start']
+            seq_end = seq_info['end'] - 1
+        else:
+            seq_start = 0
+            seq_end = len(self.base_dataset) - 1
+
+        # Handle first frame case
+        if search_idx == seq_start:
+            return seq_start
+
+        # Sample gap within range
+        min_gap, max_gap = self.gap_range
+        available_gap = min(search_idx - seq_start, max_gap)
+        min_gap = min(min_gap, available_gap)
+        if min_gap > available_gap:
+            min_gap = 1 if available_gap >= 1 else 0
+
+        if available_gap > 0:
+            gap = random.randint(min_gap, available_gap)
+        else:
+            gap = 0
+
+        template_idx = search_idx - gap
+
+        # Validate template index is valid
+        template_idx = max(seq_start, min(template_idx, search_idx - 1))
+
+        return template_idx
 
     def _evaluate_template_quality(
         self,

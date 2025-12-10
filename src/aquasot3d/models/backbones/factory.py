@@ -452,6 +452,121 @@ class MultiModalBackbone(nn.Module):
 
         return outputs
 
+    def forward_dual_template(
+        self,
+        rgb_template_init: torch.Tensor,
+        rgb_template_dyn: torch.Tensor,
+        rgb_search: torch.Tensor,
+        sonar_template_init: torch.Tensor,
+        sonar_template_dyn: torch.Tensor,
+        sonar_search: torch.Tensor,
+        # Attention masks
+        rgb_template_init_att_mask: Optional[torch.Tensor] = None,
+        rgb_template_dyn_att_mask: Optional[torch.Tensor] = None,
+        rgb_search_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_init_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_dyn_att_mask: Optional[torch.Tensor] = None,
+        sonar_search_att_mask: Optional[torch.Tensor] = None
+    ) -> Dict[str, Any]:
+        """
+        MixFormer-style dual-template forward pass through both modalities.
+
+        Processes [template_init, template_dyn, search] jointly for each modality.
+
+        Args:
+            rgb_template_init: RGB initial template [B, 3, H, W]
+            rgb_template_dyn: RGB dynamic template [B, 3, H, W]
+            rgb_search: RGB search region [B, 3, H, W]
+            sonar_template_init: Sonar initial template [B, 1, H, W]
+            sonar_template_dyn: Sonar dynamic template [B, 1, H, W]
+            sonar_search: Sonar search region [B, 1, H, W]
+            *_att_mask: Optional attention masks [B, H, W], 1=valid, 0=padded
+
+        Returns:
+            Dictionary containing features from available modalities:
+            {
+                'rgb': {
+                    'template_init_features': [B, N_z, D],
+                    'template_dyn_features': [B, N_z, D],
+                    'search_features': [B, N_x, D]
+                },
+                'sonar': {
+                    'template_init_features': [B, N_z, D],
+                    'template_dyn_features': [B, N_z, D],
+                    'search_features': [B, N_x, D]
+                }
+            }
+        """
+        outputs = {'rgb': {}, 'sonar': {}}
+
+        # RGB dual-template forward
+        if self.rgb_backbone is not None:
+            if hasattr(self.rgb_backbone, 'forward_dual_template'):
+                rgb_feat_init, rgb_feat_dyn, rgb_feat_search = self.rgb_backbone.forward_dual_template(
+                    rgb_template_init, rgb_template_dyn, rgb_search,
+                    template_init_att_mask=rgb_template_init_att_mask,
+                    template_dyn_att_mask=rgb_template_dyn_att_mask,
+                    search_att_mask=rgb_search_att_mask
+                )
+                outputs['rgb'] = {
+                    'template_init_features': rgb_feat_init,
+                    'template_dyn_features': rgb_feat_dyn,
+                    'search_features': rgb_feat_search,
+                }
+            else:
+                # Fallback: use standard forward with init template only
+                rgb_feat_template, rgb_feat_search = self.rgb_backbone(
+                    rgb_template_init, rgb_search,
+                    template_att_mask=rgb_template_init_att_mask,
+                    search_att_mask=rgb_search_att_mask
+                )
+                outputs['rgb'] = {
+                    'template_init_features': rgb_feat_template,
+                    'template_dyn_features': rgb_feat_template,  # Same as init
+                    'search_features': rgb_feat_search,
+                }
+        else:
+            outputs['rgb'] = {
+                'template_init_features': None,
+                'template_dyn_features': None,
+                'search_features': None,
+            }
+
+        # Sonar dual-template forward
+        if self.sonar_encoder is not None:
+            if hasattr(self.sonar_encoder, 'forward_dual_template'):
+                sonar_feat_init, sonar_feat_dyn, sonar_feat_search = self.sonar_encoder.forward_dual_template(
+                    sonar_template_init, sonar_template_dyn, sonar_search,
+                    template_init_att_mask=sonar_template_init_att_mask,
+                    template_dyn_att_mask=sonar_template_dyn_att_mask,
+                    search_att_mask=sonar_search_att_mask
+                )
+                outputs['sonar'] = {
+                    'template_init_features': sonar_feat_init,
+                    'template_dyn_features': sonar_feat_dyn,
+                    'search_features': sonar_feat_search,
+                }
+            else:
+                # Fallback: use standard forward with init template only
+                sonar_feat_template, sonar_feat_search = self.sonar_encoder(
+                    sonar_template_init, sonar_search,
+                    template_att_mask=sonar_template_init_att_mask,
+                    search_att_mask=sonar_search_att_mask
+                )
+                outputs['sonar'] = {
+                    'template_init_features': sonar_feat_template,
+                    'template_dyn_features': sonar_feat_template,  # Same as init
+                    'search_features': sonar_feat_search,
+                }
+        else:
+            outputs['sonar'] = {
+                'template_init_features': None,
+                'template_dyn_features': None,
+                'search_features': None,
+            }
+
+        return outputs
+
     def get_feature_dims(self) -> Dict[str, int]:
         """
         Get feature dimensions for both modalities.

@@ -397,6 +397,71 @@ class AquaSOT3DTracker(BaseModule):
             'sonar_search_features': backbone_outputs['sonar']['search_features'],
         }
 
+    def extract_backbone_features_dual_template(
+        self,
+        rgb_template_init: torch.Tensor,
+        rgb_template_dyn: torch.Tensor,
+        rgb_search: torch.Tensor,
+        sonar_template_init: torch.Tensor,
+        sonar_template_dyn: torch.Tensor,
+        sonar_search: torch.Tensor,
+        # Attention masks
+        rgb_template_init_att_mask: Optional[torch.Tensor] = None,
+        rgb_template_dyn_att_mask: Optional[torch.Tensor] = None,
+        rgb_search_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_init_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_dyn_att_mask: Optional[torch.Tensor] = None,
+        sonar_search_att_mask: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Extract features using MixFormer-style dual-template processing.
+
+        Args:
+            rgb_template_init: RGB init template [B, 3, H, W]
+            rgb_template_dyn: RGB dynamic template [B, 3, H, W]
+            rgb_search: RGB search region [B, 3, H, W]
+            sonar_template_init: Sonar init template [B, 1, H, W]
+            sonar_template_dyn: Sonar dynamic template [B, 1, H, W]
+            sonar_search: Sonar search region [B, 1, H, W]
+            *_att_mask: Attention masks [B, H, W], 1=valid, 0=padded
+
+        Returns:
+            Dictionary containing extracted features:
+            {
+                'rgb_template_init_features': [B, N_z, D],
+                'rgb_template_dyn_features': [B, N_z, D],
+                'rgb_search_features': [B, N_x, D],
+                'sonar_template_init_features': [B, N_z, D],
+                'sonar_template_dyn_features': [B, N_z, D],
+                'sonar_search_features': [B, N_x, D]
+            }
+        """
+        # Use dual-template forward on backbone
+        backbone_outputs = self.backbone.forward_dual_template(
+            rgb_template_init=rgb_template_init,
+            rgb_template_dyn=rgb_template_dyn,
+            rgb_search=rgb_search,
+            sonar_template_init=sonar_template_init,
+            sonar_template_dyn=sonar_template_dyn,
+            sonar_search=sonar_search,
+            rgb_template_init_att_mask=rgb_template_init_att_mask,
+            rgb_template_dyn_att_mask=rgb_template_dyn_att_mask,
+            rgb_search_att_mask=rgb_search_att_mask,
+            sonar_template_init_att_mask=sonar_template_init_att_mask,
+            sonar_template_dyn_att_mask=sonar_template_dyn_att_mask,
+            sonar_search_att_mask=sonar_search_att_mask
+        )
+
+        # Extract features from nested structure
+        return {
+            'rgb_template_init_features': backbone_outputs['rgb']['template_init_features'],
+            'rgb_template_dyn_features': backbone_outputs['rgb']['template_dyn_features'],
+            'rgb_search_features': backbone_outputs['rgb']['search_features'],
+            'sonar_template_init_features': backbone_outputs['sonar']['template_init_features'],
+            'sonar_template_dyn_features': backbone_outputs['sonar']['template_dyn_features'],
+            'sonar_search_features': backbone_outputs['sonar']['search_features'],
+        }
+
     def fuse_features(
         self,
         rgb_features: torch.Tensor,
@@ -744,7 +809,9 @@ class AquaSOT3DTracker(BaseModule):
         sonar_att_mask: Optional[torch.Tensor] = None,
         # Template region masks (for edge cases where template has padding)
         rgb_template_att_mask: Optional[torch.Tensor] = None,
-        sonar_template_att_mask: Optional[torch.Tensor] = None
+        sonar_template_att_mask: Optional[torch.Tensor] = None,
+        # Internal: pre-computed backbone outputs (used by forward_dual_template)
+        _precomputed_backbone_outputs: Optional[Dict[str, torch.Tensor]] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Complete forward pass of AquaSOT-3D tracker using template-search paradigm.
@@ -824,13 +891,18 @@ class AquaSOT3DTracker(BaseModule):
         # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised):
         # Pass attention masks to backbone for proper padding handling
         # Both template and search masks are passed to handle edge cases
-        backbone_outputs = self.extract_backbone_features(
-            rgb_template, rgb_search, sonar_template, sonar_search,
-            rgb_search_att_mask=rgb_att_mask,
-            sonar_search_att_mask=sonar_att_mask,
-            rgb_template_att_mask=rgb_template_att_mask,
-            sonar_template_att_mask=sonar_template_att_mask
-        )
+
+        # DUAL-TEMPLATE SUPPORT: Use pre-computed outputs if provided
+        if _precomputed_backbone_outputs is not None:
+            backbone_outputs = _precomputed_backbone_outputs
+        else:
+            backbone_outputs = self.extract_backbone_features(
+                rgb_template, rgb_search, sonar_template, sonar_search,
+                rgb_search_att_mask=rgb_att_mask,
+                sonar_search_att_mask=sonar_att_mask,
+                rgb_template_att_mask=rgb_template_att_mask,
+                sonar_template_att_mask=sonar_template_att_mask
+            )
 
         # Use search features for prediction (template info already encoded via attention)
         # Shape: [B, N_x, D] where N_x = num_search_patches
@@ -1047,6 +1119,105 @@ class AquaSOT3DTracker(BaseModule):
             }
 
         return outputs
+
+    def forward_dual_template(
+        self,
+        rgb_template_init: torch.Tensor,
+        rgb_template_dyn: torch.Tensor,
+        rgb_search: torch.Tensor,
+        sonar_template_init: torch.Tensor,
+        sonar_template_dyn: torch.Tensor,
+        sonar_search: torch.Tensor,
+        gt_boxes: Optional[Dict[str, torch.Tensor]] = None,
+        is_rgb_valid: Optional[torch.Tensor] = None,
+        is_sonar_valid: Optional[torch.Tensor] = None,
+        has_object_rgb: Optional[torch.Tensor] = None,
+        has_object_sonar: Optional[torch.Tensor] = None,
+        has_object: Optional[torch.Tensor] = None,
+        return_losses: bool = True,
+        return_intermediate: bool = False,
+        metadata: Optional[Dict] = None,
+        # Attention masks
+        rgb_att_mask: Optional[torch.Tensor] = None,
+        sonar_att_mask: Optional[torch.Tensor] = None,
+        rgb_template_init_att_mask: Optional[torch.Tensor] = None,
+        rgb_template_dyn_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_init_att_mask: Optional[torch.Tensor] = None,
+        sonar_template_dyn_att_mask: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        MixFormer-style dual-template forward pass.
+
+        Processes both init (anchor) and dynamic templates through the backbone,
+        then combines features for fusion and prediction.
+
+        Args:
+            rgb_template_init: RGB init template [B, 3, H, W]
+            rgb_template_dyn: RGB dynamic template [B, 3, H, W]
+            rgb_search: RGB search region [B, 3, H, W]
+            sonar_template_init: Sonar init template [B, 1, H, W]
+            sonar_template_dyn: Sonar dynamic template [B, 1, H, W]
+            sonar_search: Sonar search region [B, 1, H, W]
+            (other args same as forward)
+
+        Returns:
+            Same as forward method
+        """
+        batch_size = rgb_template_init.shape[0]
+
+        # =====================================================
+        # Stage 1: Dual-Template Feature Extraction
+        # =====================================================
+        backbone_outputs = self.extract_backbone_features_dual_template(
+            rgb_template_init=rgb_template_init,
+            rgb_template_dyn=rgb_template_dyn,
+            rgb_search=rgb_search,
+            sonar_template_init=sonar_template_init,
+            sonar_template_dyn=sonar_template_dyn,
+            sonar_search=sonar_search,
+            rgb_template_init_att_mask=rgb_template_init_att_mask,
+            rgb_template_dyn_att_mask=rgb_template_dyn_att_mask,
+            rgb_search_att_mask=rgb_att_mask,
+            sonar_template_init_att_mask=sonar_template_init_att_mask,
+            sonar_template_dyn_att_mask=sonar_template_dyn_att_mask,
+            sonar_search_att_mask=sonar_att_mask
+        )
+
+        # Use search features for prediction
+        # Template info is already encoded via joint attention in backbone
+        rgb_features = backbone_outputs['rgb_search_features']
+        sonar_features = backbone_outputs['sonar_search_features']
+
+        # Delegate to standard forward for fusion and prediction
+        # (after backbone extraction, the flow is identical)
+        return self.forward(
+            rgb_template=rgb_template_init,  # Not used, just for signature
+            rgb_search=rgb_search,
+            sonar_template=sonar_template_init,  # Not used
+            sonar_search=sonar_search,
+            gt_boxes=gt_boxes,
+            is_rgb_valid=is_rgb_valid,
+            is_sonar_valid=is_sonar_valid,
+            has_object_rgb=has_object_rgb,
+            has_object_sonar=has_object_sonar,
+            has_object=has_object,
+            return_losses=return_losses,
+            return_intermediate=return_intermediate,
+            metadata=metadata,
+            rgb_att_mask=rgb_att_mask,
+            sonar_att_mask=sonar_att_mask,
+            rgb_template_att_mask=rgb_template_init_att_mask,
+            sonar_template_att_mask=sonar_template_init_att_mask,
+            # Override backbone extraction by passing pre-computed features
+            _precomputed_backbone_outputs={
+                'rgb_search_features': rgb_features,
+                'sonar_search_features': sonar_features,
+                'rgb_template_init_features': backbone_outputs['rgb_template_init_features'],
+                'rgb_template_dyn_features': backbone_outputs['rgb_template_dyn_features'],
+                'sonar_template_init_features': backbone_outputs['sonar_template_init_features'],
+                'sonar_template_dyn_features': backbone_outputs['sonar_template_dyn_features'],
+            }
+        )
 
 
 def build_tracker(
