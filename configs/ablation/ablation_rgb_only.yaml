@@ -23,7 +23,7 @@ model:
       type: null                # Sonar backbone disabled
 
   fusion:
-    type: conditional_g2_dcma
+    type: conditional_dcma
     embed_dim: 256
     num_heads: 8
 

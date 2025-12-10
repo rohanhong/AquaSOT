@@ -37,7 +37,7 @@ def tracker_config():
             'output_dim': 128
         },
         'fusion_config': {
-            'type': 'g2_dcma_lite',
+            'type': 'dcma_lite',
             'output_dim': 192,
             'num_heads': 4,
             'num_points': 2
@@ -401,10 +401,10 @@ class TestComponentProfiling:
 
     def test_fusion_speed(self, tracker_config):
         """Profile fusion module speed"""
-        from aquasot3d.models.fusion.g2_dcma import build_g2_dcma_lite
+        from aquasot3d.models.fusion.dcma import build_dcma_lite
 
         # Build fusion module
-        fusion = build_g2_dcma_lite({
+        fusion = build_dcma_lite({
             'embed_dim': tracker_config['fusion_config']['output_dim'],
             'num_heads': tracker_config['fusion_config']['num_heads']
         })

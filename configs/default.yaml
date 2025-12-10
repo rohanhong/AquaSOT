@@ -89,14 +89,12 @@ model:
       search_size: 256                  # Search size
 
   fusion:
-    type: conditional_g2_dcma # Conditional G2-DCMA fusion module
+    type: conditional_dcma    # Conditional DCMA fusion module
     rgb_channels: 768         # RGB feature channels
     sonar_channels: 768       # Sonar feature channels
     embed_dim: 768            # Fusion embedding dimension
     num_heads: 8              # Multi-head attention heads
     num_layers: 2             # Number of fusion layers
-    use_geometry_gating: true # Enable geometry-based gating
-    geometry_gate_type: adaptive  # Geometry gate type
     use_quality_gating: true  # Enable quality-based gating
     quality_threshold: 0.5    # Quality gating threshold
     use_deformable: true      # Enable deformable attention
@@ -236,7 +234,6 @@ evaluation:
 
 ablation:
   components:
-    geometry_gating: true     # Enable geometry gating
     quality_gating: true      # Enable quality gating
     deformable_attention: true    # Enable deformable attention
     dual_consistency: true    # Enable dual consistency

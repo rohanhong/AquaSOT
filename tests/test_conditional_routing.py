@@ -3,7 +3,7 @@ Integration tests for conditional fusion routing.
 
 CRITICAL FIX (Audit 2025112508 Finding 2):
 These tests verify that:
-1. ConditionalG2DCMA correctly routes to dual/single/zero-modality paths
+1. ConditionalDCMA correctly routes to dual/single/zero-modality paths
 2. Confidence-driven validity inference works correctly
 3. Bypass paths are used appropriately
 4. Zero-modality frames are handled correctly
@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 from typing import Dict
 
-from aquasot3d.models.fusion.g2_dcma import ConditionalG2DCMA
+from aquasot3d.models.fusion.dcma import ConditionalDCMA
 
 
 class TestConditionalRouting:
@@ -25,8 +25,8 @@ class TestConditionalRouting:
 
     @pytest.fixture
     def conditional_fusion(self):
-        """Create ConditionalG2DCMA instance for testing."""
-        return ConditionalG2DCMA(
+        """Create ConditionalDCMA instance for testing."""
+        return ConditionalDCMA(
             embed_dim=256,
             num_heads=8,
             rgb_channels=768,
@@ -46,7 +46,7 @@ class TestConditionalRouting:
         return torch.randn(2, 768, 16, 16)  # [B, C, H, W]
 
     def test_dual_modality_routing(self, conditional_fusion, rgb_features, sonar_features):
-        """Test that dual-modality samples use full G2-DCMA fusion."""
+        """Test that dual-modality samples use full DCMA fusion."""
         # Explicitly mark both modalities as valid
         is_rgb_valid = torch.tensor([True, True])
         is_sonar_valid = torch.tensor([True, True])
@@ -157,7 +157,7 @@ class TestConditionalRouting:
         Test automatic validity inference from confidence scores.
 
         CRITICAL FIX (Audit 2025112508 Finding 2):
-        When validity flags are not provided, ConditionalG2DCMA should
+        When validity flags are not provided, ConditionalDCMA should
         infer them from lightweight confidence estimation.
         """
         # Don't provide validity flags (None)
@@ -221,7 +221,7 @@ class TestConditionalRouting:
 
     def test_metadata_passthrough(self, conditional_fusion, rgb_features, sonar_features):
         """
-        Test that letterbox metadata is passed through to G2-DCMA.
+        Test that letterbox metadata is passed through to DCMA.
 
         CRITICAL FIX (Audit 2025112508 Finding 1):
         Metadata is essential for geometry-gated attention.
@@ -251,7 +251,7 @@ class TestConditionalRouting:
     @pytest.mark.parametrize("confidence_threshold", [0.1, 0.3, 0.5, 0.7, 0.9])
     def test_different_confidence_thresholds(self, confidence_threshold, rgb_features, sonar_features):
         """Test that different confidence thresholds affect routing appropriately."""
-        conditional_fusion = ConditionalG2DCMA(
+        conditional_fusion = ConditionalDCMA(
             embed_dim=256,
             num_heads=8,
             rgb_channels=768,
@@ -272,87 +272,6 @@ class TestConditionalRouting:
         # (though exact behavior depends on learned estimators)
         assert 'routing_info' in outputs
         assert 'fused_features' in outputs
-
-
-class TestGeometryGatedAttentionWithMetadata:
-    """Test that geometry-gated attention works correctly with letterbox metadata."""
-
-    @pytest.fixture
-    def fusion_with_gating(self):
-        """Create ConditionalG2DCMA with geometry gating."""
-        return ConditionalG2DCMA(
-            embed_dim=256,
-            num_heads=8,
-            num_radial_bins=50,  # For sonar radial profiling
-            rgb_channels=768,
-            sonar_channels=768,
-            confidence_threshold=0.3
-        )
-
-    def test_geometry_gating_with_metadata(self, fusion_with_gating):
-        """Test that geometry gating uses letterbox metadata correctly."""
-        rgb_features = torch.randn(2, 768, 16, 16)
-        sonar_features = torch.randn(2, 768, 16, 16)
-
-        # Provide sonar letterbox metadata
-        sonar_metadata = {
-            'scale': 0.5,
-            'pad_top': 50,
-            'pad_left': 20,
-            'original_height': 376,
-            'original_size': (376, 682),
-            'new_size': (188, 341)
-        }
-
-        is_rgb_valid = torch.tensor([True, True])
-        is_sonar_valid = torch.tensor([True, True])
-
-        outputs = fusion_with_gating(
-            rgb_features, sonar_features,
-            is_rgb_valid=is_rgb_valid,
-            is_sonar_valid=is_sonar_valid,
-            sonar_letterbox_metadata=sonar_metadata,
-            return_consistency=False
-        )
-
-        # Verify successful forward pass
-        assert 'fused_features' in outputs
-        assert not torch.isnan(outputs['fused_features']).any()
-        assert not torch.isinf(outputs['fused_features']).any()
-
-    def test_heterogeneous_metadata_batch(self, fusion_with_gating):
-        """Test per-sample metadata for heterogeneous batches."""
-        rgb_features = torch.randn(2, 768, 16, 16)
-        sonar_features = torch.randn(2, 768, 16, 16)
-
-        # Different metadata for each sample
-        sonar_metadata_list = [
-            {
-                'scale': 0.5,
-                'pad_top': 50,
-                'original_height': 376
-            },
-            {
-                'scale': 0.6,
-                'pad_top': 30,
-                'original_height': 400
-            }
-        ]
-
-        is_rgb_valid = torch.tensor([True, True])
-        is_sonar_valid = torch.tensor([True, True])
-
-        outputs = fusion_with_gating(
-            rgb_features, sonar_features,
-            is_rgb_valid=is_rgb_valid,
-            is_sonar_valid=is_sonar_valid,
-            sonar_letterbox_metadata=sonar_metadata_list,
-            return_consistency=False
-        )
-
-        # Verify successful forward pass
-        assert 'fused_features' in outputs
-        assert not torch.isnan(outputs['fused_features']).any()
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ class TestExportSmoke:
         tracker = AquaSOT3DTracker(
             rgb_backbone_config={'type': 'vit_rgb', 'pretrained': False},
             sonar_backbone_config={'type': 'vit_sonar', 'pretrained': False},
-            fusion_config={'type': 'conditional_g2_dcma'},
+            fusion_config={'type': 'conditional_dcma'},
             box_head_config={'type': 'BoxHead', 'use_confidence_head': True}
         )
         tracker.eval()
@@ -78,7 +78,7 @@ class TestExportSmoke:
         tracker = AquaSOT3DTracker(
             rgb_backbone_config={'type': 'vit_rgb', 'pretrained': False},
             sonar_backbone_config={'type': 'vit_sonar', 'pretrained': False},
-            fusion_config={'type': 'conditional_g2_dcma'},
+            fusion_config={'type': 'conditional_dcma'},
             box_head_config={'type': 'BoxHead', 'use_confidence_head': True}
         )
         tracker.eval()
@@ -109,7 +109,7 @@ class TestExportSmoke:
         tracker = AquaSOT3DTracker(
             rgb_backbone_config={'type': 'vit_rgb', 'pretrained': False},
             sonar_backbone_config={'type': 'vit_sonar', 'pretrained': False},
-            fusion_config={'type': 'conditional_g2_dcma'},
+            fusion_config={'type': 'conditional_dcma'},
             box_head_config={'type': 'BoxHead', 'use_confidence_head': True}
         )
 
@@ -122,7 +122,7 @@ class TestExportSmoke:
                         'rgb': {'type': 'vit_rgb', 'pretrained': False},
                         'sonar': {'type': 'vit_sonar', 'pretrained': False}
                     },
-                    'fusion': {'type': 'conditional_g2_dcma'},
+                    'fusion': {'type': 'conditional_dcma'},
                     'box_head': {'type': 'BoxHead', 'use_confidence_head': True}
                 }
             }

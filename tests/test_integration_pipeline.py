@@ -191,7 +191,7 @@ def test_model_forward_shapes():
                 'search_size': 256
             },
             fusion_config={
-                'type': 'conditional_g2_dcma',
+                'type': 'conditional_dcma',
                 'embed_dim': 768,
                 'num_heads': 8,
                 'num_layers': 2

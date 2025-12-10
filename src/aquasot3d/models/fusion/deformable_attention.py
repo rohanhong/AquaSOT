@@ -1,5 +1,5 @@
 """
-Deformable Cross-Modal Attention for G2-DCMA Fusion
+Deformable Cross-Modal Attention for DCMA Fusion
 
 This module implements deformable attention with learnable sampling offsets
 for cross-modal alignment between RGB and Sonar. Unlike standard attention that

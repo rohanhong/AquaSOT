@@ -107,7 +107,7 @@ def tracker_config():
             'output_dim': 128
         },
         'fusion_config': {
-            'type': 'g2_dcma_lite',
+            'type': 'dcma_lite',
             'output_dim': 192,
             'num_heads': 4,
             'num_points': 2

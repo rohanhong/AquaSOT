@@ -53,7 +53,7 @@ def dummy_config():
                 'embed_dim': 768
             },
             'fusion': {
-                'type': 'G2DCMA',
+                'type': 'DCMA',
                 'hidden_dim': 256
             },
             'temporal': {
@@ -89,7 +89,7 @@ def dummy_config_legacy():
                 'embed_dim': 768
             },
             'fusion': {
-                'type': 'G2DCMA',
+                'type': 'DCMA',
                 'hidden_dim': 256
             },
             'temporal': {

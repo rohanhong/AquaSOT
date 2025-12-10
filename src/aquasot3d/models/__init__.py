@@ -3,7 +3,7 @@ Neural Network Models for AquaSOT-3D
 
 This package contains all neural network components:
 - backbones: Unified ViT for RGB and Sonar feature extraction
-- fusion: Cross-modal fusion modules (ConfidenceAwareG2DCMA)
+- fusion: Cross-modal fusion modules (ConfidenceAwareDCMA)
 - heads: Prediction heads for 2D bounding box detection
 - tracker: Complete end-to-end tracking system
 

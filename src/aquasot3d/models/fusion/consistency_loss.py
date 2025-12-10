@@ -1,5 +1,5 @@
 """
-Dual Consistency Loss for G2-DCMA Fusion
+Dual Consistency Loss for DCMA Fusion
 
 This module implements two types of consistency constraints for cross-modal fusion:
 1. Component Consistency: Ensures RGB and Sonar branches predict consistent 3D components (e.g., X coordinate)

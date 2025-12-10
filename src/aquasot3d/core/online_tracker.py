@@ -254,12 +254,12 @@ class OnlineTracker:
 
         # CRITICAL FIX (Audit 2025112508 Finding 2):
         # DO NOT pass is_rgb_valid/is_sonar_valid here - let them default to None
-        # This allows ConditionalG2DCMA.forward() to automatically infer validity
+        # This allows ConditionalDCMA.forward() to automatically infer validity
         # from learned confidence estimators, enabling proper single/zero-modality routing.
         #
         # Flow: OnlineTracker (validity=None)
         #       → AquaSOT3DTracker.forward (passes None through)
-        #       → ConditionalG2DCMA.forward (infers validity from confidence)
+        #       → ConditionalDCMA.forward (infers validity from confidence)
         #       → Correct routing (dual/single-RGB/single-Sonar/zero)
         with torch.no_grad():
             outputs = self.model(
@@ -270,7 +270,7 @@ class OnlineTracker:
                 return_losses=False,
                 metadata=metadata
                 # NOTE: is_rgb_valid and is_sonar_valid NOT passed (default to None)
-                # This enables automatic validity inference in ConditionalG2DCMA
+                # This enables automatic validity inference in ConditionalDCMA
             )
 
         # Extract predictions (CXCYWH normalized)

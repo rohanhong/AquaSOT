@@ -3,13 +3,13 @@ AquaSOT-3D Tracker - Template-Search Multi-Modal Tracking System
 
 This module implements the complete tracking pipeline integrating:
 - Multi-modal backbones (RGB + Sonar) with OSTrack one-stream architecture
-- G2-DCMA cross-modal fusion with learnable confidence weighting
+- DCMA cross-modal fusion with learnable confidence weighting
 - Multi-task prediction heads for 2D bounding box detection
 
 Architecture:
     Input: RGB template/search + Sonar template/search
     -> Backbones: OSTrack one-stream ViT for RGB (3-channel) and Sonar (1-channel)
-    -> Fusion: ConfidenceAwareG2DCMA with Dual-View Fusion (rgb_view_fused, sonar_view_fused)
+    -> Fusion: ConditionalDCMA with Dual-View Fusion (rgb_view_fused, sonar_view_fused)
     -> Heads: BoxHead (RGB uses rgb_view_fused, Sonar uses sonar_view_fused)
     Output: 2D boxes (RGB/Sonar) + losses
 
@@ -29,7 +29,7 @@ import logging
 
 from aquasot3d.core import BaseModule, TRACKER_REGISTRY
 from aquasot3d.models.backbones import BackboneFactory, MultiModalBackbone
-from aquasot3d.models.fusion import build_g2_dcma, build_g2_dcma_lite, build_conditional_g2_dcma
+from aquasot3d.models.fusion import build_dcma, build_dcma_lite, build_conditional_dcma, ConditionalDCMA
 from aquasot3d.models.heads import (
     build_box_head,
 )
@@ -45,21 +45,21 @@ class AquaSOT3DTracker(BaseModule):
 
     This is the main tracking model that integrates:
     - OSTrack one-stream ViT backbones for RGB and Sonar
-    - ConfidenceAwareG2DCMA cross-modal fusion with learnable confidence
+    - ConditionalDCMA cross-modal fusion with learnable confidence
     - Multi-task prediction heads for 2D bounding boxes
     - Uncertainty-aware fusion for robust multi-modal tracking
 
     Args:
         rgb_backbone_config: Configuration for RGB backbone (template_size=128, search_size=256 for OSTrack-256)
         sonar_backbone_config: Configuration for Sonar backbone (template_size=128, search_size=256 for OSTrack-256)
-        fusion_config: Configuration for G2-DCMA fusion module
+        fusion_config: Configuration for DCMA fusion module
         box_head_config: Configuration for 2D box prediction heads
 
     Example:
         >>> config = {
         ...     'rgb_backbone': {'type': 'vit_rgb', 'model_name': 'vit_base_patch16_224', 'template_size': 128, 'search_size': 256},
         ...     'sonar_backbone': {'type': 'vit_sonar', 'model_name': 'vit_base_patch16_224', 'template_size': 128, 'search_size': 256},
-        ...     'fusion': {'type': 'g2_dcma', 'rgb_dim': 768, 'sonar_dim': 768},
+        ...     'fusion': {'type': 'dcma', 'rgb_dim': 768, 'sonar_dim': 768},
         ... }
         >>> tracker = build_tracker('AquaSOT3DTracker', **config)
         >>> outputs = tracker(rgb_template, rgb_search, sonar_template, sonar_search)
@@ -104,7 +104,7 @@ class AquaSOT3DTracker(BaseModule):
             self.sonar_feat_dim = 768  # ViT-Base default
 
         # =====================================================
-        # 2. Cross-Modal Fusion (G2-DCMA)
+        # 2. Cross-Modal Fusion (DCMA)
         # =====================================================
         self.fusion = None
 
@@ -112,19 +112,20 @@ class AquaSOT3DTracker(BaseModule):
         if fusion_config and fusion_config.get('type') not in [None, 'null']:
             # Make a copy to avoid modifying the original config (high-generalization fix)
             fusion_config_copy = fusion_config.copy()
-            fusion_type = fusion_config_copy.pop('type', 'g2_dcma')
-            if fusion_type == 'g2_dcma':
-                self.fusion = build_g2_dcma(fusion_config_copy)
-            elif fusion_type == 'g2_dcma_lite':
-                self.fusion = build_g2_dcma_lite(fusion_config_copy)
-            elif fusion_type == 'conditional_g2_dcma':
+            fusion_type = fusion_config_copy.pop('type', 'dcma')
+            # Support both old (g2_*) and new (*) names for backward compatibility
+            if fusion_type in ('dcma', 'g2_dcma'):
+                self.fusion = build_dcma(fusion_config_copy)
+            elif fusion_type in ('dcma_lite', 'g2_dcma_lite'):
+                self.fusion = build_dcma_lite(fusion_config_copy)
+            elif fusion_type in ('conditional_dcma', 'conditional_g2_dcma'):
                 # CRITICAL FIX (Audit 2025112101 Phase 2.2):
-                # ConditionalG2DCMA requires rgb_channels and sonar_channels
+                # ConditionalDCMA requires rgb_channels and sonar_channels
                 # CRITICAL FIX (Audit 2025112505 Issue 5):
                 # Remove rgb_channels and sonar_channels from config to avoid duplicate keyword arguments
                 fusion_config_copy.pop('rgb_channels', None)
                 fusion_config_copy.pop('sonar_channels', None)
-                self.fusion = build_conditional_g2_dcma(
+                self.fusion = build_conditional_dcma(
                     rgb_channels=self.rgb_feat_dim,
                     sonar_channels=self.sonar_feat_dim,
                     **fusion_config_copy
@@ -183,7 +184,7 @@ class AquaSOT3DTracker(BaseModule):
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # Fusion box head REMOVED. RGB and Sonar BoxHeads now use dual-view fused features.
-        # This simplifies architecture and strengthens G2-DCMA supervision through dual gradients.
+        # This simplifies architecture and strengthens DCMA supervision through dual gradients.
 
         # 4.3 Auxiliary Heads for Feature Degradation Prevention
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
@@ -406,11 +407,11 @@ class AquaSOT3DTracker(BaseModule):
         metadata: Optional[Dict] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Fuse RGB and Sonar features using G2-DCMA or ConditionalG2DCMA.
+        Fuse RGB and Sonar features using DCMA or ConditionalDCMA.
 
         CRITICAL FIX (Audit 2025112101 Phase 2.2):
         Now accepts is_rgb_valid and is_sonar_valid for conditional fusion.
-        When using ConditionalG2DCMA, these flags enable single-modality bypass.
+        When using ConditionalDCMA, these flags enable single-modality bypass.
 
         ENHANCED FIX (Audit 2025112403 Follow-up):
         Now accepts metadata for per-sample letterbox parameter support.
@@ -457,8 +458,8 @@ class AquaSOT3DTracker(BaseModule):
             sonar_features = sonar_features.permute(0, 2, 1).reshape(B, C, H, W)
 
         # CRITICAL FIX (Audit 2025112101 Phase 2.2):
-        # Pass is_rgb_valid and is_sonar_valid to ConditionalG2DCMA for modality-aware routing
-        # For standard G2DCMA, these parameters will be ignored
+        # Pass is_rgb_valid and is_sonar_valid to ConditionalDCMA for modality-aware routing
+        # For standard DCMA, these parameters will be ignored
         fusion_kwargs = {
             'rgb_features': rgb_features,
             'sonar_features': sonar_features,
@@ -549,10 +550,10 @@ class AquaSOT3DTracker(BaseModule):
                     elif not rgb_consistent:
                         fusion_kwargs['rgb_letterbox_metadata'] = converted_rgb
 
-        # Check if fusion module is ConditionalG2DCMA (has forward signature with is_rgb_valid)
-        from aquasot3d.models.fusion import ConditionalG2DCMA
-        if isinstance(self.fusion, ConditionalG2DCMA):
-            # ConditionalG2DCMA requires is_rgb_valid and is_sonar_valid
+        # Check if fusion module is ConditionalDCMA (has forward signature with is_rgb_valid)
+        from aquasot3d.models.fusion import ConditionalDCMA
+        if isinstance(self.fusion, ConditionalDCMA):
+            # ConditionalDCMA requires is_rgb_valid and is_sonar_valid
             fusion_kwargs['is_rgb_valid'] = is_rgb_valid
             fusion_kwargs['is_sonar_valid'] = is_sonar_valid
 
@@ -613,7 +614,7 @@ class AquaSOT3DTracker(BaseModule):
 
         # ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
         # RGB box prediction now uses RGB-view fused features instead of original features
-        # This forces G2-DCMA to learn RGB-Sonar correspondence through dual supervision
+        # This forces DCMA to learn RGB-Sonar correspondence through dual supervision
         if self.rgb_box_head is not None and rgb_features is not None:
             # Extract RGB-view fused features from dual-view fusion output
             if isinstance(fused_features, dict) and 'rgb_view_fused' in fused_features:
@@ -750,7 +751,7 @@ class AquaSOT3DTracker(BaseModule):
 
         CRITICAL FIX (Audit 2025112101 Phase 2.2):
         Accepts is_rgb_valid and is_sonar_valid for conditional fusion.
-        These flags enable single-modality bypass in ConditionalG2DCMA.
+        These flags enable single-modality bypass in ConditionalDCMA.
 
         CONTINUOUS FLOW DESIGN (Audit 2025112310 P0 FIX):
         Accepts has_object flags for confidence head training.
@@ -792,7 +793,7 @@ class AquaSOT3DTracker(BaseModule):
 
             ARCHITECTURE UPDATE (Audit 2025112313 - Dual-View Fusion):
             Fusion boxes removed. RGB and Sonar BoxHeads now use dual-view fused features,
-            forcing G2-DCMA to learn RGB-Sonar correspondence through dual supervision.
+            forcing DCMA to learn RGB-Sonar correspondence through dual supervision.
         """
         # Get batch size from template (template-search paradigm)
         batch_size = rgb_template.shape[0]
@@ -924,7 +925,7 @@ class AquaSOT3DTracker(BaseModule):
         # Stage 2: Cross-Modal Fusion
         # =====================================================
         # CRITICAL FIX (Audit 2025112508 Finding 2):
-        # DO NOT force None to all-true here! Allow ConditionalG2DCMA to infer validity
+        # DO NOT force None to all-true here! Allow ConditionalDCMA to infer validity
         # from confidence scores. This enables single/zero-modality routing at inference.
         #
         # Previous behavior (INCORRECT):
@@ -932,7 +933,7 @@ class AquaSOT3DTracker(BaseModule):
         #     is_rgb_valid = torch.ones(...)  # ❌ Forces dual-modality always
         #
         # New behavior (CORRECT):
-        # Pass None through to fusion layer, let ConditionalG2DCMA auto-infer
+        # Pass None through to fusion layer, let ConditionalDCMA auto-infer
         # based on learned confidence estimators.
 
         fusion_outputs = self.fuse_features(
@@ -1014,8 +1015,8 @@ class AquaSOT3DTracker(BaseModule):
 
             # Consistency losses
             if 'consistency_losses' in fusion_outputs:
-                # CRITICAL FIX (Audit 2025112510): Use correct keys from ConditionalG2DCMA
-                # ConditionalG2DCMA renames keys: component_loss -> component_consistency, infonce_loss -> representation_consistency
+                # CRITICAL FIX (Audit 2025112510): Use correct keys from ConditionalDCMA
+                # ConditionalDCMA renames keys: component_loss -> component_consistency, infonce_loss -> representation_consistency
                 consistency = fusion_outputs['consistency_losses']
                 _device = rgb_template.device  # Use input tensor device
                 losses['geometric_consistency'] = consistency.get('component_consistency', consistency.get('component_loss', torch.tensor(0.0, device=_device)))

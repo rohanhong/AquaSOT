@@ -291,8 +291,7 @@ class OnlineTrackingEvaluator:
         rgb_state = rgb_gt_bbox.copy()
         sonar_state = sonar_gt_bbox.copy()
 
-        # CRITICAL FIX (Audit 2025120909): Capture template metadata for GeometryGatedAttention
-        # Template metadata is needed for consistent radial binning in geometric gating fusion
+        # Capture template metadata for fusion module
         rgb_template, rgb_template_meta = self._crop_region(
             frame0_data['rgb_img'],
             rgb_gt_bbox,
@@ -402,10 +401,7 @@ class OnlineTrackingEvaluator:
                 rgb_search = rgb_search.unsqueeze(0).to(self.device)
                 sonar_search = sonar_search.unsqueeze(0).to(self.device)
 
-                # === CRITICAL FIX (Audit 2025120401 Finding 1): Build metadata for fusion ===
-                # GeometryGatedAttention requires sonar_letterbox_metadata for correct radial binning
-                # Without this, geometric gating degrades to no-geometry baseline
-                # CRITICAL FIX (Audit 2025120909): Include TEMPLATE metadata for proper geometry
+                # Build metadata for fusion module
                 metadata = {
                     'rgb_search_metadata': [rgb_search_meta],
                     'sonar_search_metadata': [sonar_search_meta],  # List format for tracker.py
@@ -418,7 +414,7 @@ class OnlineTrackingEvaluator:
                 # === CRITICAL FIX (Audit 2025120902 Issue 7): Self-inferred validity for fusion ===
                 # Instead of removing is_valid (which disables conditional fusion),
                 # derive validity from previous frame's confidence and current padding ratio.
-                # This enables ConditionalG2DCMA to properly bypass unreliable modalities.
+                # This enables ConditionalDCMA to properly bypass unreliable modalities.
 
                 # Check GT occlusion status (for prediction storage, NOT for model input)
                 rgb_gt_occluded = np.sum(np.abs(rgb_gt_bbox)) == 0
@@ -448,7 +444,7 @@ class OnlineTrackingEvaluator:
 
                 # === Model forward pass ===
                 # CRITICAL FIX (Audit 2025120902 Issue 7): Pass self-inferred validity
-                # This enables ConditionalG2DCMA to bypass unreliable modalities
+                # This enables ConditionalDCMA to bypass unreliable modalities
                 # CRITICAL FIX (Audit 2025120902 Issue 15, 17 Revised): Pass attention masks
                 # Generate attention masks from crop metadata for proper padding handling
                 rgb_att_mask = self._generate_attention_mask(rgb_search_meta, output_size=self.search_size)
@@ -893,9 +889,8 @@ class OnlineTrackingEvaluator:
         - Returns safe fallback crop when bbox is invalid
 
         CRITICAL FIX (Audit 2025120401 Finding 1-2):
-        - Returns letterbox-format metadata compatible with GeometryGatedAttention
+        - Returns letterbox-format metadata for fusion module compatibility
         - Keys: scale, pad_top, pad_bottom, original_height, original_width, new_size
-        - This enables correct radial binning in geometric gating fusion
 
         Args:
             image: Input image [H, W, C] or [H, W]
@@ -908,7 +903,7 @@ class OnlineTrackingEvaluator:
         Returns:
             crop_tensor: Normalized crop [C, H, W]
             metadata (optional): Dict with crop parameters for inverse transform
-                                 AND letterbox-format metadata for GeometryGatedAttention
+                                 AND letterbox-format metadata for fusion module
         """
         # Handle None or invalid image
         if image is None:
@@ -1022,11 +1017,7 @@ class OnlineTrackingEvaluator:
             crop_tensor = (crop_tensor - self.rgb_mean) / self.rgb_std
 
         if return_metadata:
-            # CRITICAL FIX (Audit 2025120401 Finding 10):
-            # Return crop metadata in unified format. The tracker.py fuse_features()
-            # will automatically convert this to letterbox format using
-            # crop_metadata_to_letterbox() for GeometryGatedAttention compatibility.
-            #
+            # Return crop metadata in unified format for fusion module compatibility.
             # This ensures consistent metadata handling across training/validation/online.
 
             metadata = {

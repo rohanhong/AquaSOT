@@ -210,7 +210,7 @@ def _get_default_parameter_groups(
                 backbone_no_decay.append(param)
             else:
                 backbone_decay.append(param)
-        elif 'fusion' in name.lower() or 'g2_dcma' in name.lower() or 'g2dcma' in name.lower():
+        elif 'fusion' in name.lower() or 'dcma' in name.lower() or 'g2dcma' in name.lower():
             if no_decay:
                 fusion_no_decay.append(param)
             else:

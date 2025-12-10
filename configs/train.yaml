@@ -104,7 +104,7 @@ model:
       search_size: 256                  # Search size
 
   fusion:
-    type: conditional_g2_dcma     # Conditional G2-DCMA fusion module
+    type: conditional_dcma        # Conditional DCMA fusion module
     rgb_channels: 768             # RGB feature channels
     sonar_channels: 768           # Sonar feature channels
     embed_dim: 768                # Fusion embedding dimension

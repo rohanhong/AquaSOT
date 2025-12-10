@@ -2,7 +2,7 @@
 Test Dual-View Fusion Architecture (Audit 2025112313).
 
 This test validates the critical architectural changes for dual-view fusion:
-1. G2-DCMA outputs both rgb_view_fused and sonar_view_fused
+1. DCMA outputs both rgb_view_fused and sonar_view_fused
 2. RGB BoxHead uses rgb_view_fused (not original rgb_features)
 3. Sonar BoxHead uses sonar_view_fused (not original sonar_features)
 4. Fusion BoxHead is removed
@@ -19,15 +19,15 @@ import pytest
 from pathlib import Path
 
 from aquasot3d.models.tracker import build_tracker
-from aquasot3d.models.fusion.g2_dcma import G2DCMA
+from aquasot3d.models.fusion.dcma import DCMA
 
 
-def test_g2_dcma_dual_view_output():
+def test_dcma_dual_view_output():
     """
-    Test that G2-DCMA outputs both rgb_view_fused and sonar_view_fused.
+    Test that DCMA outputs both rgb_view_fused and sonar_view_fused.
     """
-    # Create minimal G2-DCMA module
-    fusion = G2DCMA(
+    # Create minimal DCMA module
+    fusion = DCMA(
         embed_dim=768,
         num_heads=8
     )
@@ -58,7 +58,7 @@ def test_g2_dcma_dual_view_output():
     assert 'rgb_to_sonar_offsets' in deformable_info, "rgb_to_sonar_offsets should be present"
     assert 'sonar_to_rgb_offsets' in deformable_info, "sonar_to_rgb_offsets should be present"
 
-    print("✓ G2-DCMA dual-view output verified")
+    print("✓ DCMA dual-view output verified")
 
 
 def test_tracker_no_fusion_head():
@@ -80,7 +80,7 @@ def test_tracker_no_fusion_head():
             'output_dim': 768
         },
         'fusion_config': {
-            'type': 'g2_dcma',
+            'type': 'dcma',
             'embed_dim': 768,
             'num_heads': 8,
             'num_layers': 2
@@ -125,7 +125,7 @@ def test_boxhead_uses_fused_features():
             'output_dim': 768
         },
         'fusion_config': {
-            'type': 'g2_dcma',
+            'type': 'dcma',
             'embed_dim': 768,
             'num_heads': 8,
             'num_layers': 2
@@ -194,7 +194,7 @@ def test_auxiliary_heads_training():
             'output_dim': 768
         },
         'fusion_config': {
-            'type': 'g2_dcma',
+            'type': 'dcma',
             'embed_dim': 768,
             'num_heads': 8,
             'num_layers': 2
@@ -266,7 +266,7 @@ def test_view_consistency_loss():
             'output_dim': 768
         },
         'fusion_config': {
-            'type': 'g2_dcma',
+            'type': 'dcma',
             'embed_dim': 768,
             'num_heads': 8,
             'num_layers': 2
@@ -323,7 +323,7 @@ def test_end_to_end_gradient_flow():
             'output_dim': 768
         },
         'fusion_config': {
-            'type': 'g2_dcma',
+            'type': 'dcma',
             'embed_dim': 768,
             'num_heads': 8,
             'num_layers': 2
@@ -381,9 +381,9 @@ def test_end_to_end_gradient_flow():
 if __name__ == "__main__":
     print("=== Testing Dual-View Fusion Architecture ===\n")
 
-    print("Test 1: G2-DCMA dual-view output")
+    print("Test 1: DCMA dual-view output")
     try:
-        test_g2_dcma_dual_view_output()
+        test_dcma_dual_view_output()
     except Exception as e:
         print(f"✗ Test 1 failed: {e}\n")
 

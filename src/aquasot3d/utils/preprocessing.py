@@ -214,11 +214,10 @@ def crop_metadata_to_letterbox(
     search_size: int = 256
 ) -> Dict:
     """
-    Convert crop-based metadata to letterbox-equivalent format for GeometryGatedAttention.
+    Convert crop-based metadata to letterbox-equivalent format for fusion module.
 
-    CRITICAL FIX (Audit 2025120401 Finding 2, 10):
     This function unifies metadata format across training/validation/online evaluation.
-    GeometryGatedAttention expects letterbox-style metadata with specific keys.
+    The fusion module expects letterbox-style metadata with specific keys.
     Training pipeline produces crop-style metadata. This function bridges the gap.
 
     Crop metadata format (from TemplateSearchDataset/OnlineEvaluator):
@@ -228,7 +227,7 @@ def crop_metadata_to_letterbox(
         - pad_left, pad_top, pad_right, pad_bottom: Padding added for boundary handling
         - original_size: (H, W) of source image
 
-    Letterbox metadata format (expected by GeometryGatedAttention):
+    Letterbox metadata format (expected by fusion module):
         - scale: Resize factor from crop to output
         - scale_x, scale_y: Directional scale factors
         - pad_top, pad_left, pad_x, pad_y: Padding in output pixel space
@@ -247,12 +246,12 @@ def crop_metadata_to_letterbox(
         search_size: Output size (typically 256)
 
     Returns:
-        Letterbox-style metadata dict compatible with GeometryGatedAttention
+        Letterbox-style metadata dict compatible with fusion module
 
     Example:
         >>> crop_meta = {'crop_sz': 200, 'resize_factor': 1.28, 'pad_top': 10, ...}
         >>> lb_meta = crop_metadata_to_letterbox(crop_meta, search_size=256)
-        >>> # Pass lb_meta to GeometryGatedAttention
+        >>> # Pass lb_meta to fusion module
     """
     # Extract crop parameters with safe defaults
     crop_sz = crop_meta.get('crop_sz', search_size)
@@ -284,34 +283,9 @@ def crop_metadata_to_letterbox(
     new_h = int(content_h * resize_factor)
     new_w = int(content_w * resize_factor)
 
-    # CRITICAL FIX (Audit 2025120909): For sonar radial binning, sensor origin is at
-    # BOTTOM-CENTER of SOURCE IMAGE, not bottom of crop! Must compute sensor origin
-    # in output coordinates using source dims and crop position.
-    #
-    # Coordinate mapping:
-    # 1. Sensor in source coords: (source_w/2, source_h - 1)
-    # 2. Crop top-left in source: (crop_x1, crop_y1)
-    # 3. Sensor in crop coords: (source_w/2 - crop_x1, source_h - 1 - crop_y1)
-    # 4. Sensor in output coords (before padding): multiply by resize_factor
-    # 5. Sensor in output coords (after padding): add padding offsets
-
+    # Crop position for inverse transform
     crop_x1 = crop_meta.get('crop_x1', 0)
     crop_y1 = crop_meta.get('crop_y1', 0)
-
-    # Sensor position in crop coordinates (may be outside crop if crop doesn't include sensor)
-    sensor_in_crop_x = orig_w / 2 - crop_x1
-    sensor_in_crop_y = orig_h - 1 - crop_y1
-
-    # Sensor position in output coordinates (after resize and padding)
-    sensor_origin_x = sensor_in_crop_x * resize_factor + pad_left_out
-    sensor_origin_y = sensor_in_crop_y * resize_factor + pad_top_out
-
-    # True source-to-output scale factors
-    # Note: For target-centered crops, the effective scale from source to output
-    # involves both cropping (which selects a region) and resizing (which scales)
-    # For radial binning, we need the scale from source pixel space to output pixel space
-    # This is NOT resize_factor (which is crop_sz -> output), but source -> output
-    source_to_output_scale = resize_factor  # Within the cropped region
 
     # Build letterbox-format metadata
     letterbox_meta = {
@@ -320,7 +294,7 @@ def crop_metadata_to_letterbox(
         'scale_x': resize_factor,
         'scale_y': resize_factor,
 
-        # Padding in output pixel space (used by RadialProfileExtractor)
+        # Padding in output pixel space
         'pad_top': pad_top_out,
         'pad_left': pad_left_out,
         'pad_bottom': pad_bottom_out,
@@ -328,21 +302,11 @@ def crop_metadata_to_letterbox(
         'pad_x': (pad_left_out + pad_right_out) / 2,  # Average horizontal padding
         'pad_y': (pad_top_out + pad_bottom_out) / 2,  # Average vertical padding
 
-        # CRITICAL FIX (Audit 2025120909): Direct sensor origin in OUTPUT coordinates
-        # RadialProfileExtractor should use these directly instead of computing from
-        # original_height/scale which assumed sensor at bottom of crop (WRONG!)
-        'sensor_origin_x': sensor_origin_x,
-        'sensor_origin_y': sensor_origin_y,
-
-        # CRITICAL FIX (Audit 2025120909): Set original_height/width to SOURCE dimensions
-        # RadialProfileExtractor and geometry gating need TRUE source image size to
-        # correctly place sensor origin in physical space. Using content_h/content_w
-        # (crop content size) corrupted radial binning because it shrank the physical
-        # coordinate system to the crop region.
+        # Source image dimensions (TRUE source height/width)
         'original_height': orig_h,  # TRUE source height (NOT content_h)
         'original_width': orig_w,   # TRUE source width (NOT content_w)
 
-        # Content dimensions (for reference, NOT for geometry gating)
+        # Content dimensions (for reference)
         'content_height': content_h,
         'content_width': content_w,
 

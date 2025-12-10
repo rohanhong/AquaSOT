@@ -460,7 +460,7 @@ class TrackingEvaluator:
 
         # CRITICAL FIX (Audit 2025120902 Issue 9 + Revised): Self-inferred validity
         # Original fix removed GT visibility (correct - no GT leakage).
-        # However, ConditionalG2DCMA needs validity hints to bypass unreliable modalities.
+        # However, ConditionalDCMA needs validity hints to bypass unreliable modalities.
         # Without validity hints, fusion always assumes both modalities are valid,
         # causing model to use corrupted features from heavily-padded crops.
         #
@@ -515,7 +515,7 @@ class TrackingEvaluator:
             sonar_template_att_mask = sonar_template_att_mask.to(self.device)
 
         # Run model with SELF-INFERRED validity (not GT!)
-        # This enables ConditionalG2DCMA to properly bypass unreliable modalities
+        # This enables ConditionalDCMA to properly bypass unreliable modalities
         outputs = self.model(
             rgb_template, rgb_search, sonar_template, sonar_search,
             is_rgb_valid=is_rgb_valid,  # Self-inferred from padding ratio

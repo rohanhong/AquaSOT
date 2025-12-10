@@ -243,7 +243,7 @@ class TestConfigIntegration:
                     'embed_dim': 768
                 },
                 'fusion': {
-                    'type': 'G2DCMA',
+                    'type': 'DCMA',
                     'hidden_dim': 256,
                     'num_heads': 8
                 },

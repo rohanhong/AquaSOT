@@ -93,7 +93,7 @@ def load_model(checkpoint_path, device='cpu'):
         model = AquaSOT3DTracker(
             rgb_backbone_config={'type': 'vit_rgb', 'pretrained': False},
             sonar_backbone_config={'type': 'vit_sonar', 'pretrained': False},
-            fusion_config={'type': 'conditional_g2_dcma'},
+            fusion_config={'type': 'conditional_dcma'},
             box_head_config={'type': 'BoxHead', 'use_confidence_head': True}
         )
 

@@ -196,15 +196,15 @@ def build_dataloaders(cfg):
         logger.info(f"Using visibility_policy='{visibility_policy}' for training data filtering")
 
         # CRITICAL FIX (Audit 2025112507 Gap 2): Compatibility check for fusion type vs visibility policy
-        # Conditional G2-DCMA and confidence heads REQUIRE zero-modality frames (0,0,0,0) to learn suppression
-        fusion_type = cfg.model.fusion.get('type', 'g2_dcma')
+        # Conditional DCMA and confidence heads REQUIRE zero-modality frames (0,0,0,0) to learn suppression
+        fusion_type = cfg.model.fusion.get('type', 'dcma')
         has_confidence_heads = (
             cfg.model.heads.get('rgb_box', {}).get('use_confidence_head', False) or
             cfg.model.heads.get('sonar_box', {}).get('use_confidence_head', False)
         )
 
         requires_all_policy = (
-            fusion_type == 'conditional_g2_dcma' or  # Needs single/zero-modality routing
+            fusion_type == 'conditional_dcma' or  # Needs single/zero-modality routing
             has_confidence_heads  # Needs zero-modality for has_object=False learning
         )
 
@@ -286,14 +286,14 @@ def build_dataloaders(cfg):
 
         # CRITICAL FIX (Audit 2025112507 Gap 2): Compatibility check for fusion type vs visibility policy
         # (Same logic as multi-sequence mode above)
-        fusion_type = cfg.model.fusion.get('type', 'g2_dcma')
+        fusion_type = cfg.model.fusion.get('type', 'dcma')
         has_confidence_heads = (
             cfg.model.heads.get('rgb_box', {}).get('use_confidence_head', False) or
             cfg.model.heads.get('sonar_box', {}).get('use_confidence_head', False)
         )
 
         requires_all_policy = (
-            fusion_type == 'conditional_g2_dcma' or
+            fusion_type == 'conditional_dcma' or
             has_confidence_heads
         )
 

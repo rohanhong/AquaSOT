@@ -49,7 +49,7 @@ class TestZeroModalityHandling:
         config = {
             'rgb_backbone_config': {'type': 'vit_rgb', 'model_name': 'vit_tiny_patch16_224', 'pretrained': False, 'output_dim': 192},
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
-            'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
+            'fusion_config': {'type': 'dcma_lite', 'output_dim': 192},
             'use_temporal': False,
         }
 
@@ -88,7 +88,7 @@ class TestSingleModalityHandling:
         config = {
             'rgb_backbone_config': {'type': 'vit_rgb', 'model_name': 'vit_tiny_patch16_224', 'pretrained': False, 'output_dim': 192},
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
-            'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
+            'fusion_config': {'type': 'dcma_lite', 'output_dim': 192},
             'use_temporal': False,
         }
 
@@ -121,7 +121,7 @@ class TestSingleModalityHandling:
         config = {
             'rgb_backbone_config': {'type': 'vit_rgb', 'model_name': 'vit_tiny_patch16_224', 'pretrained': False, 'output_dim': 192},
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
-            'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
+            'fusion_config': {'type': 'dcma_lite', 'output_dim': 192},
             'use_temporal': False,
         }
 
@@ -158,7 +158,7 @@ class TestDualModalityHandling:
         config = {
             'rgb_backbone_config': {'type': 'vit_rgb', 'model_name': 'vit_tiny_patch16_224', 'pretrained': False, 'output_dim': 192},
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
-            'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
+            'fusion_config': {'type': 'dcma_lite', 'output_dim': 192},
             'use_temporal': False,
         }
 
@@ -195,7 +195,7 @@ class TestSequenceIntegrity:
         config = {
             'rgb_backbone_config': {'type': 'vit_rgb', 'model_name': 'vit_tiny_patch16_224', 'pretrained': False, 'output_dim': 192},
             'sonar_backbone_config': {'type': 'sonar', 'encoder_type': 'conv', 'output_dim': 128},
-            'fusion_config': {'type': 'g2_dcma_lite', 'output_dim': 192},
+            'fusion_config': {'type': 'dcma_lite', 'output_dim': 192},
             'use_temporal': False,
         }
 

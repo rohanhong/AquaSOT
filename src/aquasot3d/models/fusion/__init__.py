@@ -1,34 +1,24 @@
 """
 Fusion Module for Cross-Modal RGB-Sonar Fusion
 
-This package implements the G2-DCMA (Geometry-Gated Deformable Cross-Modal Attention)
+This package implements the DCMA (Deformable Cross-Modal Attention)
 fusion framework for AquaSOT-3D.
 
 Components:
-- geometric_gating: Geometry-aware attention with radial and scale priors
 - deformable_attention: Deformable cross-attention with learnable sampling offsets
 - consistency_loss: Dual consistency (component + representation) constraints
-- g2_dcma: Complete G2-DCMA fusion module integrating all components
+- dcma: Complete DCMA fusion module integrating all components
 
 Usage:
-    from aquasot3d.models.fusion import build_g2_dcma, G2DCMA
+    from aquasot3d.models.fusion import build_dcma, DCMA
 
     # Build from config
     config = {'embed_dim': 256, 'num_heads': 8, ...}
-    fusion_module = build_g2_dcma(config)
+    fusion_module = build_dcma(config)
 
     # Or instantiate directly
-    fusion_module = G2DCMA(embed_dim=256, num_heads=8)
+    fusion_module = DCMA(embed_dim=256, num_heads=8)
 """
-
-# Geometric Gating
-from aquasot3d.models.fusion.geometric_gating import (
-    RadialProfileExtractor,
-    ScalePyramidExtractor,
-    GeometricGatingFunction,
-    GeometryGatedAttention,
-    build_geometry_gated_attention
-)
 
 # Deformable Attention
 from aquasot3d.models.fusion.deformable_attention import (
@@ -50,8 +40,16 @@ from aquasot3d.models.fusion.consistency_loss import (
     build_projection_head
 )
 
-# G2-DCMA (including ConditionalG2DCMA - consolidated in Audit 2025112309)
-from aquasot3d.models.fusion.g2_dcma import (
+# DCMA (including ConditionalDCMA)
+from aquasot3d.models.fusion.dcma import (
+    ModalityConfidenceEstimator,
+    DCMA,
+    DCMALite,
+    ConditionalDCMA,
+    build_dcma,
+    build_dcma_lite,
+    build_conditional_dcma,
+    # Backward compatibility aliases
     G2DCMA,
     G2DCMALite,
     ConditionalG2DCMA,
@@ -61,13 +59,6 @@ from aquasot3d.models.fusion.g2_dcma import (
 )
 
 __all__ = [
-    # Geometric Gating
-    'RadialProfileExtractor',
-    'ScalePyramidExtractor',
-    'GeometricGatingFunction',
-    'GeometryGatedAttention',
-    'build_geometry_gated_attention',
-
     # Deformable Attention
     'DeformableOffsetNetwork',
     'BilinearSampler',
@@ -84,13 +75,22 @@ __all__ = [
     'build_dual_consistency_loss',
     'build_projection_head',
 
-    # G2-DCMA
+    # DCMA (primary names)
+    'ModalityConfidenceEstimator',
+    'DCMA',
+    'DCMALite',
+    'build_dcma',
+    'build_dcma_lite',
+
+    # Conditional DCMA
+    'ConditionalDCMA',
+    'build_conditional_dcma',
+
+    # Backward compatibility aliases (deprecated, use new names)
     'G2DCMA',
     'G2DCMALite',
+    'ConditionalG2DCMA',
     'build_g2_dcma',
     'build_g2_dcma_lite',
-
-    # Conditional G2-DCMA (Audit 2025112101 Phase 2.1)
-    'ConditionalG2DCMA',
     'build_conditional_g2_dcma'
 ]

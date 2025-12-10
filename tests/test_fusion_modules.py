@@ -1,11 +1,10 @@
 """
-Comprehensive Test Suite for Fusion Modules (Phase 4)
+Comprehensive Test Suite for Fusion Modules
 
-Tests all components of the G²-DCMA fusion framework:
-- Geometric Gating (geometric_gating.py)
+Tests all components of the DCMA fusion framework:
 - Deformable Attention (deformable_attention.py)
 - Consistency Loss (consistency_loss.py)
-- G²-DCMA Integration (g2_dcma.py)
+- DCMA Integration (dcma.py)
 
 Run with: pytest tests/test_fusion_modules.py -v
 """
@@ -15,12 +14,6 @@ import torch
 import torch.nn as nn
 
 from aquasot3d.models.fusion import (
-    # Geometric Gating
-    RadialProfileExtractor,
-    ScalePyramidExtractor,
-    GeometricGatingFunction,
-    GeometryGatedAttention,
-    build_geometry_gated_attention,
     # Deformable Attention
     DeformableOffsetNetwork,
     BilinearSampler,
@@ -35,169 +28,12 @@ from aquasot3d.models.fusion import (
     ProjectionHead,
     build_dual_consistency_loss,
     build_projection_head,
-    # G²-DCMA
-    G2DCMA,
-    G2DCMALite,
-    build_g2_dcma,
-    build_g2_dcma_lite
+    # DCMA
+    DCMA,
+    DCMALite,
+    build_dcma,
+    build_dcma_lite
 )
-
-
-# ============================================================================
-# Test Geometric Gating Components
-# ============================================================================
-
-class TestRadialProfileExtractor:
-    """Test RadialProfileExtractor for sonar radial encoding."""
-
-    def test_initialization(self):
-        """Test module initialization."""
-        extractor = RadialProfileExtractor(num_bins=50, feature_dim=256)
-        assert extractor.num_bins == 50
-        assert extractor.feature_dim == 256
-        assert extractor.learnable_weights is True
-
-    def test_forward_shape(self):
-        """Test output shape correctness."""
-        B, C, H, W = 2, 256, 32, 32
-        sonar_features = torch.randn(B, C, H, W)
-
-        extractor = RadialProfileExtractor(num_bins=50, feature_dim=C)
-        output = extractor(sonar_features)
-
-        assert output.shape == (B, 64), f"Expected shape (2, 64), got {output.shape}"
-
-    def test_radial_bins_extraction(self):
-        """Test radial bin extraction."""
-        B, C, H, W = 2, 256, 32, 32
-        sonar_features = torch.randn(B, C, H, W)
-
-        extractor = RadialProfileExtractor(num_bins=25, feature_dim=C)
-        radial_profile = extractor.extract_radial_bins(sonar_features)
-
-        assert radial_profile.shape == (B, 25)
-        assert not torch.isnan(radial_profile).any()
-        assert not torch.isinf(radial_profile).any()
-
-    def test_different_sensor_positions(self):
-        """Test different sensor position modes."""
-        B, C, H, W = 2, 256, 32, 32
-        sonar_features = torch.randn(B, C, H, W)
-
-        extractor = RadialProfileExtractor(num_bins=50, feature_dim=C)
-
-        # Bottom center (default)
-        profile1 = extractor.extract_radial_bins(sonar_features, sensor_position="bottom_center")
-        assert profile1.shape == (B, 50)
-
-        # Center
-        profile2 = extractor.extract_radial_bins(sonar_features, sensor_position="center")
-        assert profile2.shape == (B, 50)
-
-        # Profiles should be different
-        assert not torch.allclose(profile1, profile2)
-
-
-class TestScalePyramidExtractor:
-    """Test ScalePyramidExtractor for RGB scale encoding."""
-
-    def test_initialization(self):
-        """Test module initialization."""
-        extractor = ScalePyramidExtractor(feature_dim=256, num_scales=3)
-        assert extractor.feature_dim == 256
-        assert extractor.num_scales == 3
-        assert extractor.use_attention is True
-
-    def test_forward_shape(self):
-        """Test output shape correctness."""
-        B, C, H, W = 2, 256, 64, 64
-        rgb_features = torch.randn(B, C, H, W)
-
-        extractor = ScalePyramidExtractor(feature_dim=C, num_scales=3)
-        output = extractor(rgb_features)
-
-        assert output.shape == (B, 64), f"Expected shape (2, 64), got {output.shape}"
-
-    def test_with_pyramid_levels(self):
-        """Test with explicit pyramid levels."""
-        B, C = 2, 256
-        pyramid_levels = [
-            torch.randn(B, C, 64, 64),
-            torch.randn(B, C, 32, 32),
-            torch.randn(B, C, 16, 16)
-        ]
-
-        extractor = ScalePyramidExtractor(feature_dim=C, num_scales=3)
-        output = extractor(pyramid_levels[0], pyramid_levels=pyramid_levels)
-
-        assert output.shape == (B, 64)
-        assert not torch.isnan(output).any()
-
-
-class TestGeometricGatingFunction:
-    """Test GeometricGatingFunction."""
-
-    def test_initialization(self):
-        """Test module initialization."""
-        gating_fn = GeometricGatingFunction(
-            radial_dim=64,
-            scale_dim=64,
-            hidden_dim=128,
-            num_heads=8
-        )
-        assert gating_fn.num_heads == 8
-
-    def test_forward_shape(self):
-        """Test output shape correctness."""
-        B = 4
-        radial_encoding = torch.randn(B, 64)
-        scale_encoding = torch.randn(B, 64)
-
-        gating_fn = GeometricGatingFunction(radial_dim=64, scale_dim=64, num_heads=8)
-        gating_weights = gating_fn(radial_encoding, scale_encoding)
-
-        assert gating_weights.shape == (B, 8)
-        # Gating weights should be in [0, 1] due to sigmoid
-        assert (gating_weights >= 0).all() and (gating_weights <= 1).all()
-
-
-class TestGeometryGatedAttention:
-    """Test complete GeometryGatedAttention module."""
-
-    def test_initialization(self):
-        """Test module initialization."""
-        attention = GeometryGatedAttention(embed_dim=256, num_heads=8)
-        assert attention.embed_dim == 256
-        assert attention.num_heads == 8
-
-    def test_forward_shape(self):
-        """Test output shape correctness."""
-        B, C = 2, 256
-        rgb_features = torch.randn(B, C, 64, 64)
-        sonar_features = torch.randn(B, C, 32, 32)
-
-        attention = GeometryGatedAttention(embed_dim=C, num_heads=8)
-        output = attention(rgb_features, sonar_features)
-
-        assert 'fused_features' in output
-        assert output['fused_features'].shape == (B, C, 64, 64)
-        assert 'gating_weights' in output
-        assert output['gating_weights'].shape == (B, 8)
-
-    def test_gradient_flow(self):
-        """Test gradient flow through the module."""
-        B, C = 2, 256
-        rgb_features = torch.randn(B, C, 64, 64, requires_grad=True)
-        sonar_features = torch.randn(B, C, 32, 32, requires_grad=True)
-
-        attention = GeometryGatedAttention(embed_dim=C, num_heads=8)
-        output = attention(rgb_features, sonar_features)
-
-        loss = output['fused_features'].mean()
-        loss.backward()
-
-        assert rgb_features.grad is not None
-        assert sonar_features.grad is not None
 
 
 # ============================================================================
@@ -480,17 +316,17 @@ class TestProjectionHead:
 
 
 # ============================================================================
-# Test G²-DCMA Integration
+# Test DCMA Integration
 # ============================================================================
 
-class TestG2DCMA:
-    """Test complete G²-DCMA module."""
+class TestDCMA:
+    """Test complete DCMA module."""
 
     def test_initialization(self):
         """Test module initialization."""
-        g2_dcma = G2DCMA(embed_dim=256, num_heads=8)
-        assert g2_dcma.embed_dim == 256
-        assert g2_dcma.num_heads == 8
+        dcma = DCMA(embed_dim=256, num_heads=8)
+        assert dcma.embed_dim == 256
+        assert dcma.num_heads == 8
 
     def test_forward_single_scale(self):
         """Test forward pass with single-scale features."""
@@ -498,14 +334,15 @@ class TestG2DCMA:
         rgb_features = torch.randn(B, C, 64, 64)
         sonar_features = torch.randn(B, C, 32, 32)
 
-        g2_dcma = G2DCMA(embed_dim=C, num_heads=8, use_multi_scale=False)
-        output = g2_dcma(rgb_features, sonar_features)
+        dcma = DCMA(embed_dim=C, num_heads=8, use_multi_scale=False)
+        output = dcma(rgb_features, sonar_features)
 
         assert 'fused_features' in output
         assert output['fused_features'].shape == (B, C, 64, 64)
         assert 'consistency_losses' in output
-        assert 'geometric_info' in output
         assert 'deformable_info' in output
+        assert 'rgb_view_fused' in output
+        assert 'sonar_view_fused' in output
 
     def test_forward_multi_scale(self):
         """Test forward pass with multi-scale features."""
@@ -521,8 +358,8 @@ class TestG2DCMA:
             torch.randn(B, C, 16, 16)
         ]
 
-        g2_dcma = G2DCMA(embed_dim=C, num_heads=8, use_multi_scale=True, num_levels=3)
-        output = g2_dcma(
+        dcma = DCMA(embed_dim=C, num_heads=8, use_multi_scale=True, num_levels=3)
+        output = dcma(
             rgb_features=rgb_pyramid[0],
             sonar_features=sonar_pyramid[0],
             rgb_pyramid=rgb_pyramid,
@@ -538,8 +375,8 @@ class TestG2DCMA:
         rgb_features = torch.randn(B, C, 32, 32, requires_grad=True)
         sonar_features = torch.randn(B, C, 16, 16, requires_grad=True)
 
-        g2_dcma = G2DCMA(embed_dim=C, num_heads=8)
-        output = g2_dcma(rgb_features, sonar_features)
+        dcma = DCMA(embed_dim=C, num_heads=8)
+        output = dcma(rgb_features, sonar_features)
 
         # Backprop through fusion output
         loss_fusion = output['fused_features'].mean()
@@ -554,8 +391,8 @@ class TestG2DCMA:
         rgb_features = torch.randn(B, C, 32, 32)
         sonar_features = torch.randn(B, C, 16, 16)
 
-        g2_dcma = G2DCMA(embed_dim=C, num_heads=8)
-        output = g2_dcma(rgb_features, sonar_features, return_consistency=True)
+        dcma = DCMA(embed_dim=C, num_heads=8)
+        output = dcma(rgb_features, sonar_features, return_consistency=True)
 
         consistency_losses = output['consistency_losses']
         assert 'total_loss' in consistency_losses
@@ -563,14 +400,31 @@ class TestG2DCMA:
         assert 'infonce_loss' in consistency_losses
         assert consistency_losses['total_loss'] >= 0
 
+    def test_confidence_estimation(self):
+        """Test that confidence scores are computed correctly."""
+        B, C = 2, 256
+        rgb_features = torch.randn(B, C, 32, 32)
+        sonar_features = torch.randn(B, C, 16, 16)
 
-class TestG2DCMALite:
-    """Test lightweight G²-DCMA variant."""
+        dcma = DCMA(embed_dim=C, num_heads=8)
+        output = dcma(rgb_features, sonar_features)
+
+        assert 'rgb_confidence' in output
+        assert 'sonar_confidence' in output
+        assert 'combined_confidence' in output
+
+        # Confidence should be in [0, 1]
+        assert (output['rgb_confidence'] >= 0).all() and (output['rgb_confidence'] <= 1).all()
+        assert (output['sonar_confidence'] >= 0).all() and (output['sonar_confidence'] <= 1).all()
+
+
+class TestDCMALite:
+    """Test lightweight DCMA variant."""
 
     def test_initialization(self):
         """Test module initialization."""
-        g2_dcma_lite = G2DCMALite(embed_dim=256, num_heads=4)
-        assert g2_dcma_lite.g2_dcma.num_heads == 4
+        dcma_lite = DCMALite(embed_dim=256, num_heads=4)
+        assert dcma_lite.dcma.num_heads == 4
 
     def test_forward_shape(self):
         """Test output shape correctness."""
@@ -578,8 +432,8 @@ class TestG2DCMALite:
         rgb_features = torch.randn(B, C, 32, 32)
         sonar_features = torch.randn(B, C, 16, 16)
 
-        g2_dcma_lite = G2DCMALite(embed_dim=C, num_heads=4)
-        output = g2_dcma_lite(rgb_features, sonar_features)
+        dcma_lite = DCMALite(embed_dim=C, num_heads=4)
+        output = dcma_lite(rgb_features, sonar_features)
 
         assert 'fused_features' in output
         assert output['fused_features'].shape == (B, C, 32, 32)
@@ -591,13 +445,6 @@ class TestG2DCMALite:
 
 class TestFactoryFunctions:
     """Test factory functions for building modules from config."""
-
-    def test_build_geometry_gated_attention(self):
-        """Test building GeometryGatedAttention from config."""
-        config = {'embed_dim': 256, 'num_heads': 8, 'dropout': 0.1}
-        attention = build_geometry_gated_attention(config)
-        assert attention.embed_dim == 256
-        assert attention.num_heads == 8
 
     def test_build_deformable_cross_attention(self):
         """Test building DeformableCrossAttention from config."""
@@ -617,24 +464,22 @@ class TestFactoryFunctions:
         assert loss_fn.component_weight == 1.0
         assert loss_fn.representation_weight == 0.5
 
-    def test_build_g2_dcma(self):
-        """Test building G²-DCMA from config."""
+    def test_build_dcma(self):
+        """Test building DCMA from config."""
         config = {
             'embed_dim': 256,
             'num_heads': 8,
-            'num_radial_bins': 50,
-            'num_scales': 3,
             'use_multi_scale': False
         }
-        g2_dcma = build_g2_dcma(config)
-        assert g2_dcma.embed_dim == 256
-        assert g2_dcma.num_heads == 8
+        dcma = build_dcma(config)
+        assert dcma.embed_dim == 256
+        assert dcma.num_heads == 8
 
-    def test_build_g2_dcma_lite(self):
-        """Test building lightweight G²-DCMA from config."""
+    def test_build_dcma_lite(self):
+        """Test building lightweight DCMA from config."""
         config = {'embed_dim': 256, 'num_heads': 4}
-        g2_dcma_lite = build_g2_dcma_lite(config)
-        assert g2_dcma_lite.g2_dcma.num_heads == 4
+        dcma_lite = build_dcma_lite(config)
+        assert dcma_lite.dcma.num_heads == 4
 
 
 # ============================================================================
@@ -650,30 +495,27 @@ class TestIntegration:
         rgb_features = torch.randn(B, C, 64, 64)
         sonar_features = torch.randn(B, C, 32, 32)
 
-        # Build complete G²-DCMA
-        g2_dcma = G2DCMA(
+        # Build complete DCMA
+        dcma = DCMA(
             embed_dim=C,
             num_heads=8,
-            num_radial_bins=50,
-            num_scales=3,
             num_deformable_points=4,
             use_multi_scale=False
         )
 
         # Forward pass
-        output = g2_dcma(rgb_features, sonar_features, return_consistency=True)
+        output = dcma(rgb_features, sonar_features, return_consistency=True)
 
         # Verify all outputs
         assert 'fused_features' in output
-        assert 'geometry_gated' in output
-        assert 'deformable_attended' in output
+        assert 'initial_fused' in output
         assert 'consistency_losses' in output
-        assert 'geometric_info' in output
         assert 'deformable_info' in output
+        assert 'rgb_view_fused' in output
+        assert 'sonar_view_fused' in output
 
         # Verify shapes
         assert output['fused_features'].shape == (B, C, 64, 64)
-        assert output['geometric_info']['gating_weights'].shape == (B, 8)
 
         # Verify losses
         consistency = output['consistency_losses']
@@ -695,14 +537,14 @@ class TestIntegration:
             torch.randn(B, C, 16, 16)
         ]
 
-        g2_dcma = G2DCMA(
+        dcma = DCMA(
             embed_dim=C,
             num_heads=8,
             use_multi_scale=True,
             num_levels=3
         )
 
-        output = g2_dcma(
+        output = dcma(
             rgb_features=rgb_pyramid[0],
             sonar_features=sonar_pyramid[0],
             rgb_pyramid=rgb_pyramid,

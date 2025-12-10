@@ -934,7 +934,7 @@ class EvaluationSequenceDataset(Dataset):
             'sonar_boxes_pixels': search_bbox_sonar_pixels,
 
             # Validity flags (CRITICAL FIX Audit 2025112504 Finding 1)
-            # These flags enable ConditionalG2DCMA to route single/zero modality scenarios
+            # These flags enable ConditionalDCMA to route single/zero modality scenarios
             # CRITICAL FIX (Audit 2025112601): Use is_valid_rgb naming for consistency with
             # collate_fn_template_search and TrackingEvaluator expectations
             'is_valid': search_data['is_valid'],

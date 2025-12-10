@@ -532,31 +532,19 @@ class TemplateSearchDataset(Dataset):
         # CRITICAL FIX (Audit 2025112403 Finding 3): Add original_height/width for radial binning
         rgb_metadata = search_sample.get('rgb_metadata', {})
         rgb_metadata.update(rgb_search_meta)
-        # Add explicit original_height/width fields required by GeometryGatedAttention
+        # Add explicit original_height/width fields for fusion module
         if 'original_size' in rgb_search_meta:
             rgb_metadata['original_height'] = rgb_search_meta['original_size'][0]
             rgb_metadata['original_width'] = rgb_search_meta['original_size'][1]
 
         sonar_metadata = search_sample.get('sonar_metadata', {})
         sonar_metadata.update(sonar_search_meta)
-        # Add explicit original_height/width fields required by GeometryGatedAttention
+        # Add explicit original_height/width fields for fusion module
         if 'original_size' in sonar_search_meta:
             sonar_metadata['original_height'] = sonar_search_meta['original_size'][0]
             sonar_metadata['original_width'] = sonar_search_meta['original_size'][1]
 
-        # CRITICAL FIX (Audit 2025112501 P3 - FINAL DESIGN):
-        # G²-DCMA uses HEURISTIC geometry gating based on letterbox metadata (scale/padding).
-        # External sonar geometry priors (FOV, range) are NOT used - this is the final implementation.
-        # GeometryGatedAttention computes radial bins from letterbox-compensated sensor origins,
-        # which provides sufficient geometric regularization without external calibration.
-        #
-        # Design rationale:
-        #   - Letterbox metadata (scale/pad) captures spatial transformations reliably
-        #   - Heuristic radial estimation from feature maps provides geometry-aware gating
-        #   - Avoids dependency on potentially inaccurate external geometry parameters
-        #   - Maintains calibration-free fusion capability (core system requirement)
-        #
-        # Only pass transform metadata (scale/padding) and rectification status.
+        # Pass transform metadata (scale/padding) and rectification status for fusion.
         sonar_metadata['is_rectified'] = getattr(self.base_dataset, 'sonar_is_rectified', True)
 
         # CRITICAL FIX (Audit 2025112602): Transform bboxes to crop coordinates
