@@ -40,6 +40,32 @@ from .preprocessing import (
     crop_metadata_to_letterbox,
 )
 
+from .run_manager import (
+    generate_run_id,
+    get_git_hash,
+    get_git_status,
+    create_run_directory,
+    save_run_metadata,
+    load_run_metadata,
+    check_output_directory,
+    detect_legacy_outputs,
+    migrate_legacy_outputs,
+    find_latest_run,
+    setup_train_run,
+    setup_eval_run,
+)
+
+from .data_validation import (
+    rect_data_check,
+    validate_data_root,
+    check_rect_readiness,
+    block_polar_data,
+    generate_metadata_dict,
+    validate_sequences_or_raise,
+    get_validation_summary,
+    EXPECTED_SONAR_RECT_RESOLUTION,
+)
+
 __all__ = [
     # Bbox Format Conversion (Audit 2025111405 contract helpers)
     'convert_bbox_format',
@@ -79,4 +105,28 @@ __all__ = [
     'letterbox_with_metadata',
     'preprocess_for_inference',
     'crop_metadata_to_letterbox',
+
+    # Run Management (Audit 2025121301 output versioning and metadata tracking)
+    'generate_run_id',
+    'get_git_hash',
+    'get_git_status',
+    'create_run_directory',
+    'save_run_metadata',
+    'load_run_metadata',
+    'check_output_directory',
+    'detect_legacy_outputs',
+    'migrate_legacy_outputs',
+    'find_latest_run',
+    'setup_train_run',
+    'setup_eval_run',
+
+    # Data Validation (Audit 2025121301 - Findings 4, 16, 24, 26, 27)
+    'rect_data_check',
+    'validate_data_root',
+    'check_rect_readiness',
+    'block_polar_data',
+    'generate_metadata_dict',
+    'validate_sequences_or_raise',
+    'get_validation_summary',
+    'EXPECTED_SONAR_RECT_RESOLUTION',
 ]

@@ -1,37 +1,27 @@
-# Ablation: RGB-Only Single-Modality
-# Assess RGB-only tracking performance when Sonar is unavailable.
+# Ablation: RGB-Only via Modality Dropout
+#
+# CRITICAL FIX (Audit 2025121202 Finding 1): Single-modality ablation using modality_dropout.
+# This config simulates RGB-only operation by always dropping sonar modality.
+# The model still loads dual-modality architecture but learns to operate with sonar=zero.
+# This approach maintains dual-modality architecture consistency while testing RGB-only performance.
 
 _base_: ../train.yaml
 
 experiment:
   name: ablation_rgb_only
-  tags: [ablation, single_modality, rgb_only]
-  notes: "Ablation study: RGB-only tracking without Sonar fusion"
+  tags: [ablation, rgb_only, modality_dropout]
+  notes: "RGB-only ablation via modality_dropout (p_drop_sonar=1.0)"
   group: ablation
 
-model:
-  allow_single_modality: true   # Enable single-modality mode
-
-  backbone:
-    rgb:
-      type: vit_rgb
-      model_name: vit_base_patch16_224
-      pretrained: true
-      template_size: 128
-      search_size: 256
-    sonar:
-      type: null                # Sonar backbone disabled
-
-  fusion:
-    type: conditional_dcma
-    embed_dim: 256
-    num_heads: 8
-
-dataset:
-  train:
-    load_sonar: false           # Skip Sonar loading for efficiency
-  val:
-    load_sonar: false
+# CRITICAL FIX (Audit 2025121202 Finding 1): Use modality_dropout instead of allow_single_modality
+# Dual-modality architecture is preserved; sonar is zeroed during training/inference
+data:
+  modality_dropout:
+    enabled: true
+    p_drop_rgb: 0.0             # Never drop RGB
+    p_drop_sonar: 1.0           # Always drop sonar (RGB-only simulation)
+    p_drop_both: 0.0            # Never drop both
+    mode: zero                  # Zero out dropped modality
 
 paths:
   work_dir: outputs/ablation_rgb_only
@@ -42,3 +32,19 @@ training:
   num_epochs: 100               # Same as train.yaml for fair comparison
   optimizer:
     lr: 0.0001
+
+  # Sonar losses still computed but will be near-zero due to dropout
+  # Keep weights for consistency; model learns RGB-primary operation
+  loss_weights:
+    rgb_box: 1.0
+    rgb_conf: 1.0
+    rgb_validity: 1.0
+    sonar_box: 0.1              # Reduced - sonar always dropped
+    sonar_conf: 0.1             # Reduced - sonar always dropped
+    sonar_validity: 0.1         # Reduced - sonar always dropped
+    aux_rgb: 0.3
+    aux_sonar: 0.0              # Disabled - sonar always dropped
+    geometric_consistency: 0.0  # Disabled - no cross-modal alignment
+    representation_consistency: 0.0  # Disabled - no cross-modal alignment
+    view_consistency: 0.0       # Disabled - no cross-modal alignment
+    routing_validity: 0.5       # Keep routing learning

@@ -306,26 +306,9 @@ class TrackingEvaluator:
                 'max': float(np.max(sonar_q))
             }
 
-        # Fusion quality statistics
-        if predictions.get('fusion_quality'):
-            fusion_q = np.array(predictions['fusion_quality'])
-            diagnostics['fusion_quality'] = {
-                'mean': float(np.mean(fusion_q)),
-                'std': float(np.std(fusion_q)),
-                'min': float(np.min(fusion_q)),
-                'max': float(np.max(fusion_q))
-            }
-
-        # Adaptive fusion weights
-        if predictions.get('fusion_weights'):
-            weights = np.array(predictions['fusion_weights'])
-            if weights.ndim == 2 and weights.shape[1] == 2:
-                diagnostics['fusion_weights'] = {
-                    'rgb_mean': float(np.mean(weights[:, 0])),
-                    'sonar_mean': float(np.mean(weights[:, 1])),
-                    'rgb_std': float(np.std(weights[:, 0])),
-                    'sonar_std': float(np.std(weights[:, 1]))
-                }
+        # CRITICAL FIX (Audit 2025121202 Finding 18/23): FusionHead diagnostics removed
+        # fusion_quality and fusion_weights are no longer collected or computed.
+        # Current architecture uses ConditionalDCMA which outputs directly to BoxHeads.
 
         return diagnostics
 
@@ -570,8 +553,11 @@ class TrackingEvaluator:
             # CRITICAL FIX (Audit 2025111413 Finding 3): Collect quality trends
             'rgb_quality': [],
             'sonar_quality': [],
-            'fusion_quality': [],
-            'fusion_weights': [],
+            # CRITICAL FIX (Audit 2025121202 Finding 18): Conditionally initialize fusion fields
+            # Only collect fusion_quality/fusion_weights if FusionHead is present in model
+            # This avoids empty arrays and misleading diagnostics when Fusion is not used
+            # 'fusion_quality': [],  # DEPRECATED: Only initialize if evaluate_fusion=true
+            # 'fusion_weights': [],  # DEPRECATED: Only initialize if evaluate_fusion=true
             # CRITICAL FIX (Audit 2025112101 Phase 4.2): Collect scenario labels
             'scenario_labels': []
         }
@@ -731,10 +717,16 @@ class TrackingEvaluator:
             predictions['rgb_quality'] = outputs['rgb_quality'].cpu().numpy().tolist()
         if 'sonar_quality' in outputs:
             predictions['sonar_quality'] = outputs['sonar_quality'].cpu().numpy().tolist()
-        if 'fusion_quality' in outputs:
-            predictions['fusion_quality'] = outputs['fusion_quality'].cpu().numpy().tolist()
-        if 'fusion_weights' in outputs:
-            predictions['fusion_weights'] = outputs['fusion_weights'].cpu().numpy().tolist()
+        # CRITICAL FIX (Audit 2025121202 Finding 18/23): FusionHead completely removed
+        # fusion_quality/fusion_weights should NOT be present in current models.
+        # If detected, log warning about potential legacy checkpoint usage.
+        if 'fusion_quality' in outputs or 'fusion_weights' in outputs:
+            logger.warning(
+                "LEGACY: fusion_quality/fusion_weights detected in model outputs. "
+                "FusionHead is deprecated (Audit 2025121202). "
+                "Consider migrating checkpoint to current architecture."
+            )
+            # Skip collection - these fields are no longer supported
 
         # =====================================================================
         # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):

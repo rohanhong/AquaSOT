@@ -26,10 +26,23 @@ import logging
 import numpy as np
 import cv2
 
-from aquasot3d.utils.config import load_config, save_config, setup_config_logging
+from aquasot3d.utils.config import load_config, save_config, setup_config_logging, _config_to_dict
 from aquasot3d.dataloader import create_dataloader
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.evaluation import TrackingEvaluator, TrackingVisualizer, OnlineTrackingEvaluator
+# CRITICAL FIX (Audit 2025121202 Finding 4/16/26/27): Data validation utilities
+from aquasot3d.utils.data_validation import (
+    validate_sequences_or_raise,
+    get_validation_summary,
+    block_polar_data,
+    EXPECTED_SONAR_RECT_RESOLUTION
+)
+# CRITICAL FIX (Audit 2025121202 Finding 13/21/24): Run manager utilities
+from aquasot3d.utils.run_manager import (
+    setup_eval_run,
+    detect_legacy_outputs,
+    generate_run_id
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,11 +224,111 @@ def main():
         logger.info(f"  No visualization artifacts will be generated")
         logger.info(f"  Use --visualize flag to enable visualization")
 
-    # Create output directories
+    # CRITICAL FIX (Audit 2025121202 Finding 4/16/26/27): Validate data before evaluation
+    data_root = cfg.data.get('data_root', 'data')
+    test_sequences = cfg.data.get('test_sequences', [])
+    if isinstance(test_sequences, str):
+        test_sequences = [test_sequences]
+
+    # CRITICAL FIX (Audit 2025121202 Finding 12): Enforce batch_size=1 for evaluation
+    eval_batch_size = cfg.evaluation.get('batch_size', 1)
+    if eval_batch_size != 1:
+        logger.warning(
+            f"Evaluation batch_size={eval_batch_size} specified, but online tracking "
+            f"evaluation REQUIRES batch_size=1 for sequential frame processing. "
+            f"Forcing batch_size=1."
+        )
+        cfg.evaluation.batch_size = 1
+    logger.info(f"Evaluation batch_size: 1 (enforced for online tracking protocol)")
+
+    # CRITICAL FIX (Audit 2025121202 Finding 21/24/27): Record and validate data paths
+    rect_check_result = None
+    test_root = str(cfg.data.get('test_root') or data_root)
+    data_paths = {
+        'data_root': str(data_root),
+        'test_root': test_root,
+        'test_sequences': test_sequences
+    }
+
+    # CRITICAL FIX (Audit 2025121202 Finding 27): Validate data root existence
+    for root_name, root_path in [('data_root', data_root), ('test_root', test_root)]:
+        if not Path(root_path).exists():
+            raise FileNotFoundError(
+                f"Data root does not exist: {root_name}={root_path}\n"
+                f"Please verify the data path configuration in your config file."
+            )
+    logger.info(f"Data root validation passed: data_root={data_root}")
+
+    # CRITICAL FIX (Audit 2025121202 Finding 27): Handle legacy single-sequence mode validation
+    # In legacy mode, test_sequences is empty but test_root points to a sequence directory
+    if not test_sequences and test_root != data_root:
+        # Legacy mode: extract sequence name from path
+        test_seq_path = Path(test_root)
+        test_sequences = [test_seq_path.name]
+        # Use parent as data_root for validation
+        data_root = str(test_seq_path.parent)
+        logger.info(f"Legacy mode: extracted sequence {test_sequences} from test_root")
+
+    if test_sequences:
+        logger.info("Validating evaluation data rect preprocessing...")
+        try:
+            validate_sequences_or_raise(
+                data_root=data_root,
+                sequence_names=test_sequences,
+                strict=True  # Fail if rect data not ready
+            )
+            # CRITICAL FIX (Audit 2025121202 Finding 26): Block polar data usage
+            for seq_name in test_sequences:
+                seq_path = Path(data_root) / seq_name
+                block_polar_data(seq_path)
+            logger.info(f"Polar data check passed for {len(test_sequences)} sequences")
+            summary = get_validation_summary(data_root)
+            logger.info(f"Data validation passed:\n{summary}")
+            # CRITICAL FIX (Audit 2025121202 Finding 21/24): Record rect_check result
+            rect_check_result = {
+                'passed': True,
+                'sequences_checked': test_sequences,
+                'data_root': str(data_root)
+            }
+        except Exception as e:
+            logger.error(f"Data validation failed: {e}")
+            logger.error(
+                f"Please run preprocessing first: "
+                f"python scripts/preprocess_sonar.py --all --data-root {data_root}"
+            )
+            raise
+
+    # CRITICAL FIX (Audit 2025121202 Finding 13/21/24): Setup versioned output directory
+    # Check for legacy outputs
+    has_legacy, legacy_items = detect_legacy_outputs(cfg.evaluation.output_dir)
+    if has_legacy:
+        for item in legacy_items:
+            logger.warning(f"Legacy output detected: {item}")
+
+    # Generate run_id for versioned output
+    run_id = generate_run_id()
+    logger.info(f"Evaluation run ID: {run_id}")
+
+    # Setup versioned directories with rect_check and data_paths
+    run_dir, viz_dir = setup_eval_run(
+        config=_config_to_dict(cfg),
+        checkpoint_path=args.checkpoint,
+        force=False,
+        run_id=run_id,
+        rect_check_result=rect_check_result,
+        data_paths=data_paths
+    )
+    # Update config paths to versioned directories
+    cfg.evaluation.output_dir = str(run_dir)
+    if cfg.evaluation.visualization.enabled:
+        cfg.evaluation.visualization.save_dir = str(viz_dir)
+    logger.info(f"Versioned output directory: {run_dir}")
+
+    # Create output directories (versioned)
     Path(cfg.evaluation.output_dir).mkdir(parents=True, exist_ok=True)
     if cfg.evaluation.visualization.enabled:
         Path(cfg.evaluation.visualization.save_dir).mkdir(parents=True, exist_ok=True)
-    
+
     # Save eval config
     save_config(cfg, Path(cfg.evaluation.output_dir) / 'eval_config.yaml')
     
@@ -328,20 +441,46 @@ def main():
         # - Search region: Centered on PREVIOUS PREDICTION (not GT!)
         # This properly evaluates tracking robustness including drift recovery
 
-        # Determine template update setting
+        # CRITICAL FIX (Audit 2025121202 Finding 8/20): Read template_update from nested config
+        # Support both nested template_update.* and legacy top-level keys
+        template_update_cfg = cfg.evaluation.get('template_update', {})
+
+        # Determine template update setting with precedence: CLI > nested config > legacy config
         if args.enable_template_update:
             enable_template_update = True
         elif args.no_template_update:
             enable_template_update = False
+        elif 'enabled' in template_update_cfg:
+            enable_template_update = template_update_cfg['enabled']
         else:
-            # Default from config or True
+            # Legacy fallback
             enable_template_update = cfg.evaluation.get('enable_template_update', True)
 
+        # Read interval and threshold from nested config with legacy fallback
+        template_update_interval = template_update_cfg.get(
+            'interval', cfg.evaluation.get('template_update_interval', 10)
+        )
+        template_update_threshold = template_update_cfg.get(
+            'threshold', cfg.evaluation.get('template_update_threshold', 0.7)
+        )
+
         logger.info(f"  Template update: {'ENABLED' if enable_template_update else 'DISABLED'}")
+        if enable_template_update:
+            logger.info(f"    Interval: {template_update_interval} frames, Threshold: {template_update_threshold}")
         logger.info(f"  Search center: PREVIOUS PREDICTION (standard tracking)")
 
         # CRITICAL FIX (Audit 2025112702): Use correct config key 'template_area_factor'
         # CRITICAL FIX (Audit 2025120402): Add template quality filtering parameters
+        # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Pass validity gating config
+        validity_gating_cfg = cfg.evaluation.get('validity_gating', {})
+
+        # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+        # Config uses W x H format, convert to (H, W) for evaluator
+        expected_sonar_res_cfg = cfg.evaluation.get('expected_sonar_resolution', [682, 376])  # W, H
+        expected_sonar_resolution = (expected_sonar_res_cfg[1], expected_sonar_res_cfg[0])  # Convert to H, W
+        # RGB uses standard 1920x1080, but allow config override
+        expected_rgb_res_cfg = cfg.evaluation.get('expected_rgb_resolution', [1920, 1080])  # W, H
+        expected_rgb_resolution = (expected_rgb_res_cfg[1], expected_rgb_res_cfg[0])  # Convert to H, W
         evaluator = OnlineTrackingEvaluator(
             model=model,
             device=device,
@@ -352,13 +491,25 @@ def main():
             normalization_config=cfg.data.normalize,
             # CRITICAL FIX (Audit 2025120401 Finding 6): Pass template update config
             enable_template_update=enable_template_update,
-            template_update_interval=cfg.evaluation.get('template_update_interval', 10),
-            template_update_threshold=cfg.evaluation.get('template_update_threshold', 0.7),
+            template_update_interval=template_update_interval,
+            template_update_threshold=template_update_threshold,
             # CRITICAL FIX (Audit 2025120402 Finding 1-2): Template quality filtering
             template_min_size=cfg.evaluation.get('template_min_size', 5.0),
             template_edge_margin=cfg.evaluation.get('template_edge_margin', 2),
             template_scan_frames=cfg.evaluation.get('template_scan_frames', 20),
-            enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True)
+            enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True),
+            # CRITICAL FIX (Audit 2025121202 Finding 22): Quality thresholds for template selection
+            quality_threshold_rgb=cfg.evaluation.get('quality_threshold_rgb', 0.7),
+            quality_threshold_sonar=cfg.evaluation.get('quality_threshold_sonar', 0.7),
+            # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Validity gating for online evaluation
+            enable_validity_gating=validity_gating_cfg.get('enabled', False),
+            rgb_validity_threshold=validity_gating_cfg.get('rgb_threshold', 0.35),
+            sonar_validity_threshold=validity_gating_cfg.get('sonar_threshold', 0.40),
+            # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+            expected_rgb_resolution=expected_rgb_resolution,
+            expected_sonar_resolution=expected_sonar_resolution,
+            # CRITICAL FIX (Audit 2025121202 Finding 17): Pass metrics list from config
+            metrics_list=cfg.evaluation.get('metrics', None)
         )
     else:
         # OFFLINE protocol (ablation only):
@@ -369,6 +520,14 @@ def main():
 
         # Use OnlineTrackingEvaluator but note this is for consistency
         # Future: could implement a dedicated OfflineEvaluator if needed
+        # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Pass validity gating config
+        validity_gating_cfg = cfg.evaluation.get('validity_gating', {})
+
+        # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+        expected_sonar_res_cfg = cfg.evaluation.get('expected_sonar_resolution', [682, 376])
+        expected_sonar_resolution = (expected_sonar_res_cfg[1], expected_sonar_res_cfg[0])
+        expected_rgb_res_cfg = cfg.evaluation.get('expected_rgb_resolution', [1920, 1080])
+        expected_rgb_resolution = (expected_rgb_res_cfg[1], expected_rgb_res_cfg[0])
         evaluator = OnlineTrackingEvaluator(
             model=model,
             device=device,
@@ -382,8 +541,62 @@ def main():
             template_min_size=cfg.evaluation.get('template_min_size', 5.0),
             template_edge_margin=cfg.evaluation.get('template_edge_margin', 2),
             template_scan_frames=cfg.evaluation.get('template_scan_frames', 20),
-            enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True)
+            enable_template_quality_filter=cfg.evaluation.get('enable_template_quality_filter', True),
+            # CRITICAL FIX (Audit 2025121202 Finding 22): Quality thresholds for template selection
+            quality_threshold_rgb=cfg.evaluation.get('quality_threshold_rgb', 0.7),
+            quality_threshold_sonar=cfg.evaluation.get('quality_threshold_sonar', 0.7),
+            # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Validity gating for offline evaluation
+            enable_validity_gating=validity_gating_cfg.get('enabled', False),
+            rgb_validity_threshold=validity_gating_cfg.get('rgb_threshold', 0.35),
+            sonar_validity_threshold=validity_gating_cfg.get('sonar_threshold', 0.40),
+            # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+            expected_rgb_resolution=expected_rgb_resolution,
+            expected_sonar_resolution=expected_sonar_resolution,
+            # CRITICAL FIX (Audit 2025121202 Finding 17): Pass metrics list from config
+            metrics_list=cfg.evaluation.get('metrics', None)
         )
+
+    # CRITICAL FIX (Audit 2025121202 Finding 20/28): Output effective configuration summary
+    logger.info("="*70)
+    logger.info("EFFECTIVE CONFIGURATION SUMMARY (Audit 2025121202 Finding 20/28)")
+    logger.info("="*70)
+
+    # Section 1: Settings actively in effect during evaluation
+    logger.info("[EVALUATION SETTINGS - IN EFFECT]")
+    logger.info(f"  eval_protocol: {eval_protocol}")
+    logger.info(f"  batch_size: 1 (ENFORCED - online tracking requirement)")
+    logger.info(f"  enable_template_update: {enable_template_update}")
+    logger.info(f"  validity_gating.enabled: {validity_gating_cfg.get('enabled', False)}")
+    if validity_gating_cfg.get('enabled', False):
+        logger.info(f"    rgb_validity_threshold: {validity_gating_cfg.get('rgb_threshold', 0.35)}")
+        logger.info(f"    sonar_validity_threshold: {validity_gating_cfg.get('sonar_threshold', 0.40)}")
+    logger.info(f"  quality_threshold_rgb: {cfg.evaluation.get('quality_threshold_rgb', 0.7)}")
+    logger.info(f"  quality_threshold_sonar: {cfg.evaluation.get('quality_threshold_sonar', 0.7)}")
+    logger.info(f"  expected_sonar_resolution: {expected_sonar_res_cfg} (W,H)")
+    logger.info(f"  template_scan_frames: {cfg.evaluation.get('template_scan_frames', 20)}")
+    logger.info(f"  enable_template_quality_filter: {cfg.evaluation.get('enable_template_quality_filter', True)}")
+    logger.info(f"  metrics: {cfg.evaluation.get('metrics', ['success_auc', 'precision_20', 'mean_iou'])}")
+    logger.info(f"  save_metrics: {cfg.evaluation.get('save_metrics', True)}")
+    logger.info(f"  save_predictions: {cfg.evaluation.get('save_predictions', True)}")
+    logger.info(f"  visualization.enabled: {cfg.evaluation.visualization.enabled}")
+
+    # Section 2: Conditional settings (require visualization.enabled)
+    create_videos_cfg = cfg.evaluation.visualization.get('create_videos', False)
+    if cfg.evaluation.visualization.enabled:
+        logger.info("[CONDITIONAL SETTINGS - REQUIRES visualization.enabled=true]")
+        logger.info(f"  visualization.create_videos: {create_videos_cfg}")
+        if create_videos_cfg:
+            logger.info(f"  visualization.video_fps: {cfg.evaluation.visualization.get('video_fps', 10)}")
+    elif create_videos_cfg:
+        logger.warning("[CONDITIONAL SETTINGS - NOT ACTIVE]")
+        logger.warning(f"  visualization.create_videos: {create_videos_cfg} <- IGNORED (visualization.enabled=false)")
+
+    # Section 3: Deprecated/removed settings (config has no effect)
+    logger.info("[DEPRECATED - CONFIG HAS NO EFFECT]")
+    logger.info("  model.allow_single_modality: REMOVED (use data.modality_dropout instead)")
+    logger.info("  model.heads.fusion: REMOVED (FusionHead deprecated, use ConditionalDCMA)")
+
+    logger.info("="*70)
 
     # Run evaluation
     logger.info("="*70)
@@ -411,8 +624,22 @@ def main():
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    if cfg.evaluation.get('save_metrics', True):
+    # CRITICAL FIX (Audit 2025121202 Finding 19): Handle save_report configuration
+    # The save_metrics method includes report generation, but we explicitly check save_report
+    # to ensure configuration consistency and transparency
+    save_report = cfg.evaluation.get('save_report', True)
+    save_metrics = cfg.evaluation.get('save_metrics', True)
+
+    if save_metrics:
         logger.info("\nSaving evaluation metrics...")
+        evaluator.save_metrics(cfg.evaluation.output_dir, timestamp=timestamp)
+        if save_report:
+            logger.info(f"  Report generated in: {cfg.evaluation.output_dir}/metrics/")
+
+    if not save_metrics and save_report:
+        # User wants report but not metrics - still generate report via save_metrics
+        logger.info("\nGenerating evaluation report...")
+        logger.warning("save_report=true but save_metrics=false; generating report anyway")
         evaluator.save_metrics(cfg.evaluation.output_dir, timestamp=timestamp)
 
     if cfg.evaluation.get('save_predictions', True):

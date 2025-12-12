@@ -102,8 +102,11 @@ class TemplateSearchDataset(Dataset):
         search_size: int = 256,    # OSTrack-256 standard
         template_search_gap: Tuple[int, int] = (1, 30),
         template_update_policy: str = 'first_frame',
-        quality_threshold_rgb: float = 0.7,
-        quality_threshold_sonar: float = 0.7,
+        # EVAL-ONLY (Audit 2025121202 Finding 22): Quality thresholds stored but NOT used during
+        # training because no model predictions are available. These values are only effective
+        # during online evaluation (OnlineTrackingEvaluator) for template quality filtering.
+        quality_threshold_rgb: float = 0.7,      # EVAL-ONLY: no effect during training
+        quality_threshold_sonar: float = 0.7,    # EVAL-ONLY: no effect during training
         # CRITICAL FIX (Audit 2025112602): OSTrack-style target-centered cropping
         search_area_factor: float = 4.0,      # Search crop = sqrt(w*h) * 4.0
         template_area_factor: float = 2.0,    # Template crop = sqrt(w*h) * 2.0
@@ -495,6 +498,17 @@ class TemplateSearchDataset(Dataset):
                     orig_cy + negative_offset_rgb[1]
                 )
 
+            # CRITICAL FIX (Audit 2025121202 Finding 7): Pre-compute shared jitter for cross-modal alignment
+            # RGB and Sonar must use the same jitter to maintain spatial alignment
+            if not hasattr(self, '_shared_jitter_seed'):
+                self._shared_jitter_seed = None
+            # Store random state before RGB crop to reuse for Sonar
+            if self.center_jitter_factor > 0 or self.scale_jitter_factor > 0:
+                import random as _random
+                self._shared_center_jitter_x = _random.random() - 0.5
+                self._shared_center_jitter_y = _random.random() - 0.5
+                self._shared_scale_jitter = _random.random() - 0.5
+
             rgb_search, rgb_att_mask, rgb_search_meta = self._crop_search_region(
                 rgb_search_raw,
                 rgb_bbox_original,
@@ -502,7 +516,13 @@ class TemplateSearchDataset(Dataset):
                 area_factor=self.search_area_factor,
                 center_jitter_factor=self.center_jitter_factor if not is_negative_sample else 0.0,
                 scale_jitter_factor=self.scale_jitter_factor,
-                crop_center_override=rgb_crop_center_override  # Offset for negative samples
+                crop_center_override=rgb_crop_center_override,  # Offset for negative samples
+                # CRITICAL FIX (Audit 2025121202 Finding 7): Pass shared jitter values
+                shared_jitter=(
+                    self._shared_center_jitter_x,
+                    self._shared_center_jitter_y,
+                    self._shared_scale_jitter
+                ) if (self.center_jitter_factor > 0 or self.scale_jitter_factor > 0) else None
             )
         else:
             rgb_search_raw = None
@@ -558,7 +578,13 @@ class TemplateSearchDataset(Dataset):
                 area_factor=self.search_area_factor,
                 center_jitter_factor=self.center_jitter_factor if not is_negative_sample else 0.0,
                 scale_jitter_factor=self.scale_jitter_factor,
-                crop_center_override=sonar_crop_center_override  # Offset for negative samples
+                crop_center_override=sonar_crop_center_override,  # Offset for negative samples
+                # CRITICAL FIX (Audit 2025121202 Finding 7): Reuse shared jitter from RGB for cross-modal alignment
+                shared_jitter=(
+                    getattr(self, '_shared_center_jitter_x', 0.0),
+                    getattr(self, '_shared_center_jitter_y', 0.0),
+                    getattr(self, '_shared_scale_jitter', 0.0)
+                ) if (self.center_jitter_factor > 0 or self.scale_jitter_factor > 0) else None
             )
         else:
             sonar_search_raw = None
@@ -1540,7 +1566,9 @@ class TemplateSearchDataset(Dataset):
         area_factor: float,
         center_jitter_factor: float = 0.0,
         scale_jitter_factor: float = 0.0,
-        crop_center_override: Optional[Tuple[float, float]] = None
+        crop_center_override: Optional[Tuple[float, float]] = None,
+        # CRITICAL FIX (Audit 2025121202 Finding 7): Shared jitter for cross-modal alignment
+        shared_jitter: Optional[Tuple[float, float, float]] = None
     ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
         Crop search region centered on target bbox following OSTrack methodology.
@@ -1651,14 +1679,23 @@ class TemplateSearchDataset(Dataset):
                 # max_offset = target_sz * center_jitter_factor
                 # offset = max_offset * (rand - 0.5), range = [-0.5, 0.5] * max_offset
                 max_offset = target_sz * center_jitter_factor
-                cx += max_offset * (random.random() - 0.5)
-                cy += max_offset * (random.random() - 0.5)
+                # CRITICAL FIX (Audit 2025121202 Finding 7): Use shared jitter if provided
+                if shared_jitter is not None:
+                    cx += max_offset * shared_jitter[0]
+                    cy += max_offset * shared_jitter[1]
+                else:
+                    cx += max_offset * (random.random() - 0.5)
+                    cy += max_offset * (random.random() - 0.5)
 
         if scale_jitter_factor > 0:
             # Jitter scale using exponential (OSTrack style: exp(randn * factor))
             # OSTrack uses torch.randn which has std=1, so range is roughly [-3, 3]
             # We use (rand - 0.5) * 2 with range [-1, 1] as approximation
-            scale_jitter = math.exp((random.random() - 0.5) * 2 * scale_jitter_factor)
+            # CRITICAL FIX (Audit 2025121202 Finding 7): Use shared jitter if provided
+            if shared_jitter is not None:
+                scale_jitter = math.exp(shared_jitter[2] * 2 * scale_jitter_factor)
+            else:
+                scale_jitter = math.exp((random.random() - 0.5) * 2 * scale_jitter_factor)
             crop_sz = int(crop_sz * scale_jitter)
             crop_sz = max(crop_sz, 1)
 

@@ -27,6 +27,12 @@ from collections import defaultdict
 from tqdm import tqdm
 
 from aquasot3d.dataloader.datasets.rgb_sonar_dataset import MultiSequenceRGBSonarDataset
+# CRITICAL FIX (Audit 2025121202 Finding 16): Data validation for analysis scripts
+from aquasot3d.utils.data_validation import (
+    get_validation_summary,
+    check_sonar_rect_status,
+    EXPECTED_SONAR_RECT_RESOLUTION
+)
 
 
 def compute_bbox_statistics(bboxes):
@@ -288,6 +294,29 @@ def main():
     print("="*60)
     print("AquaSOT-3D Dataset Analysis Tool (Dual-Sensor System)")
     print("="*60)
+
+    # CRITICAL FIX (Audit 2025121202 Finding 16): Run rect validation first
+    print("\n--- Data Validation ---")
+    validation_summary = get_validation_summary(data_root)
+    print(validation_summary)
+
+    # Check each sequence for rect status
+    rect_status_issues = []
+    for item in data_root.iterdir():
+        if item.is_dir() and (item / "sonar").exists():
+            status = check_sonar_rect_status(item)
+            if not status.get('has_rect', False):
+                rect_status_issues.append(item.name)
+            elif status.get('rect_resolution') != EXPECTED_SONAR_RECT_RESOLUTION:
+                rect_status_issues.append(f"{item.name} (wrong resolution)")
+
+    if rect_status_issues:
+        print(f"\nWARNING: The following sequences have rect data issues:")
+        for issue in rect_status_issues:
+            print(f"  - {issue}")
+        print(f"\nExpected sonar rect resolution: {EXPECTED_SONAR_RECT_RESOLUTION}")
+        print("Consider running: python scripts/preprocess_sonar.py --all")
+    print("-"*60)
 
     # Analyze dataset (always both RGB and Sonar)
     stats = analyze_dataset(data_root)

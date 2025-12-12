@@ -72,6 +72,11 @@ class OnlineTrackingEvaluator:
     TEMPLATE_EDGE_MARGIN = 2            # Minimum distance from image edge (pixels)
     TEMPLATE_SCAN_FRAMES = 20           # Number of frames to scan for best template
 
+    # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Configurable validity thresholds
+    # Default thresholds for state update and template update decisions
+    RGB_VALIDITY_THRESHOLD_DEFAULT = 0.35    # RGB validity threshold (more lenient)
+    SONAR_VALIDITY_THRESHOLD_DEFAULT = 0.40  # Sonar validity threshold (stricter)
+
     def __init__(
         self,
         model: nn.Module,
@@ -94,7 +99,19 @@ class OnlineTrackingEvaluator:
         template_min_size: float = None,        # Min bbox dimension (pixels)
         template_edge_margin: int = None,       # Min distance from image edge (pixels)
         template_scan_frames: int = None,       # Frames to scan for best template
-        enable_template_quality_filter: bool = True  # Enable quality-based template selection
+        enable_template_quality_filter: bool = True,  # Enable quality-based template selection
+        # CRITICAL FIX (Audit 2025121202 Finding 22): Quality thresholds for template selection
+        quality_threshold_rgb: float = 0.7,     # Min quality score for RGB template candidate
+        quality_threshold_sonar: float = 0.7,   # Min quality score for Sonar template candidate
+        # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Configurable validity gating
+        rgb_validity_threshold: float = None,   # RGB validity threshold for state/template update
+        sonar_validity_threshold: float = None, # Sonar validity threshold for state/template update
+        enable_validity_gating: bool = True,    # Master switch for validity gating
+        # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+        expected_rgb_resolution: Tuple[int, int] = None,    # (H, W) expected RGB resolution
+        expected_sonar_resolution: Tuple[int, int] = None,  # (H, W) expected Sonar resolution
+        # CRITICAL FIX (Audit 2025121202 Finding 17): Configurable metrics list
+        metrics_list: Optional[List[str]] = None            # List of metrics to compute
     ):
         self.model = model
         self.device = torch.device(device) if isinstance(device, str) else device
@@ -139,6 +156,25 @@ class OnlineTrackingEvaluator:
         self.template_scan_frames = template_scan_frames or self.TEMPLATE_SCAN_FRAMES
         self.enable_template_quality_filter = enable_template_quality_filter
 
+        # CRITICAL FIX (Audit 2025121202 Finding 22): Quality thresholds for template selection
+        self.quality_threshold_rgb = quality_threshold_rgb
+        self.quality_threshold_sonar = quality_threshold_sonar
+
+        # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Configurable validity gating
+        self.rgb_validity_threshold = rgb_validity_threshold if rgb_validity_threshold is not None else self.RGB_VALIDITY_THRESHOLD_DEFAULT
+        self.sonar_validity_threshold = sonar_validity_threshold if sonar_validity_threshold is not None else self.SONAR_VALIDITY_THRESHOLD_DEFAULT
+        self.enable_validity_gating = enable_validity_gating
+
+        # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+        # Use spec-compliant defaults: RGB 1920x1080, Sonar 682x376 (W x H -> stored as H, W)
+        self.expected_rgb_resolution = expected_rgb_resolution or (1080, 1920)  # H, W
+        self.expected_sonar_resolution = expected_sonar_resolution or (376, 682)  # H, W
+
+        # CRITICAL FIX (Audit 2025121202 Finding 17): Configurable metrics list
+        # Default metrics if not provided: precision_10, precision_5, success_0.7
+        # These are "additional" metrics beyond the default set in compute_sequence_metrics
+        self.metrics_list = metrics_list  # Full config list, will be split into default/additional
+
         # CRITICAL FIX (Audit 2025120902 Issue 3): Lost-state detector parameters
         # When tracking confidence stays low for too long, trigger global re-detection
         self.lost_state_threshold = 5  # Consecutive low-conf frames to trigger lost state
@@ -163,7 +199,12 @@ class OnlineTrackingEvaluator:
             f"search_area_factor={search_area_factor}, "
             f"enable_search_expansion={enable_search_expansion}, "
             f"enable_template_update={enable_template_update}, "
-            f"enable_template_quality_filter={enable_template_quality_filter}"
+            f"enable_template_quality_filter={enable_template_quality_filter}, "
+            f"enable_validity_gating={enable_validity_gating}, "
+            f"rgb_validity_threshold={self.rgb_validity_threshold}, "
+            f"sonar_validity_threshold={self.sonar_validity_threshold}, "
+            f"expected_rgb_resolution={self.expected_rgb_resolution}, "
+            f"expected_sonar_resolution={self.expected_sonar_resolution}"
         )
 
     def evaluate_sequence(
@@ -191,6 +232,10 @@ class OnlineTrackingEvaluator:
 
         num_frames = base_dataset.num_frames
         sequence_name = getattr(base_dataset, 'sequence_name', 'unknown')
+
+        # CRITICAL FIX (Audit 2025121202 Finding 12): Verify batch_size=1
+        # Online tracking requires sequential frame processing with single batch
+        logger.debug(f"Sequence {sequence_name}: evaluating {num_frames} frames (batch_size=1)")
 
         # Initialize prediction storage
         predictions = {
@@ -451,6 +496,11 @@ class OnlineTrackingEvaluator:
                 rgb_att_mask = self._generate_attention_mask(rgb_search_meta, output_size=self.search_size)
                 sonar_att_mask = self._generate_attention_mask(sonar_search_meta, output_size=self.search_size)
 
+                # CRITICAL FIX (Audit 2025121202 Finding 12): Verify batch_size=1 at runtime
+                # This catches any accidental batching that would corrupt online tracking
+                assert rgb_search.shape[0] == 1, f"batch_size must be 1, got {rgb_search.shape[0]}"
+                assert sonar_search.shape[0] == 1, f"batch_size must be 1, got {sonar_search.shape[0]}"
+
                 # CRITICAL FIX (Audit 2025120909): Pass TEMPLATE attention masks
                 # Template masks mark valid (non-padded) regions in template crops
                 outputs = self.model(
@@ -480,11 +530,10 @@ class OnlineTrackingEvaluator:
                 # 4. confidence - alternative name for objectness
                 # 5. quality - fallback (less reliable)
                 #
-                # Thresholds (from audit spec):
+                # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Use configurable thresholds
+                # Thresholds are now constructor parameters, defaulting to class constants:
                 # - RGB validity: 0.35 (more lenient)
                 # - Sonar validity: 0.4 (stricter)
-                RGB_VALIDITY_THRESHOLD = 0.35
-                SONAR_VALIDITY_THRESHOLD = 0.4
 
                 # CRITICAL FIX (Audit 2025121201 S1): RGB validity/confidence extraction
                 # Validity priority: validity_final -> validity -> None (fallback to conf threshold)
@@ -494,7 +543,8 @@ class OnlineTrackingEvaluator:
                 for vkey in ['rgb_validity', 'rgb_validity_final']:
                     if vkey in outputs and outputs[vkey] is not None:
                         rgb_validity_value = outputs[vkey][0].cpu().item()
-                        rgb_is_valid_head = rgb_validity_value >= RGB_VALIDITY_THRESHOLD
+                        # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Use configurable threshold
+                        rgb_is_valid_head = rgb_validity_value >= self.rgb_validity_threshold if self.enable_validity_gating else True
                         break
 
                 rgb_conf_prev = 0.5  # Default
@@ -510,7 +560,8 @@ class OnlineTrackingEvaluator:
                 for vkey in ['sonar_validity', 'sonar_validity_final']:
                     if vkey in outputs and outputs[vkey] is not None:
                         sonar_validity_value = outputs[vkey][0].cpu().item()
-                        sonar_is_valid_head = sonar_validity_value >= SONAR_VALIDITY_THRESHOLD
+                        # CRITICAL FIX (Audit 2025121202 Finding 3, 5): Use configurable threshold
+                        sonar_is_valid_head = sonar_validity_value >= self.sonar_validity_threshold if self.enable_validity_gating else True
                         break
 
                 sonar_conf_prev = 0.5  # Default
@@ -1450,6 +1501,9 @@ class OnlineTrackingEvaluator:
         # Track candidate frames
         candidates = []
 
+        # CRITICAL FIX (Audit 2025121202 Finding 9/25): Validate resolution at first frame
+        resolution_validated = False
+
         for frame_idx in range(scan_limit):
             frame_data = base_dataset._get_frame_data(frame_idx)
             rgb_bbox = frame_data['rgb_bbox']
@@ -1459,12 +1513,41 @@ class OnlineTrackingEvaluator:
             rgb_img = frame_data.get('rgb_img')
             sonar_img = frame_data.get('sonar_img')
 
-            rgb_size = (rgb_img.shape[0], rgb_img.shape[1]) if rgb_img is not None else (480, 640)
-            sonar_size = (sonar_img.shape[0], sonar_img.shape[1]) if sonar_img is not None else (512, 512)
+            # CRITICAL FIX (Audit 2025121202 Finding 9): Use configured expected resolution
+            # instead of hardcoded values for fallback when image is None
+            rgb_size = (rgb_img.shape[0], rgb_img.shape[1]) if rgb_img is not None else self.expected_rgb_resolution
+            sonar_size = (sonar_img.shape[0], sonar_img.shape[1]) if sonar_img is not None else self.expected_sonar_resolution
+
+            # CRITICAL FIX (Audit 2025121202 Finding 9/25): Hard validate resolution at first valid frame
+            if not resolution_validated and (rgb_img is not None or sonar_img is not None):
+                resolution_validated = True
+                # Validate sonar resolution (CRITICAL - geometric consistency requires exact match)
+                if sonar_img is not None:
+                    actual_sonar = (sonar_img.shape[0], sonar_img.shape[1])
+                    if actual_sonar != self.expected_sonar_resolution:
+                        raise ValueError(
+                            f"SONAR RESOLUTION MISMATCH (Audit 2025121202 Finding 9): "
+                            f"expected {self.expected_sonar_resolution} (H,W), got {actual_sonar}.\n"
+                            f"Sonar rect data must be exactly 682x376 for geometric consistency.\n"
+                            f"Run: python scripts/preprocess_sonar.py --all --width 682 --height 376"
+                        )
+                # Validate RGB resolution (warning only - less critical)
+                if rgb_img is not None:
+                    actual_rgb = (rgb_img.shape[0], rgb_img.shape[1])
+                    if actual_rgb != self.expected_rgb_resolution:
+                        logger.warning(
+                            f"RGB resolution mismatch: expected {self.expected_rgb_resolution} (H,W), "
+                            f"got {actual_rgb}. Template quality scoring may be affected."
+                        )
 
             # Evaluate quality for both modalities
             rgb_complete, rgb_quality = self._evaluate_template_quality(rgb_bbox, rgb_size)
             sonar_complete, sonar_quality = self._evaluate_template_quality(sonar_bbox, sonar_size)
+
+            # CRITICAL FIX (Audit 2025121202 Finding 22): Apply quality thresholds
+            # A modality is only considered "high quality" if it meets the threshold
+            rgb_meets_threshold = rgb_complete and rgb_quality >= self.quality_threshold_rgb
+            sonar_meets_threshold = sonar_complete and sonar_quality >= self.quality_threshold_sonar
 
             # Combined quality: require at least one modality to be valid
             rgb_valid = rgb_bbox is not None and np.sum(np.abs(rgb_bbox)) > 0
@@ -1474,16 +1557,26 @@ class OnlineTrackingEvaluator:
                 continue  # Skip fully invalid frames
 
             # Compute combined quality score
-            # Prefer frames where both modalities are complete
-            if rgb_complete and sonar_complete:
+            # Prefer frames where both modalities meet quality thresholds
+            if rgb_meets_threshold and sonar_meets_threshold:
                 combined_quality = (rgb_quality + sonar_quality) / 2.0 + 0.2  # Bonus for dual-complete
-                reason = "dual_complete"
-            elif rgb_complete:
+                reason = "dual_high_quality"
+            elif rgb_meets_threshold:
                 combined_quality = rgb_quality * 0.8
-                reason = "rgb_complete"
-            elif sonar_complete:
+                reason = "rgb_high_quality"
+            elif sonar_meets_threshold:
                 combined_quality = sonar_quality * 0.8
-                reason = "sonar_complete"
+                reason = "sonar_high_quality"
+            elif rgb_complete and sonar_complete:
+                # Both complete but below threshold
+                combined_quality = (rgb_quality + sonar_quality) / 2.0
+                reason = "dual_complete_below_threshold"
+            elif rgb_complete:
+                combined_quality = rgb_quality * 0.6
+                reason = "rgb_complete_below_threshold"
+            elif sonar_complete:
+                combined_quality = sonar_quality * 0.6
+                reason = "sonar_complete_below_threshold"
             else:
                 # Neither complete but at least one valid
                 combined_quality = max(rgb_quality, sonar_quality) * 0.5
@@ -1607,6 +1700,18 @@ class OnlineTrackingEvaluator:
         all_results = {}
         all_metrics = []
 
+        # CRITICAL FIX (Audit 2025121202 Finding 17): Use configured metrics list
+        # Default metrics computed by compute_sequence_metrics: success_auc, precision_20,
+        # avg_center_error, mean_iou, success_0.5. Extract additional metrics from config.
+        default_metrics = {'success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5'}
+        if self.metrics_list:
+            additional_metrics = [m for m in self.metrics_list if m not in default_metrics]
+            logger.debug(f"Using configured metrics. Additional metrics: {additional_metrics}")
+        else:
+            # Fallback to default additional metrics
+            additional_metrics = ['precision_10', 'precision_5', 'success_0.7']
+            logger.debug(f"Using default additional metrics: {additional_metrics}")
+
         seq_iter = sequence_datasets.items()
         if verbose:
             seq_iter = tqdm(list(seq_iter), desc="Sequences", unit="seq")
@@ -1626,7 +1731,7 @@ class OnlineTrackingEvaluator:
                     predictions['rgb_pred'],
                     predictions['rgb_gt'],
                     modality='rgb',
-                    additional_metrics=['precision_10', 'precision_5', 'success_0.7']
+                    additional_metrics=additional_metrics
                 )
                 seq_metrics['rgb'] = rgb_metrics
 
@@ -1636,7 +1741,7 @@ class OnlineTrackingEvaluator:
                     predictions['sonar_pred'],
                     predictions['sonar_gt'],
                     modality='sonar',
-                    additional_metrics=['precision_10', 'precision_5', 'success_0.7']
+                    additional_metrics=additional_metrics
                 )
                 seq_metrics['sonar'] = sonar_metrics
 
@@ -1769,6 +1874,29 @@ class OnlineTrackingEvaluator:
             f.write("AquaSOT-3D Online Tracking Evaluation Report\n")
             f.write(f"Timestamp: {timestamp}\n")
             f.write("=" * 60 + "\n\n")
+
+            # CRITICAL FIX (Audit 2025121202 Finding 17): Record configuration used
+            f.write("CONFIGURATION\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Template size: {self.template_size}\n")
+            f.write(f"Search size: {self.search_size}\n")
+            f.write(f"Template update: {self.enable_template_update}\n")
+            if self.enable_template_update:
+                f.write(f"  Interval: {self.template_update_interval}\n")
+                f.write(f"  Threshold: {self.template_update_threshold}\n")
+            f.write(f"Validity gating: {self.enable_validity_gating}\n")
+            if self.enable_validity_gating:
+                f.write(f"  RGB threshold: {self.rgb_validity_threshold}\n")
+                f.write(f"  Sonar threshold: {self.sonar_validity_threshold}\n")
+            # Record metrics list
+            default_metrics = ['success_auc', 'precision_20', 'avg_center_error', 'mean_iou', 'success_0.5']
+            if self.metrics_list:
+                additional = [m for m in self.metrics_list if m not in default_metrics]
+            else:
+                additional = ['precision_10', 'precision_5', 'success_0.7']
+            f.write(f"Metrics (default): {default_metrics}\n")
+            f.write(f"Metrics (additional): {additional}\n")
+            f.write("\n")
 
             # Overall metrics
             f.write("OVERALL METRICS\n")

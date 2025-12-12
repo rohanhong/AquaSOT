@@ -374,10 +374,25 @@ class AdaptiveFusionGate(nn.Module):
         return fused, fusion_weights
 
 
-@PREDICTION_HEAD_REGISTRY.register("FusionHead")
+# CRITICAL FIX (Audit 2025121202 Finding 18/23): FusionHead COMPLETELY DISABLED
+# FusionHead is NOT registered and CANNOT be registered. The class is retained
+# only for reference and documentation. For current architecture, use ConditionalDCMA.
+# Legacy checkpoints must be migrated by stripping fusion_head weights.
+# @PREDICTION_HEAD_REGISTRY.register("FusionHead")  # PERMANENTLY DISABLED
 class FusionHead(BaseHead):
     """
     Multi-Modal Fusion Head with Uncertainty-Aware Weighting.
+
+    DEPRECATED (Audit 2025112313, 2025121202 Finding 23):
+    This class is deprecated and should not be used in new code.
+    The dual-view fusion architecture (ConditionalDCMA) now outputs rgb_view_fused
+    and sonar_view_fused features directly, which are consumed by RGB and Sonar BoxHeads.
+    This file is retained only for backward compatibility with old checkpoints.
+
+    Migration Guide:
+    - Remove fusion_head from model config
+    - Use model.fusion.type: conditional_dcma
+    - RGB and Sonar BoxHeads now receive dual-view fused features directly
 
     Combines RGB and Sonar features adaptively based on estimated uncertainties,
     and predicts a unified quality score for the fused output.
@@ -417,6 +432,15 @@ class FusionHead(BaseHead):
         predict_uncertainty: bool = True,
         **kwargs
     ):
+        # CRITICAL FIX (Audit 2025121202 Finding 23): Add runtime deprecation warning
+        import warnings
+        warnings.warn(
+            "FusionHead is deprecated (Audit 2025112313, 2025121202 Finding 23). "
+            "Use ConditionalDCMA fusion instead. This class is retained only for "
+            "backward compatibility with old checkpoints.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         super().__init__()
 
         self.rgb_channels = rgb_channels
@@ -670,23 +694,20 @@ class FusionHead(BaseHead):
         return total_loss
 
 
-def build_fusion_head(
-    rgb_channels: int = 768,
-    sonar_channels: int = 384,
-    **kwargs
-) -> FusionHead:
-    """
-    Factory function to build fusion head.
+# CRITICAL FIX (Audit 2025121202 Finding 23): build_fusion_head REMOVED
+# The factory function has been removed to prevent accidental FusionHead usage.
+# For current architecture, use ConditionalDCMA fusion module.
+#
+# def build_fusion_head(...) -> FusionHead:
+#     """REMOVED - Do not use FusionHead"""
+#     raise NotImplementedError("FusionHead is deprecated, use ConditionalDCMA")
 
-    Args:
-        rgb_channels: RGB feature dimension
-        sonar_channels: Sonar feature dimension
-        **kwargs: Additional arguments for FusionHead
 
-    Returns:
-        FusionHead instance
-
-    Example:
-        >>> head = build_fusion_head(rgb_channels=768, sonar_channels=384, hidden_dim=256)
-    """
-    return FusionHead(rgb_channels=rgb_channels, sonar_channels=sonar_channels, **kwargs)
+# CRITICAL FIX (Audit 2025121202 Finding 18/23): FusionHead completely disabled
+# register_legacy_fusion_head() has been REMOVED. FusionHead cannot be registered.
+# Legacy checkpoints containing FusionHead must be migrated using checkpoint_migration.py
+# For current architecture, use ConditionalDCMA fusion which outputs directly to BoxHeads.
+#
+# Migration guide for legacy checkpoints:
+#   1. Load checkpoint weights excluding fusion_head keys
+#   2. Or use: python scripts/migrate_checkpoint.py --checkpoint old.pth --output new.pth

@@ -376,8 +376,24 @@ def main():
         '--quiet', action='store_true',
         help='Suppress progress output'
     )
+    # CRITICAL FIX (Audit 2025121202 Finding 10): Add CLI safeguards
+    parser.add_argument(
+        '--force', action='store_true',
+        help='Force re-conversion even if rect data already exists'
+    )
+    parser.add_argument(
+        '--validate-only', action='store_true',
+        help='Only validate existing rect data without converting'
+    )
 
     args = parser.parse_args()
+
+    # CRITICAL FIX (Audit 2025121202 Finding 10): Validate expected output resolution
+    expected_resolution = (376, 682)
+    if tuple(args.output_size) != expected_resolution:
+        print(f"WARNING: Non-standard output resolution {args.output_size[0]}x{args.output_size[1]}")
+        print(f"         Standard resolution is {expected_resolution[0]}x{expected_resolution[1]}")
+        print("         Using non-standard resolution may cause issues with trained models.")
 
     # Initialize converter
     converter = SonarPolarToRectConverter(
@@ -410,6 +426,7 @@ def main():
     verbose = not args.quiet
     all_stats = []
     errors = []
+    skipped = []
 
     for seq_name in sequences:
         seq_path = data_root / seq_name
@@ -418,7 +435,51 @@ def main():
             msg = f"Sequence directory not found: {seq_path}"
             errors.append((seq_name, msg))
             if verbose:
-                print(f"⚠ {msg}")
+                print(f"[SKIP] {msg}")
+            continue
+
+        # CRITICAL FIX (Audit 2025121202 Finding 10): Check if rect data already exists
+        rect_img_dir = seq_path / 'sonar' / 'img_rect'
+        rect_gt_file = seq_path / 'sonar' / 'groundtruth_rect.txt'
+        rect_exists = rect_img_dir.exists() and rect_gt_file.exists()
+
+        if args.validate_only:
+            # Validation mode: check existing rect data
+            if rect_exists:
+                # Validate resolution of first image
+                rect_images = sorted(rect_img_dir.glob('*.jpg'))
+                if rect_images:
+                    import cv2 as cv2_check
+                    first_img = cv2_check.imread(str(rect_images[0]))
+                    if first_img is not None:
+                        h, w = first_img.shape[:2]
+                        if (h, w) == expected_resolution:
+                            if verbose:
+                                print(f"[OK] {seq_name}: rect data valid ({w}x{h})")
+                            all_stats.append({'sequence': seq_name, 'status': 'valid', 'resolution': f'{w}x{h}'})
+                        else:
+                            msg = f"Resolution mismatch: {w}x{h} (expected {expected_resolution[1]}x{expected_resolution[0]})"
+                            errors.append((seq_name, msg))
+                            if verbose:
+                                print(f"[ERROR] {seq_name}: {msg}")
+                    else:
+                        msg = "Failed to read first rect image"
+                        errors.append((seq_name, msg))
+                else:
+                    msg = "No rect images found"
+                    errors.append((seq_name, msg))
+            else:
+                msg = "rect data not found"
+                errors.append((seq_name, msg))
+                if verbose:
+                    print(f"[MISSING] {seq_name}: {msg}")
+            continue
+
+        # Check if already processed
+        if rect_exists and not args.force:
+            skipped.append(seq_name)
+            if verbose:
+                print(f"[SKIP] {seq_name}: rect data already exists (use --force to re-convert)")
             continue
 
         try:
@@ -428,17 +489,33 @@ def main():
             msg = f"Error processing {seq_name}: {str(e)}"
             errors.append((seq_name, msg))
             if verbose:
-                print(f"✗ {msg}")
+                print(f"[ERROR] {msg}")
 
     # Summary
-    if verbose and len(all_stats) > 1:
+    if verbose:
         print("\n" + "=" * 60)
-        print("CONVERSION SUMMARY")
+        if args.validate_only:
+            print("VALIDATION SUMMARY")
+        else:
+            print("CONVERSION SUMMARY")
         print("=" * 60)
-        total_converted = sum(s['converted_images'] for s in all_stats)
-        total_images = sum(s['total_images'] for s in all_stats)
-        print(f"Total sequences processed: {len(all_stats)}")
-        print(f"Total images converted: {total_converted}/{total_images}")
+
+        if args.validate_only:
+            valid_count = sum(1 for s in all_stats if s.get('status') == 'valid')
+            print(f"Valid sequences: {valid_count}/{len(sequences)}")
+        else:
+            # CRITICAL FIX (Audit 2025121202 Finding 10): Show skipped sequences in summary
+            converted_stats = [s for s in all_stats if 'converted_images' in s]
+            if converted_stats:
+                total_converted = sum(s['converted_images'] for s in converted_stats)
+                total_images = sum(s['total_images'] for s in converted_stats)
+                print(f"Sequences converted: {len(converted_stats)}")
+                print(f"Total images converted: {total_converted}/{total_images}")
+
+            if skipped:
+                print(f"\nSkipped (already exists): {len(skipped)}")
+                for seq_name in skipped:
+                    print(f"  {seq_name}")
 
         if errors:
             print(f"\nErrors: {len(errors)}")

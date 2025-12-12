@@ -36,6 +36,19 @@ from aquasot3d.dataloader import RGBSonarDataset, MultiSequenceRGBSonarDataset, 
 from aquasot3d.models.tracker import AquaSOT3DTracker
 from aquasot3d.training import Trainer, LossManager, CheckpointManager, build_optimizer, build_scheduler
 from aquasot3d.utils.config import _config_to_dict
+# CRITICAL FIX (Audit 2025121202 Finding 4/16/26/27): Data validation utilities
+from aquasot3d.utils.data_validation import (
+    validate_sequences_or_raise,
+    block_polar_data,
+    get_validation_summary,
+    EXPECTED_SONAR_RECT_RESOLUTION
+)
+# CRITICAL FIX (Audit 2025121202 Finding 13/21/24): Run manager utilities
+from aquasot3d.utils.run_manager import (
+    setup_train_run,
+    detect_legacy_outputs,
+    generate_run_id
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +65,9 @@ def parse_args():
                         help='Resume from checkpoint')
     parser.add_argument('--local_rank', type=int, default=-1,
                         help='Local rank for distributed training')
-    
+    # NOTE: --force-legacy-single-modality removed (Audit 2025121202 Finding 1)
+    # Single-modality is now completely blocked. Use modality_dropout for ablation.
+
     return parser.parse_args()
 
 
@@ -129,9 +144,27 @@ def build_model(cfg):
     box_head_cfg = clean_head_config(cfg.model.heads.get('rgb_box', {}))
     # ARCHITECTURE UPDATE (Audit 2025112313): fusion_head removed (dual-view fusion architecture)
 
-    # CRITICAL FIX (Audit 2025112503 Remaining Issue 3): Extract allow_single_modality from config
-    # This enables single-modality ablation experiments via YAML configuration
-    allow_single_modality = cfg.model.get('allow_single_modality', False)
+    # CRITICAL FIX (Audit 2025121202 Finding 1): Block single-modality entry completely
+    # Single-modality mode is REMOVED. For ablation studies, use modality_dropout.
+    # modality_dropout simulates single-modality by zeroing one modality while preserving dual architecture.
+    if cfg.model.get('allow_single_modality', False):
+        raise ValueError(
+            "BLOCKED: allow_single_modality is removed (Audit 2025121202 Finding 1).\n"
+            "For single-modality ablation studies, use modality_dropout instead:\n"
+            "  data.modality_dropout.enabled: true\n"
+            "  data.modality_dropout.p_drop_sonar: 1.0  # For RGB-only\n"
+            "  data.modality_dropout.p_drop_rgb: 1.0    # For Sonar-only\n"
+            "See configs/ablation/ablation_rgb_only.yaml and ablation_sonar_only.yaml for examples."
+        )
+    allow_single_modality = False  # Always false, kept for tracker interface compatibility
+
+    # CRITICAL FIX (Audit 2025121202 Finding 2): Wire modality_dropout from config
+    # ModalityDropout randomly drops modalities during training to train single/zero-modality operation
+    modality_dropout_cfg = None
+    if hasattr(cfg.data, 'modality_dropout'):
+        modality_dropout_cfg = _config_to_dict(cfg.data.modality_dropout)
+        if modality_dropout_cfg.get('enabled', False):
+            logger.info(f"Modality dropout enabled: {modality_dropout_cfg}")
 
     # Build model
     model = AquaSOT3DTracker(
@@ -139,7 +172,8 @@ def build_model(cfg):
         sonar_backbone_config=sonar_backbone_cfg,
         fusion_config=fusion_cfg,
         box_head_config=box_head_cfg,
-        allow_single_modality=allow_single_modality  # Pass flag to tracker
+        allow_single_modality=allow_single_modality,  # Pass flag to tracker (legacy only)
+        modality_dropout=modality_dropout_cfg  # CRITICAL FIX: Pass modality dropout config
     )
 
     logger.info(f"Model built successfully")
@@ -368,6 +402,16 @@ def build_dataloaders(cfg):
     search_area_factor = cfg.data.get('search_area_factor', 4.0)
     template_area_factor = cfg.data.get('template_area_factor', 2.0)
 
+    # CRITICAL FIX (Audit 2025121202 Finding 22/25): Pass quality thresholds from config
+    quality_threshold_rgb = cfg.data.get('quality_threshold_rgb', 0.7)
+    quality_threshold_sonar = cfg.data.get('quality_threshold_sonar', 0.7)
+
+    # CRITICAL FIX (Audit 2025121202 Finding 22): Enable static quality filtering for training
+    # Static quality filtering (bbox size, edge margin, aspect ratio) does NOT require model predictions
+    # and helps training by selecting non-clipped, properly-sized templates.
+    # Note: quality_threshold_rgb/sonar are EVAL-ONLY (require model predictions, not available in training)
+    train_enable_quality_filter = cfg.data.get('train_enable_template_quality_filter', True)
+
     train_dataset = TemplateSearchDataset(
         base_dataset=train_base_dataset,
         template_size=template_size,
@@ -379,10 +423,33 @@ def build_dataloaders(cfg):
         center_jitter_factor=center_jitter,  # CRITICAL: Enable training jitter
         scale_jitter_factor=scale_jitter,
         augmentation=train_augmentation,
-        normalization_config=cfg.data.normalize  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+        normalization_config=cfg.data.normalize,  # CRITICAL FIX (Audit 2025112501 P2): Pass normalization config
+        # CRITICAL FIX (Audit 2025121202 Finding 22): Enable static quality filtering for training
+        enable_template_quality_filter=train_enable_quality_filter,
+        template_min_size=cfg.data.get('template_min_size', 5.0),
+        template_edge_margin=cfg.data.get('template_edge_margin', 2),
+        template_scan_frames=cfg.data.get('template_scan_frames', 20),
+        # Note: quality_threshold_rgb/sonar are stored but EVAL-ONLY (no model predictions in training)
+        quality_threshold_rgb=quality_threshold_rgb,
+        quality_threshold_sonar=quality_threshold_sonar
     )
 
     logger.info(f"Training jitter enabled: center_jitter={center_jitter}, scale_jitter={scale_jitter}")
+
+    # CRITICAL FIX (Audit 2025121202 Finding 22/28): Log effective configuration fields
+    # Clarify which quality/threshold fields are active:
+    # - enable_template_quality_filter: Static filtering (bbox size, edge margin) - ACTIVE in training
+    # - quality_threshold_rgb/sonar: Model-based filtering - EVAL-ONLY (no predictions in training)
+    # - validity_gating: Head-based routing - EVAL-ONLY (used in OnlineTrackingEvaluator)
+    logger.info("Training quality configuration:")
+    logger.info(f"  enable_template_quality_filter: {train_enable_quality_filter} (static: bbox size, edge margin)")
+    logger.info(f"  template_min_size: {cfg.data.get('template_min_size', 5.0)}")
+    logger.info(f"  template_edge_margin: {cfg.data.get('template_edge_margin', 2)}")
+    logger.info(f"  template_scan_frames: {cfg.data.get('template_scan_frames', 20)}")
+    logger.info(f"  quality_threshold_rgb: {quality_threshold_rgb} (EVAL-ONLY, stored)")
+    logger.info(f"  quality_threshold_sonar: {quality_threshold_sonar} (EVAL-ONLY, stored)")
+    logger.info(f"  template_update_policy: {template_update_policy}")
+    logger.info(f"  validity_gating: EVAL-ONLY (see eval.yaml)")
 
     logger.info(f"Template-search training: template={template_size}x{template_size}, "
                 f"search={search_size}x{search_size}, gap_range={template_search_gap_range}, "
@@ -441,7 +508,10 @@ def build_dataloaders(cfg):
             template_scan_frames=cfg.data.get('template_scan_frames', 20),
             # CRITICAL FIX (Audit 2025121201 S3): Disable negative sampling for validation
             # Val/Test MUST use negative_sample_prob=0 to match online deployment distribution
-            negative_sample_prob=0.0
+            negative_sample_prob=0.0,
+            # CRITICAL FIX (Audit 2025121202 Finding 22/25): Pass quality thresholds
+            quality_threshold_rgb=quality_threshold_rgb,
+            quality_threshold_sonar=quality_threshold_sonar
         )
 
         logger.info(f"Val dataset: {len(val_dataset)} samples")
@@ -492,16 +562,156 @@ def main():
         logger.info(f"Configuration loaded from: {args.config}")
         logger.info(f"Experiment: {cfg.experiment.name}")
         logger.info(f"Output directory: {cfg.paths.work_dir}")
-    
-    # Create output directories
+
+    # CRITICAL FIX (Audit 2025121202 Finding 4/16/26/27): Validate data before training
+    rect_check_result = None
+    data_paths = None
+    if is_main_process:
+        data_root = cfg.data.get('data_root', 'data')
+        train_sequences = cfg.data.get('train_sequences', [])
+        val_sequences = cfg.data.get('val_sequences', [])
+        all_sequences = list(set(train_sequences + val_sequences))
+
+        # CRITICAL FIX (Audit 2025121202 Finding 21/24/27): Record and validate data paths
+        train_root = str(cfg.data.get('train_root') or data_root)
+        val_root = str(cfg.data.get('val_root') or data_root)
+        data_paths = {
+            'data_root': str(data_root),
+            'train_root': train_root,
+            'val_root': val_root,
+            'train_sequences': train_sequences,
+            'val_sequences': val_sequences
+        }
+
+        # CRITICAL FIX (Audit 2025121202 Finding 27): Validate data root existence
+        for root_name, root_path in [('data_root', data_root), ('train_root', train_root), ('val_root', val_root)]:
+            if not Path(root_path).exists():
+                raise FileNotFoundError(
+                    f"Data root does not exist: {root_name}={root_path}\n"
+                    f"Please verify the data path configuration in your config file."
+                )
+        logger.info(f"Data root validation passed: data_root={data_root}")
+
+        # CRITICAL FIX (Audit 2025121202 Finding 27): Handle legacy single-sequence mode validation
+        # In legacy mode, train_sequences is empty but train_root/val_root point to sequence directories
+        if not all_sequences and (train_root != data_root or val_root != data_root):
+            # Legacy mode: extract sequence names from paths
+            legacy_sequences = []
+            if train_root != data_root:
+                train_seq_path = Path(train_root)
+                legacy_sequences.append(train_seq_path.name)
+                # Use parent as data_root for validation
+                data_root = str(train_seq_path.parent)
+            if val_root != data_root and val_root != train_root:
+                val_seq_path = Path(val_root)
+                legacy_sequences.append(val_seq_path.name)
+            all_sequences = legacy_sequences
+            logger.info(f"Legacy mode: extracted sequences {all_sequences} from train_root/val_root")
+
+        if all_sequences:
+            logger.info("Validating dataset rect preprocessing...")
+            try:
+                # Check rect data readiness and block polar data
+                validate_sequences_or_raise(
+                    data_root=data_root,
+                    sequence_names=all_sequences,
+                    strict=True  # Fail if rect data not ready
+                )
+                # CRITICAL FIX (Audit 2025121202 Finding 26): Block polar data usage
+                for seq_name in all_sequences:
+                    seq_path = Path(data_root) / seq_name
+                    block_polar_data(seq_path)
+                logger.info(f"Polar data check passed for {len(all_sequences)} sequences")
+                # Log validation summary
+                summary = get_validation_summary(data_root)
+                logger.info(f"Data validation passed:\n{summary}")
+                # CRITICAL FIX (Audit 2025121202 Finding 21/24): Record rect_check result
+                rect_check_result = {
+                    'passed': True,
+                    'sequences_checked': all_sequences,
+                    'data_root': str(data_root)
+                }
+            except Exception as e:
+                logger.error(f"Data validation failed: {e}")
+                logger.error(
+                    "Please run preprocessing first: "
+                    "python scripts/preprocess_sonar.py --all --data-root {data_root}"
+                )
+                raise
+
+    # CRITICAL FIX (Audit 2025121202 Finding 13/21/24): Setup versioned output directory
+    run_id = None
+    if is_main_process:
+        # Check for legacy outputs
+        has_legacy, legacy_items = detect_legacy_outputs(cfg.paths.work_dir)
+        if has_legacy:
+            for item in legacy_items:
+                logger.warning(f"Legacy output detected: {item}")
+            logger.warning(
+                "Consider migrating legacy outputs or using a different work_dir. "
+                "New outputs will use run_id versioning."
+            )
+
+        # Generate run_id for versioned output
+        run_id = generate_run_id()
+        logger.info(f"Training run ID: {run_id}")
+
+        # Setup versioned directories with rect_check and data_paths
+        run_dir, checkpoint_dir, log_dir = setup_train_run(
+            config=_config_to_dict(cfg),
+            force=False,
+            run_id=run_id,
+            rect_check_result=rect_check_result,
+            data_paths=data_paths
+        )
+        # Update config paths to versioned directories
+        cfg.paths.work_dir = str(run_dir)
+        cfg.paths.checkpoint_dir = str(checkpoint_dir)
+        cfg.paths.log_dir = str(log_dir)
+        logger.info(f"Versioned output directory: {run_dir}")
+
+    # Create output directories (versioned)
     if is_main_process:
         Path(cfg.paths.work_dir).mkdir(parents=True, exist_ok=True)
         Path(cfg.paths.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(cfg.paths.log_dir).mkdir(parents=True, exist_ok=True)
-        
+
         # Save config
         save_config(cfg, Path(cfg.paths.work_dir) / 'config.yaml')
-    
+
+        # CRITICAL FIX (Audit 2025121202 Finding 20/28): Output effective configuration summary
+        logger.info("="*70)
+        logger.info("EFFECTIVE CONFIGURATION SUMMARY (Audit 2025121202 Finding 20/28)")
+        logger.info("="*70)
+        logger.info("[TRAINING SETTINGS - IN EFFECT]")
+        logger.info(f"  batch_size: {cfg.training.batch_size}")
+        logger.info(f"  gradient_accumulation_steps: {cfg.training.gradient_accumulation_steps}")
+        logger.info(f"  num_epochs: {cfg.training.num_epochs}")
+        logger.info(f"  optimizer.lr: {cfg.training.optimizer.lr}")
+        modality_dropout_cfg = cfg.data.get('modality_dropout', {})
+        logger.info(f"  modality_dropout.enabled: {modality_dropout_cfg.get('enabled', False)}")
+        if modality_dropout_cfg.get('enabled', False):
+            logger.info(f"    p_drop_rgb: {modality_dropout_cfg.get('p_drop_rgb', 0.1)}")
+            logger.info(f"    p_drop_sonar: {modality_dropout_cfg.get('p_drop_sonar', 0.1)}")
+        # CRITICAL FIX (Audit 2025121202 Finding 22): Static quality filter for training
+        train_quality_filter = cfg.data.get('train_enable_template_quality_filter', True)
+        logger.info(f"  train_enable_template_quality_filter: {train_quality_filter} (static: bbox size, edge margin)")
+        logger.info(f"  online_eval.enabled: {cfg.training.online_eval.get('enabled', False)}")
+        logger.info(f"  fusion.type: {cfg.model.fusion.get('type', 'conditional_dcma')}")
+        logger.info(f"  data_root: {data_root} (validated)")
+        logger.info(f"  train_sequences: {len(train_sequences)} sequences")
+        logger.info(f"  val_sequences: {len(val_sequences)} sequences")
+        logger.info("[TRAINING SETTINGS - EVAL-ONLY (stored but not active)]")
+        logger.info(f"  quality_threshold_rgb: {cfg.data.get('quality_threshold_rgb', 0.7)} (requires model predictions)")
+        logger.info(f"  quality_threshold_sonar: {cfg.data.get('quality_threshold_sonar', 0.7)} (requires model predictions)")
+        logger.info(f"  validity_gating: configured in eval.yaml (requires model outputs)")
+        logger.info("[NOT IMPLEMENTED - CONFIG HAS NO EFFECT]")
+        logger.info("  training.wandb: NOT IMPLEMENTED (use tensorboard instead)")
+        logger.info("  FusionHead: REMOVED (use ConditionalDCMA)")
+        logger.info("  allow_single_modality: REMOVED (use modality_dropout)")
+        logger.info("  fusion_quality/fusion_weights: REMOVED (not collected)")
+        logger.info("="*70)
+
     # Set random seed
     torch.manual_seed(cfg.system.seed)
     if torch.cuda.is_available():
@@ -595,10 +805,28 @@ def main():
         online_eval_cfg.setdefault('template_min_size', cfg.evaluation.get('template_min_size', 5.0))
         online_eval_cfg.setdefault('template_edge_margin', cfg.evaluation.get('template_edge_margin', 2))
         online_eval_cfg.setdefault('template_scan_frames', cfg.evaluation.get('template_scan_frames', 20))
-        # Template update defaults (align with eval config)
-        online_eval_cfg.setdefault('enable_template_update', cfg.evaluation.get('template_update', {}).get('enabled', cfg.evaluation.get('enable_template_update', True)))
-        online_eval_cfg.setdefault('template_update_interval', cfg.evaluation.get('template_update_interval', 10))
-        online_eval_cfg.setdefault('template_update_threshold', cfg.evaluation.get('template_update_threshold', 0.7))
+        # CRITICAL FIX (Audit 2025121202 Finding 8/11/20): Template update from nested config
+        template_update_cfg = cfg.evaluation.get('template_update', {})
+        online_eval_cfg.setdefault('enable_template_update', template_update_cfg.get('enabled', cfg.evaluation.get('enable_template_update', True)))
+        online_eval_cfg.setdefault('template_update_interval', template_update_cfg.get('interval', cfg.evaluation.get('template_update_interval', 10)))
+        online_eval_cfg.setdefault('template_update_threshold', template_update_cfg.get('threshold', cfg.evaluation.get('template_update_threshold', 0.7)))
+
+        # CRITICAL FIX (Audit 2025121202 Finding 3/5): Validity gating config
+        validity_gating_cfg = cfg.evaluation.get('validity_gating', {})
+        online_eval_cfg.setdefault('validity_gating', {
+            'enabled': validity_gating_cfg.get('enabled', False),
+            'rgb_threshold': validity_gating_cfg.get('rgb_threshold', 0.35),
+            'sonar_threshold': validity_gating_cfg.get('sonar_threshold', 0.40)
+        })
+
+        # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+        expected_sonar_res = cfg.evaluation.get('expected_sonar_resolution', [682, 376])
+        expected_rgb_res = cfg.evaluation.get('expected_rgb_resolution', [1920, 1080])
+        online_eval_cfg.setdefault('expected_sonar_resolution', (expected_sonar_res[1], expected_sonar_res[0]))  # H, W
+        online_eval_cfg.setdefault('expected_rgb_resolution', (expected_rgb_res[1], expected_rgb_res[0]))  # H, W
+
+        # CRITICAL FIX (Audit 2025121202 Finding 17): Metrics list from config
+        online_eval_cfg.setdefault('metrics_list', cfg.evaluation.get('metrics', None))
 
         logger.info(f"Online evaluation enabled during training on sequences: {online_eval_cfg.get('sequences')}")
 

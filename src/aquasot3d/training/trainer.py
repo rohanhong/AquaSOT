@@ -34,6 +34,11 @@ from aquasot3d.training.checkpoint import CheckpointManager
 from aquasot3d.training.optimizer import clip_gradients
 from aquasot3d.evaluation.online_evaluator import OnlineTrackingEvaluator
 from aquasot3d.dataloader import RGBSonarDataset
+# CRITICAL FIX (Audit 2025121202 Finding 11/12): Data validation for training online_eval
+from aquasot3d.utils.data_validation import (
+    validate_sequences_or_raise,
+    block_polar_data
+)
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -788,6 +793,23 @@ class Trainer:
 
         logger.info(f"Running online evaluation on sequences: {sequences}")
 
+        # CRITICAL FIX (Audit 2025121202 Finding 11/12): Validate data before online eval
+        # Reuse same validation as train/eval entry points
+        try:
+            validate_sequences_or_raise(
+                data_root=data_root,
+                sequence_names=sequences,
+                strict=True
+            )
+            for seq_name in sequences:
+                seq_path = Path(data_root) / seq_name
+                block_polar_data(seq_path)
+            logger.info(f"Online eval data validation passed for {len(sequences)} sequences")
+        except Exception as e:
+            logger.error(f"Online eval data validation failed: {e}")
+            logger.warning("Skipping online evaluation due to data validation failure")
+            return {}
+
         # Build base datasets (occluded frames included)
         seq_name_to_base_dataset = {}
         for seq_name in sequences:
@@ -799,6 +821,8 @@ class Trainer:
             seq_name_to_base_dataset[seq_name] = base_ds
 
         # Build evaluator
+        # CRITICAL FIX (Audit 2025121202 Finding 3/5/9/11/12/17/22): Full config alignment with eval.py
+        validity_gating_cfg = cfg.get('validity_gating', {})
         evaluator = OnlineTrackingEvaluator(
             model=self.model,
             device=self.device,
@@ -813,19 +837,51 @@ class Trainer:
             template_min_size=cfg.get('template_min_size', 5.0),
             template_edge_margin=cfg.get('template_edge_margin', 2),
             template_scan_frames=cfg.get('template_scan_frames', 20),
-            enable_template_quality_filter=cfg.get('enable_template_quality_filter', True)
+            enable_template_quality_filter=cfg.get('enable_template_quality_filter', True),
+            # CRITICAL FIX (Audit 2025121202 Finding 22): Quality thresholds for template selection
+            quality_threshold_rgb=cfg.get('quality_threshold_rgb', 0.7),
+            quality_threshold_sonar=cfg.get('quality_threshold_sonar', 0.7),
+            # CRITICAL FIX (Audit 2025121202 Finding 3/11): Validity gating DEFAULT ENABLED
+            # Training online_eval must align with formal eval - enable gating by default
+            enable_validity_gating=validity_gating_cfg.get('enabled', True),  # Changed to True
+            rgb_validity_threshold=validity_gating_cfg.get('rgb_threshold', 0.35),
+            sonar_validity_threshold=validity_gating_cfg.get('sonar_threshold', 0.40),
+            # CRITICAL FIX (Audit 2025121202 Finding 9): Expected resolutions for fallback
+            expected_rgb_resolution=cfg.get('expected_rgb_resolution', (1080, 1920)),
+            expected_sonar_resolution=cfg.get('expected_sonar_resolution', (376, 682)),
+            # CRITICAL FIX (Audit 2025121202 Finding 17): Metrics list from config
+            metrics_list=cfg.get('metrics_list', None)
         )
+        # CRITICAL FIX (Audit 2025121202 Finding 12): batch_size=1 is inherent to OnlineTrackingEvaluator
+        # OnlineTrackingEvaluator processes sequences one at a time (batch_size=1) by design
+        logger.info("Online eval using batch_size=1 (inherent to OnlineTrackingEvaluator)")
 
         results = evaluator.evaluate_all_sequences(seq_name_to_base_dataset, verbose=False)
 
         online_metrics = {}
-        if 'overall' in results and 'rgb' in results['overall']:
-            rgb_metrics = results['overall']['rgb']
-            online_metrics['online_success_auc_rgb'] = rgb_metrics.get('success_auc_mean', 0.0)
-            online_metrics['online_precision_20_rgb'] = rgb_metrics.get('precision_20_mean', 0.0)
+        # CRITICAL FIX (Audit 2025121202 Finding 14): Include both RGB and Sonar metrics
+        if 'overall' in results:
+            # RGB metrics
+            if 'rgb' in results['overall']:
+                rgb_metrics = results['overall']['rgb']
+                online_metrics['online_success_auc_rgb'] = rgb_metrics.get('success_auc_mean', 0.0)
+                online_metrics['online_precision_20_rgb'] = rgb_metrics.get('precision_20_mean', 0.0)
 
-            # Track best online metric and optionally save checkpoint
-            metric_value = online_metrics['online_success_auc_rgb']
+            # CRITICAL FIX (Audit 2025121202 Finding 14): Add Sonar metrics for best model selection
+            # Sonar tracking performance is crucial for underwater environments
+            if 'sonar' in results['overall']:
+                sonar_metrics = results['overall']['sonar']
+                online_metrics['online_success_auc_sonar'] = sonar_metrics.get('success_auc_mean', 0.0)
+                online_metrics['online_precision_20_sonar'] = sonar_metrics.get('precision_20_mean', 0.0)
+
+            # Combined metric (average of RGB and Sonar AUC) for best model selection
+            rgb_auc = online_metrics.get('online_success_auc_rgb', 0.0)
+            sonar_auc = online_metrics.get('online_success_auc_sonar', 0.0)
+            online_metrics['online_success_auc_combined'] = (rgb_auc + sonar_auc) / 2.0
+
+            # CRITICAL FIX (Audit 2025121202 Finding 14): Use combined metric for best model selection
+            # This ensures model selection considers both modalities, not just RGB
+            metric_value = online_metrics['online_success_auc_combined']
             if metric_value > self.best_online_metric:
                 self.best_online_metric = metric_value
                 if self.checkpoint_manager is not None:
@@ -839,8 +895,8 @@ class Trainer:
                         metadata=self.checkpoint_metadata
                     )
                     logger.info(
-                        f"New best online AUC {metric_value:.4f} at epoch {epoch + 1}, "
-                        f"checkpoint_best_online.pth saved."
+                        f"New best online combined AUC {metric_value:.4f} (RGB={rgb_auc:.4f}, Sonar={sonar_auc:.4f}) "
+                        f"at epoch {epoch + 1}, checkpoint_best_online.pth saved."
                     )
 
         # Log to TensorBoard
@@ -1122,16 +1178,36 @@ class Trainer:
         # Model selection should be based on TRACKING QUALITY (box regression + confidence)
         # NOT auxiliary losses like routing_validity that may dominate total_loss
         # This metric: val_box_total = rgb_box + sonar_box (primary tracking losses)
+        # CRITICAL FIX (Audit 2025121202 Finding 15): Always produce val_box_total for checkpoint monitoring
         val_box_total = 0.0
         box_components = 0
+        missing_components = []
         if 'val_rgb_box' in averaged_metrics:
             val_box_total += averaged_metrics['val_rgb_box']
             box_components += 1
+        else:
+            missing_components.append('val_rgb_box')
         if 'val_sonar_box' in averaged_metrics:
             val_box_total += averaged_metrics['val_sonar_box']
             box_components += 1
-        if box_components > 0:
-            averaged_metrics['val_box_total'] = val_box_total
+        else:
+            missing_components.append('val_sonar_box')
+
+        # CRITICAL FIX (Audit 2025121202 Finding 15): Always produce val_box_total
+        # Even if all components are missing (with value 0), ensure the metric exists
+        # for checkpoint monitoring to work correctly
+        averaged_metrics['val_box_total'] = val_box_total
+        if box_components == 0:
+            logger.warning(
+                f"val_box_total=0 because no box loss components found. "
+                f"Missing: {missing_components}. Checkpoint monitoring may not work as expected."
+            )
+        elif missing_components:
+            logger.warning(
+                f"val_box_total={val_box_total:.4f} computed from {box_components}/2 components. "
+                f"Missing: {missing_components}"
+            )
+        else:
             logger.debug(f"Computed val_box_total={val_box_total:.4f} from {box_components} components")
 
         # Log to TensorBoard

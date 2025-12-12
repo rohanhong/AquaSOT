@@ -269,7 +269,12 @@ evaluation:
 
 ablation:
   components:
-    quality_gating: true      # Enable quality gating
+    # CRITICAL FIX (Audit 2025121202 Finding 28): Terminology clarification
+    # - validity: Head output for visibility/routing (rgb_validity, sonar_validity)
+    # - quality_threshold: Template update confidence threshold (TemplateSearchDataset)
+    # - confidence: Model objectness/iou prediction score
+    # - quality_gating: DEPRECATED (was used for fusion quality head, now removed)
+    quality_gating: true      # DEPRECATED: No longer implemented, kept for config compat
     deformable_attention: true    # Enable deformable attention
     dual_consistency: true    # Enable dual consistency
 

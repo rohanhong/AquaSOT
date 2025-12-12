@@ -20,11 +20,18 @@ evaluation:
   batch_size: 1                     # Evaluation batch size (sequential)
 
   # CRITICAL FIX (Audit 2025120401 Finding 6): Online tracking template update
+  # CRITICAL FIX (Audit 2025121202 Finding 8/20): Nested template_update config
   # These settings control dynamic template update during online evaluation.
   # Should align with training template_update_policy for consistent behavior.
-  enable_template_update: true      # Enable dynamic template update
-  template_update_interval: 10      # Update template every N frames (if confident)
-  template_update_threshold: 0.7    # Minimum confidence to update template
+  template_update:
+    enabled: true                   # Enable dynamic template update
+    interval: 10                    # Update template every N frames (if confident)
+    threshold: 0.7                  # Minimum confidence to update template
+
+  # LEGACY COMPATIBILITY: Top-level keys still supported but deprecated
+  # enable_template_update: true    # DEPRECATED: Use template_update.enabled
+  # template_update_interval: 10    # DEPRECATED: Use template_update.interval
+  # template_update_threshold: 0.7  # DEPRECATED: Use template_update.threshold
 
   # CRITICAL FIX (Audit 2025120402): Template quality filtering
   # Scans first N frames to find best quality template (not edge-clipped, sufficient size)
@@ -33,6 +40,18 @@ evaluation:
   template_min_size: 5.0            # Minimum bbox dimension (pixels)
   template_edge_margin: 2           # Minimum distance from image edge (pixels)
   template_scan_frames: 20          # Number of frames to scan for best template
+
+  # CRITICAL FIX (Audit 2025121202 Finding 9): Expected sonar rect resolution
+  # Used for validating template quality filtering assumptions
+  expected_sonar_resolution: [682, 376]  # Width x Height for rect sonar data
+
+  # CRITICAL FIX (Audit 2025121202 Finding 3, 5, 20): Validity gating configuration
+  # Controls how head validity outputs are used to gate predictions in online evaluation
+  validity_gating:
+    enabled: false                  # Master switch: false=evaluate all, true=gate low-validity
+    rgb_threshold: 0.35             # RGB validity threshold for state/template update
+    sonar_threshold: 0.40           # Sonar validity threshold (stricter for underwater)
+    confidence_fallback: 0.30       # Fallback threshold when validity not available
 
   template:
     visibility_policy: any          # Template selection: any/both/all

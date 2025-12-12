@@ -152,13 +152,18 @@ training:
   loss_weights:
     rgb_box: 1.0                  # RGB box regression loss weight
     rgb_conf: 1.0                 # RGB confidence loss weight
+    # CRITICAL FIX (Audit 2025121202 Finding 6): Add validity loss weights for fusion routing
+    rgb_validity: 1.0             # RGB validity loss weight (head-validity for fusion routing)
     sonar_box: 1.0                # Sonar box regression loss weight
     sonar_conf: 1.0               # Sonar confidence loss weight
+    sonar_validity: 1.0           # Sonar validity loss weight (head-validity for fusion routing)
     aux_rgb: 0.3                  # Auxiliary RGB loss weight
     aux_sonar: 0.3                # Auxiliary Sonar loss weight
     geometric_consistency: 0.5    # Geometric consistency loss weight
     representation_consistency: 0.3   # Representation consistency loss weight
     view_consistency: 0.1         # View consistency loss weight
+    # CRITICAL FIX (Audit 2025121202 Finding 6): Routing validity loss for ConditionalDCMA
+    routing_validity: 0.5         # Routing validity loss (BCE on confidence estimators)
 
   loss_schedule:
     enabled: false                # Enable loss weight scheduling

@@ -174,8 +174,8 @@ class BaseFusion(BaseModule):
         Returns:
             Dictionary containing:
                 - 'fused_features': Fused feature tensor
-                - 'fusion_weights': Attention weights (optional)
                 - 'aux_outputs': Auxiliary outputs for loss computation (optional)
+            Note: 'fusion_weights' is DEPRECATED (Audit 2025121202) - only in legacy FusionHead.
         """
         raise NotImplementedError
 
