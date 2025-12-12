@@ -438,7 +438,10 @@ def build_dataloaders(cfg):
             enable_template_quality_filter=val_enable_quality_filter,
             template_min_size=cfg.data.get('template_min_size', 5.0),
             template_edge_margin=cfg.data.get('template_edge_margin', 2),
-            template_scan_frames=cfg.data.get('template_scan_frames', 20)
+            template_scan_frames=cfg.data.get('template_scan_frames', 20),
+            # CRITICAL FIX (Audit 2025121201 S3): Disable negative sampling for validation
+            # Val/Test MUST use negative_sample_prob=0 to match online deployment distribution
+            negative_sample_prob=0.0
         )
 
         logger.info(f"Val dataset: {len(val_dataset)} samples")

@@ -425,16 +425,17 @@ class OnlineTrackingEvaluator:
                 sonar_padding_ratio_pre = self._compute_padding_ratio(sonar_search_meta)
 
                 # Self-infer validity from confidence + padding (NOT from GT!)
-                # Validity threshold: conf > 0.5 AND padding < 0.3
+                # CRITICAL FIX (Audit 2025121201 S1): Use >= threshold (not >) for consistency
+                # Validity threshold: conf >= 0.5 AND padding < 0.3
                 VALIDITY_CONF_THRESHOLD = 0.5
                 VALIDITY_PADDING_THRESHOLD = 0.3
 
                 inferred_rgb_valid = (
-                    rgb_conf_prev > VALIDITY_CONF_THRESHOLD and
+                    rgb_conf_prev >= VALIDITY_CONF_THRESHOLD and
                     rgb_padding_ratio_pre < VALIDITY_PADDING_THRESHOLD
                 )
                 inferred_sonar_valid = (
-                    sonar_conf_prev > VALIDITY_CONF_THRESHOLD and
+                    sonar_conf_prev >= VALIDITY_CONF_THRESHOLD and
                     sonar_padding_ratio_pre < VALIDITY_PADDING_THRESHOLD
                 )
 
@@ -485,39 +486,38 @@ class OnlineTrackingEvaluator:
                 RGB_VALIDITY_THRESHOLD = 0.35
                 SONAR_VALIDITY_THRESHOLD = 0.4
 
-                # RGB validity/confidence extraction
-                if 'rgb_validity' in outputs and outputs['rgb_validity'] is not None:
-                    rgb_validity_value = outputs['rgb_validity'][0].cpu().item()
-                    rgb_is_valid_head = rgb_validity_value >= RGB_VALIDITY_THRESHOLD
-                else:
-                    rgb_validity_value = None
-                    rgb_is_valid_head = None
+                # CRITICAL FIX (Audit 2025121201 S1): RGB validity/confidence extraction
+                # Validity priority: validity_final -> validity -> None (fallback to conf threshold)
+                # Confidence priority: objectness -> pred_confidence/confidence -> quality -> 0.5
+                rgb_validity_value = None
+                rgb_is_valid_head = None
+                for vkey in ['rgb_validity', 'rgb_validity_final']:
+                    if vkey in outputs and outputs[vkey] is not None:
+                        rgb_validity_value = outputs[vkey][0].cpu().item()
+                        rgb_is_valid_head = rgb_validity_value >= RGB_VALIDITY_THRESHOLD
+                        break
 
-                if 'rgb_objectness' in outputs and outputs['rgb_objectness'] is not None:
-                    rgb_conf_prev = outputs['rgb_objectness'][0].cpu().item()
-                elif 'rgb_confidence' in outputs and outputs['rgb_confidence'] is not None:
-                    rgb_conf_prev = outputs['rgb_confidence'][0].cpu().item()
-                elif 'rgb_quality' in outputs and outputs['rgb_quality'] is not None:
-                    rgb_conf_prev = outputs['rgb_quality'][0].cpu().item()
-                else:
-                    rgb_conf_prev = 0.5  # Conservative default
+                rgb_conf_prev = 0.5  # Default
+                for ckey in ['rgb_objectness', 'rgb_confidence', 'rgb_quality']:
+                    if ckey in outputs and outputs[ckey] is not None:
+                        rgb_conf_prev = outputs[ckey][0].cpu().item()
+                        break
 
-                # Sonar validity/confidence extraction
-                if 'sonar_validity' in outputs and outputs['sonar_validity'] is not None:
-                    sonar_validity_value = outputs['sonar_validity'][0].cpu().item()
-                    sonar_is_valid_head = sonar_validity_value >= SONAR_VALIDITY_THRESHOLD
-                else:
-                    sonar_validity_value = None
-                    sonar_is_valid_head = None
+                # CRITICAL FIX (Audit 2025121201 S1): Sonar validity/confidence extraction
+                # Same priority as RGB
+                sonar_validity_value = None
+                sonar_is_valid_head = None
+                for vkey in ['sonar_validity', 'sonar_validity_final']:
+                    if vkey in outputs and outputs[vkey] is not None:
+                        sonar_validity_value = outputs[vkey][0].cpu().item()
+                        sonar_is_valid_head = sonar_validity_value >= SONAR_VALIDITY_THRESHOLD
+                        break
 
-                if 'sonar_objectness' in outputs and outputs['sonar_objectness'] is not None:
-                    sonar_conf_prev = outputs['sonar_objectness'][0].cpu().item()
-                elif 'sonar_confidence' in outputs and outputs['sonar_confidence'] is not None:
-                    sonar_conf_prev = outputs['sonar_confidence'][0].cpu().item()
-                elif 'sonar_quality' in outputs and outputs['sonar_quality'] is not None:
-                    sonar_conf_prev = outputs['sonar_quality'][0].cpu().item()
-                else:
-                    sonar_conf_prev = 0.5
+                sonar_conf_prev = 0.5  # Default
+                for ckey in ['sonar_objectness', 'sonar_confidence', 'sonar_quality']:
+                    if ckey in outputs and outputs[ckey] is not None:
+                        sonar_conf_prev = outputs[ckey][0].cpu().item()
+                        break
 
                 # Transform from normalized crop space to original image space
                 rgb_pred_orig = self._transform_pred_to_original(

@@ -751,14 +751,22 @@ class AquaSOT3DTracker(BaseModule):
             outputs['rgb_boxes'] = rgb_box_outputs['pred_boxes']
             outputs['rgb_quality'] = rgb_box_outputs['pred_scores']
 
-            # Add confidence prediction if available
+            # CRITICAL FIX (Audit 2025121201 S1): Expose full confidence/objectness/validity keys
+            # Evaluator priority: objectness -> pred_confidence/confidence -> quality
             if 'pred_confidence' in rgb_box_outputs:
                 outputs['rgb_confidence'] = rgb_box_outputs['pred_confidence']
+            # Expose objectness explicitly (decoupled from quality)
+            if 'objectness' in rgb_box_outputs:
+                outputs['rgb_objectness'] = rgb_box_outputs['objectness']
 
-            # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+            # CRITICAL FIX (Audit 2025120902 + 2025121201 S1 - Head-Validity Solution):
             # Add validity prediction for fusion routing
+            # Expose both validity_final (with fallback) and validity (raw) for evaluator priority
             if 'validity_final' in rgb_box_outputs:
                 outputs['rgb_validity'] = rgb_box_outputs['validity_final']
+                outputs['rgb_validity_final'] = rgb_box_outputs['validity_final']  # Explicit key
+            if 'validity' in rgb_box_outputs:
+                outputs['rgb_validity_raw'] = rgb_box_outputs['validity']  # Before fallback
             if 'validity_logits' in rgb_box_outputs:
                 outputs['rgb_validity_logits'] = rgb_box_outputs['validity_logits']
 
@@ -799,14 +807,22 @@ class AquaSOT3DTracker(BaseModule):
             outputs['sonar_boxes'] = sonar_box_outputs['pred_boxes']
             outputs['sonar_quality'] = sonar_box_outputs['pred_scores']
 
-            # Add confidence prediction if available
+            # CRITICAL FIX (Audit 2025121201 S1): Expose full confidence/objectness/validity keys
+            # Evaluator priority: objectness -> pred_confidence/confidence -> quality
             if 'pred_confidence' in sonar_box_outputs:
                 outputs['sonar_confidence'] = sonar_box_outputs['pred_confidence']
+            # Expose objectness explicitly (decoupled from quality)
+            if 'objectness' in sonar_box_outputs:
+                outputs['sonar_objectness'] = sonar_box_outputs['objectness']
 
-            # CRITICAL FIX (Audit 2025120902 - Head-Validity Solution):
+            # CRITICAL FIX (Audit 2025120902 + 2025121201 S1 - Head-Validity Solution):
             # Add validity prediction for fusion routing
+            # Expose both validity_final (with fallback) and validity (raw) for evaluator priority
             if 'validity_final' in sonar_box_outputs:
                 outputs['sonar_validity'] = sonar_box_outputs['validity_final']
+                outputs['sonar_validity_final'] = sonar_box_outputs['validity_final']  # Explicit key
+            if 'validity' in sonar_box_outputs:
+                outputs['sonar_validity_raw'] = sonar_box_outputs['validity']  # Before fallback
             if 'validity_logits' in sonar_box_outputs:
                 outputs['sonar_validity_logits'] = sonar_box_outputs['validity_logits']
 

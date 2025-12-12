@@ -117,7 +117,11 @@ class TemplateSearchDataset(Dataset):
         enable_template_quality_filter: bool = False,  # Disabled by default for training
         template_min_size: float = None,        # Min bbox dimension (pixels)
         template_edge_margin: int = None,       # Min distance from image edge (pixels)
-        template_scan_frames: int = None        # Frames to scan for best template
+        template_scan_frames: int = None,       # Frames to scan for best template
+        # CRITICAL FIX (Audit 2025121201 S3): Configurable negative sampling
+        # Training: 0.1 (10%) for has_object calibration
+        # Validation/Test: 0.0 (disabled) to match online deployment
+        negative_sample_prob: float = 0.1       # Negative sample probability
     ):
         self.base_dataset = base_dataset
         self.template_size = template_size
@@ -189,12 +193,22 @@ class TemplateSearchDataset(Dataset):
                 f"scan_frames={self.template_scan_frames}"
             )
 
-        # CRITICAL FIX (Audit 2025120902 Issue 5): Negative sampling for sonar objectness calibration
+        # CRITICAL FIX (Audit 2025120902 Issue 5 + Audit 2025121201 S3):
+        # Negative sampling for sonar objectness calibration
         # Training data has sparse sonar occlusion, causing objectness to always predict 1.0
         # Negative samples have search crop centered away from target, simulating "no object" scenarios
         # This is essential for calibrating objectness head to distinguish presence/absence
-        self.negative_sample_prob = 0.1  # 10% of samples are negative
+        # CRITICAL: Val/Test MUST set negative_sample_prob=0.0 to match online deployment
+        self.negative_sample_prob = negative_sample_prob  # Configurable, default 10% for training
         self.negative_offset_range = (2.0, 4.0)  # Offset center by 2-4x bbox size
+
+        if negative_sample_prob > 0:
+            logger.info(
+                f"TemplateSearchDataset negative_sample_prob={negative_sample_prob:.1%} "
+                f"(negative samples for has_object calibration)"
+            )
+        else:
+            logger.info("TemplateSearchDataset negative_sample_prob=0 (disabled for validation/test)")
 
         # DUAL-TEMPLATE SUPPORT (MixFormer-style):
         # When enabled, returns two templates per modality:

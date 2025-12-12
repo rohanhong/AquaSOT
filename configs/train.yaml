@@ -169,7 +169,10 @@ training:
     save_interval: 5              # Checkpoint save interval (epochs)
     save_best: true               # Save best model
     save_last: true               # Save last model
-    metric: val_total             # Metric for best model selection
+    # CRITICAL FIX (Audit 2025121201 S3): Use tracking quality for model selection
+    # val_box_total = rgb_box + sonar_box (primary tracking losses)
+    # NOT val_total which includes auxiliary losses (routing_validity, consistency)
+    metric: val_box_total         # Metric for best model selection (tracking quality)
     mode: min                     # Metric optimization direction
     max_keep: 5                   # Maximum checkpoints to keep
 

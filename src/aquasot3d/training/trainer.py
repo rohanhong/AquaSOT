@@ -1118,6 +1118,22 @@ class Trainer:
 
             averaged_metrics['val_invalid_samples'] = validity_stats['invalid_samples']
 
+        # CRITICAL FIX (Audit 2025121201 S3): Compute tracking quality metric for model selection
+        # Model selection should be based on TRACKING QUALITY (box regression + confidence)
+        # NOT auxiliary losses like routing_validity that may dominate total_loss
+        # This metric: val_box_total = rgb_box + sonar_box (primary tracking losses)
+        val_box_total = 0.0
+        box_components = 0
+        if 'val_rgb_box' in averaged_metrics:
+            val_box_total += averaged_metrics['val_rgb_box']
+            box_components += 1
+        if 'val_sonar_box' in averaged_metrics:
+            val_box_total += averaged_metrics['val_sonar_box']
+            box_components += 1
+        if box_components > 0:
+            averaged_metrics['val_box_total'] = val_box_total
+            logger.debug(f"Computed val_box_total={val_box_total:.4f} from {box_components} components")
+
         # Log to TensorBoard
         if self.is_main_process and self.writer is not None:
             for key, value in averaged_metrics.items():
