@@ -77,8 +77,39 @@ Training automatically resumes from latest checkpoint if available.
 
 ## Monitoring
 
+### TensorBoard
+
 ```bash
 tensorboard --logdir outputs/train/aquasot3d/vitb_256_dual/logs --port 6006
+```
+
+### Weights & Biases (wandb)
+
+**Command-line (recommended):**
+```bash
+python tracking/train.py --script aquasot3d --config vitb_256_dual \
+    --wandb \
+    --wandb_project aquasot3d \
+    --wandb_name exp001_baseline \
+    --wandb_entity your-username
+```
+
+**YAML config:**
+```yaml
+WANDB:
+  ENABLED: true
+  PROJECT: "aquasot3d"
+  ENTITY: "your-username"  # optional
+
+EXPERIMENT:
+  NAME: vitb_256_dual_exp001
+  GROUP: baseline
+  TAGS: [vit_base, dual_modal]
+```
+
+First time setup:
+```bash
+wandb login
 ```
 
 ## Output Structure

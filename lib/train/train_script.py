@@ -42,6 +42,16 @@ def run(settings):
     cfg = config_module.cfg
     config_module.update_config_from_file(settings.cfg_file)
 
+    # Override wandb config from command-line arguments
+    if getattr(settings, 'wandb_enabled', False):
+        cfg.WANDB.ENABLED = True
+    if getattr(settings, 'wandb_project', None):
+        cfg.WANDB.PROJECT = settings.wandb_project
+    if getattr(settings, 'wandb_name', None):
+        cfg.WANDB.NAME = settings.wandb_name
+    if getattr(settings, 'wandb_entity', None):
+        cfg.WANDB.ENTITY = settings.wandb_entity
+
     if settings.local_rank in [-1, 0]:
         print("=" * 60)
         print("Configuration:")
@@ -116,7 +126,8 @@ def run(settings):
         optimizer,
         settings,
         lr_scheduler,
-        use_amp=use_amp
+        use_amp=use_amp,
+        cfg=cfg
     )
 
     # Start training

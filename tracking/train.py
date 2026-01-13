@@ -42,6 +42,10 @@ def run_training(
     local_rank=-1,
     save_dir=None,
     base_seed=None,
+    wandb_enabled=False,
+    wandb_project=None,
+    wandb_name=None,
+    wandb_entity=None,
 ):
     """Run the training script.
 
@@ -52,6 +56,10 @@ def run_training(
         local_rank: Local rank for distributed training
         save_dir: Directory to save checkpoints and logs
         base_seed: Random seed
+        wandb_enabled: Enable wandb logging
+        wandb_project: wandb project name
+        wandb_name: wandb run name
+        wandb_entity: wandb entity (username or team)
     """
     # Setup default save directory
     if save_dir is None:
@@ -90,6 +98,12 @@ def run_training(
         project_path,
         f'experiments/{script_name}/{config_name}.yaml'
     )
+
+    # wandb settings (command-line overrides)
+    settings.wandb_enabled = wandb_enabled
+    settings.wandb_project = wandb_project
+    settings.wandb_name = wandb_name
+    settings.wandb_entity = wandb_entity
 
     # Import and run training script
     train_module = importlib.import_module('lib.train.train_script')
@@ -138,6 +152,31 @@ def main():
         help='Random seed (default: 42)'
     )
 
+    # wandb arguments
+    parser.add_argument(
+        '--wandb',
+        action='store_true',
+        help='Enable wandb logging'
+    )
+    parser.add_argument(
+        '--wandb_project',
+        type=str,
+        default=None,
+        help='wandb project name'
+    )
+    parser.add_argument(
+        '--wandb_name',
+        type=str,
+        default=None,
+        help='wandb run name'
+    )
+    parser.add_argument(
+        '--wandb_entity',
+        type=str,
+        default=None,
+        help='wandb entity (username or team)'
+    )
+
     args = parser.parse_args()
 
     # Initialize distributed training
@@ -156,6 +195,10 @@ def main():
         local_rank=args.local_rank,
         save_dir=args.save_dir,
         base_seed=args.seed,
+        wandb_enabled=args.wandb,
+        wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
     )
 
 

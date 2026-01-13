@@ -1,7 +1,7 @@
 """
 LTR Trainer from OSTrack.
 
-Simplified for AquaSOT-3D.
+Simplified for AquaSOT-3D with wandb integration.
 """
 
 import os
@@ -20,7 +20,8 @@ from lib.train.admin import AverageMeter, StatValue, TensorboardWriter
 class LTRTrainer(BaseTrainer):
     """LTR-style trainer for AquaSOT-3D."""
 
-    def __init__(self, actor, loaders, optimizer, settings, lr_scheduler=None, use_amp=False):
+    def __init__(self, actor, loaders, optimizer, settings, lr_scheduler=None,
+                 use_amp=False, cfg=None):
         """
         Args:
             actor: Actor for training
@@ -29,10 +30,12 @@ class LTRTrainer(BaseTrainer):
             settings: Training settings
             lr_scheduler: Learning rate scheduler
             use_amp: Whether to use automatic mixed precision
+            cfg: Configuration object (for wandb)
         """
         super().__init__(actor, loaders, optimizer, settings, lr_scheduler)
 
         self._set_default_settings()
+        self.cfg = cfg
 
         # Initialize statistics
         self.stats = OrderedDict({loader.name: None for loader in self.loaders})
@@ -48,9 +51,50 @@ class LTRTrainer(BaseTrainer):
         else:
             self.tensorboard_writer = None
 
+        # Initialize wandb
+        self.wandb_run = None
+        if settings.local_rank in [-1, 0] and cfg is not None:
+            self._init_wandb(cfg)
+
         self.use_amp = use_amp
         if use_amp:
             self.scaler = GradScaler()
+
+        # Global step counter for wandb batch-level logging
+        self.global_step = 0
+
+    def _init_wandb(self, cfg):
+        """Initialize wandb logging."""
+        if not cfg.WANDB.ENABLED:
+            return
+
+        try:
+            import wandb
+
+            run_name = cfg.WANDB.NAME if cfg.WANDB.NAME else cfg.EXPERIMENT.NAME
+            tags = list(cfg.EXPERIMENT.TAGS) + list(cfg.WANDB.TAGS)
+
+            # Convert config to dict for wandb
+            config_dict = {}
+            for key in cfg.keys():
+                if key != 'WANDB':
+                    config_dict[key] = dict(cfg[key]) if hasattr(cfg[key], 'keys') else cfg[key]
+
+            self.wandb_run = wandb.init(
+                project=cfg.WANDB.PROJECT,
+                entity=cfg.WANDB.ENTITY if cfg.WANDB.ENTITY else None,
+                name=run_name,
+                group=cfg.EXPERIMENT.GROUP,
+                tags=tags if tags else None,
+                notes=cfg.WANDB.NOTES if cfg.WANDB.NOTES else None,
+                config=config_dict,
+                mode=cfg.WANDB.MODE,
+                resume="allow",
+            )
+            print(f"[wandb] Initialized: {self.wandb_run.url}")
+        except Exception as e:
+            print(f"[wandb] Failed to initialize: {e}")
+            self.wandb_run = None
 
     def _set_default_settings(self):
         """Set default settings."""
@@ -77,6 +121,7 @@ class LTRTrainer(BaseTrainer):
 
         if self.settings.local_rank in [-1, 0]:
             self._write_tensorboard()
+            self._write_wandb()
 
     def cycle_dataset(self, loader):
         """Run one cycle of training or validation."""
@@ -132,6 +177,11 @@ class LTRTrainer(BaseTrainer):
 
             # Print statistics
             self._print_stats(i, loader, batch_size)
+
+            # Log to wandb (batch-level)
+            if loader.training and self.settings.local_rank in [-1, 0]:
+                self.global_step += 1
+                self._write_wandb_batch(stats, loader.name)
 
         # Print epoch time
         epoch_time = self.prev_time - self.start_time
@@ -228,3 +278,48 @@ class LTRTrainer(BaseTrainer):
                     self.settings.description
                 )
             self.tensorboard_writer.write_epoch(self.stats, self.epoch)
+
+    def _write_wandb(self):
+        """Write epoch summary to wandb."""
+        if self.wandb_run is None:
+            return
+
+        try:
+            import wandb
+
+            log_dict = {'epoch': self.epoch}
+
+            for loader_name, loader_stats in self.stats.items():
+                if loader_stats is None:
+                    continue
+                for stat_name, stat_value in loader_stats.items():
+                    key = f"{loader_name}/{stat_name}"
+                    if hasattr(stat_value, 'avg'):
+                        log_dict[key] = stat_value.avg
+                    elif hasattr(stat_value, 'val'):
+                        log_dict[key] = stat_value.val
+
+            wandb.log(log_dict, step=self.global_step)
+        except Exception as e:
+            print(f"[wandb] Log error: {e}")
+
+    def _write_wandb_batch(self, stats, loader_name):
+        """Write batch-level stats to wandb."""
+        if self.wandb_run is None:
+            return
+
+        try:
+            import wandb
+
+            log_dict = {
+                'epoch': self.epoch,
+                'global_step': self.global_step,
+            }
+
+            for stat_name, stat_value in stats.items():
+                key = f"{loader_name}/{stat_name}"
+                log_dict[key] = stat_value
+
+            wandb.log(log_dict, step=self.global_step)
+        except Exception as e:
+            pass  # Silent fail for batch logging

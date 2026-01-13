@@ -282,6 +282,18 @@ cfg.EXPERIMENT.NAME = "aquasot3d_default"
 cfg.EXPERIMENT.GROUP = "default"
 cfg.EXPERIMENT.TAGS = []
 
+# ==============================================================================
+# WANDB
+# ==============================================================================
+cfg.WANDB = edict()
+cfg.WANDB.ENABLED = False
+cfg.WANDB.PROJECT = "aquasot3d"
+cfg.WANDB.ENTITY = ""  # Your wandb username or team name
+cfg.WANDB.NAME = ""  # Run name (defaults to EXPERIMENT.NAME if empty)
+cfg.WANDB.TAGS = []  # Additional tags
+cfg.WANDB.NOTES = ""  # Run notes
+cfg.WANDB.MODE = "online"  # online/offline/disabled
+
 
 # ==============================================================================
 # Helper Functions

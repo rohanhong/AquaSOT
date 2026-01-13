@@ -29,7 +29,6 @@ class AquaSOT3DActor(BaseActor):
         self.loss_weight = loss_weight
         self.settings = settings
         self.cfg = cfg
-        self.bs = settings.batchsize
 
     def __call__(self, data):
         """Forward pass and loss computation.
