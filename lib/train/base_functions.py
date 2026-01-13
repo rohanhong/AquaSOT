@@ -73,7 +73,12 @@ def build_dataloaders(cfg, settings):
     # Placeholder: Create dummy datasets for smoke testing
     # Real implementation will use AquaSOT dataset
     class DummyDataset(torch.utils.data.Dataset):
-        """Dummy dataset for smoke testing."""
+        """Dummy dataset for smoke testing.
+
+        Returns data in OSTrack format:
+        - Images: [N, C, H, W] where N is number of templates/searches
+        - Annotations: [N, 4] in (x, y, w, h) normalized format
+        """
 
         def __init__(self, size, samples_per_epoch=1000):
             self.size = size
@@ -88,15 +93,16 @@ def build_dataloaders(cfg, settings):
             sonar_template_sz = settings.output_sz['sonar_template']
             sonar_search_sz = settings.output_sz['sonar_search']
 
+            # N_t = 1 template, N_s = 1 search
+            # Shape: [N, C, H, W] for images, [N, 4] for annotations
             return {
-                'rgb_template': torch.randn(3, rgb_template_sz, rgb_template_sz),
-                'rgb_search': torch.randn(3, rgb_search_sz, rgb_search_sz),
-                'sonar_template': torch.randn(1, sonar_template_sz, sonar_template_sz),
-                'sonar_search': torch.randn(1, sonar_search_sz, sonar_search_sz),
-                'rgb_template_bbox': torch.tensor([0.25, 0.25, 0.5, 0.5]),  # [cx, cy, w, h]
-                'rgb_search_bbox': torch.tensor([0.5, 0.5, 0.3, 0.3]),
-                'sonar_template_bbox': torch.tensor([0.25, 0.25, 0.5, 0.5]),
-                'sonar_search_bbox': torch.tensor([0.5, 0.5, 0.3, 0.3]),
+                'rgb_template': torch.randn(1, 3, rgb_template_sz, rgb_template_sz),
+                'rgb_search': torch.randn(1, 3, rgb_search_sz, rgb_search_sz),
+                'sonar_template': torch.randn(1, 1, sonar_template_sz, sonar_template_sz),
+                'sonar_search': torch.randn(1, 1, sonar_search_sz, sonar_search_sz),
+                # Annotations in (x, y, w, h) normalized format
+                'rgb_anno': torch.tensor([[0.35, 0.35, 0.3, 0.3]]),  # [N_s, 4]
+                'sonar_anno': torch.tensor([[0.35, 0.35, 0.3, 0.3]]),  # [N_s, 4]
             }
 
     # Create dummy datasets

@@ -71,7 +71,7 @@ def get_dataset_path(dataset_name, dataset_path=None):
 
     # Default paths
     default_paths = {
-        'aquasot3d': os.path.join(project_root, 'data', 'AquaSOT'),
+        'aquasot3d': os.path.join(project_root, 'data'),
         'uot100': os.path.join(project_root, 'data', 'UOT100'),
     }
 

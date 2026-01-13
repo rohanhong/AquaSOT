@@ -6,7 +6,7 @@
 
 AquaSOT-3D dataset structure:
 ```
-data/AquaSOT/
+data/
     uuv1/
         light/
             groundtruth.txt
@@ -20,6 +20,7 @@ data/AquaSOT/
                 1000.jpg, 1001.jpg, ...
     uuv2/
     ...
+    uuv12/
 ```
 
 ### 2. Sonar Preprocessing (required once)
@@ -28,10 +29,10 @@ Convert polar sonar images to rectangular coordinates:
 
 ```bash
 # Single sequence
-python scripts/preprocess_sonar.py --sequence uuv1 --data-root data/AquaSOT
+python scripts/preprocess_sonar.py --sequence uuv1 --data-root data
 
 # All sequences
-python scripts/preprocess_sonar.py --all --data-root data/AquaSOT
+python scripts/preprocess_sonar.py --all --data-root data
 ```
 
 Output: `sonar/img_rect/` and `sonar/groundtruth_rect.txt`
@@ -41,7 +42,8 @@ Output: `sonar/img_rect/` and `sonar/groundtruth_rect.txt`
 Download MAE pretrained ViT-Base weights:
 ```bash
 mkdir -p pretrained
-# Place mae_pretrain_vit_base.pth in pretrained/
+wget -O pretrained/mae_pretrain_vit_base.pth \
+    https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
 ```
 
 ## Training

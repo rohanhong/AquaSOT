@@ -15,7 +15,7 @@ python tracking/test.py --tracker aquasot3d \
 # Specify dataset path
 python tracking/test.py --tracker aquasot3d \
     --checkpoint path/to/checkpoint.pth \
-    --dataset_path /path/to/AquaSOT
+    --dataset_path /path/to/data
 
 # Evaluate specific sequences
 python tracking/test.py --tracker aquasot3d \
@@ -97,7 +97,7 @@ reports/
 
 ```
 [Evaluation] Dataset: aquasot3d
-[Evaluation] Dataset path: /path/to/data/AquaSOT
+[Evaluation] Dataset path: /path/to/data
 [Evaluation] Found 12 sequences
 [Evaluation] Tracker: AquaSOT3D
 
@@ -124,5 +124,5 @@ Evaluation uses rect-converted sonar data:
 
 Run sonar preprocessing first if `img_rect/` does not exist:
 ```bash
-python scripts/preprocess_sonar.py --all --data-root data/AquaSOT
+python scripts/preprocess_sonar.py --all --data-root data
 ```

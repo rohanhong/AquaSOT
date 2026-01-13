@@ -1,0 +1,39 @@
+# Test config without pretrained weights
+MODEL:
+  PRETRAIN_FILE: ""  # No pretrained weights
+
+  BACKBONE:
+    RGB:
+      TYPE: vit_base_patch16_224
+      DROP_PATH_RATE: 0.1
+    SONAR:
+      TYPE: vit_base_patch16_224
+      DROP_PATH_RATE: 0.1
+
+  FUSION:
+    TYPE: dcma
+    NUM_LAYERS: 2
+    NUM_HEADS: 8
+
+  HEAD:
+    TYPE: CENTER
+    NUM_CHANNELS: 256
+
+TRAIN:
+  LR: 0.0001
+  EPOCH: 2
+  BATCH_SIZE: 2
+  NUM_WORKER: 4
+  GRADIENT_ACCUMULATION: 1
+
+DATA:
+  ROOT: data
+  TRAIN:
+    SEQUENCES: [uuv1]
+    SAMPLE_PER_EPOCH: 10
+  VAL:
+    SEQUENCES: [uuv3]
+    SAMPLE_PER_EPOCH: 5
+
+SYSTEM:
+  SEED: 42

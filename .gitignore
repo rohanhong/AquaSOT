@@ -53,9 +53,9 @@ coverage.json
 htmlcov/
 
 # Data & Outputs
-data/
-checkpoints/
-outputs/
+/data/
+/checkpoints/
+/outputs/
 runs/
 *.pth
 *.ckpt

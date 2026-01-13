@@ -10,6 +10,7 @@ Reference:
   https://arxiv.org/abs/2010.11929
 """
 
+import os
 import math
 import logging
 from functools import partial
@@ -18,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.models.layers import Mlp, DropPath, trunc_normal_, lecun_normal_
+from timm.layers import Mlp, DropPath, trunc_normal_, lecun_normal_
 
 from lib.models.layers.patch_embed import PatchEmbed
 from .base_backbone import BaseBackbone
@@ -266,13 +267,47 @@ def vit_large_patch16_224(pretrained=False, in_chans=3, **kwargs):
 
 # Factory functions for AquaSOT-3D
 
+def _resolve_pretrained_path(cfg, pretrained=None):
+    """Resolve pretrained checkpoint path.
+
+    Args:
+        cfg: Config object
+        pretrained: Explicit pretrained path (overrides config)
+
+    Returns:
+        Full path to pretrained checkpoint, or None if not specified
+    """
+    if pretrained:
+        checkpoint = pretrained
+    else:
+        checkpoint = cfg.MODEL.PRETRAIN_FILE
+
+    if not checkpoint:
+        return None
+
+    # If already absolute path or exists, use as-is
+    if os.path.isabs(checkpoint) or os.path.exists(checkpoint):
+        return checkpoint
+
+    # Try with PRETRAINED_DIR
+    pretrained_dir = getattr(cfg.PATHS, 'PRETRAINED_DIR', 'pretrained')
+    full_path = os.path.join(pretrained_dir, checkpoint)
+    if os.path.exists(full_path):
+        return full_path
+
+    # Return original (will fail with clear error if not found)
+    return checkpoint
+
+
 def build_vit_rgb(cfg, pretrained=None):
     """Build ViT backbone for RGB input."""
     backbone_cfg = cfg.MODEL.BACKBONE.RGB
     drop_path = cfg.TRAIN.DROP_PATH_RATE if hasattr(cfg.TRAIN, 'DROP_PATH_RATE') else 0.1
 
+    pretrained_path = _resolve_pretrained_path(cfg, pretrained)
+
     model = vit_base_patch16_224(
-        pretrained=pretrained or cfg.MODEL.PRETRAIN_FILE,
+        pretrained=pretrained_path,
         in_chans=backbone_cfg.IN_CHANNELS,
         drop_path_rate=drop_path
     )
@@ -285,8 +320,10 @@ def build_vit_sonar(cfg, pretrained=None):
     backbone_cfg = cfg.MODEL.BACKBONE.SONAR
     drop_path = cfg.TRAIN.DROP_PATH_RATE if hasattr(cfg.TRAIN, 'DROP_PATH_RATE') else 0.1
 
+    pretrained_path = _resolve_pretrained_path(cfg, pretrained)
+
     model = vit_base_patch16_224(
-        pretrained=pretrained or cfg.MODEL.PRETRAIN_FILE,
+        pretrained=pretrained_path,
         in_chans=backbone_cfg.IN_CHANNELS,
         drop_path_rate=drop_path
     )

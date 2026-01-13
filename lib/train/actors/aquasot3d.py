@@ -71,6 +71,13 @@ class AquaSOT3DActor(BaseActor):
         sonar_template = data['sonar_template'][0]
         sonar_search = data['sonar_search'][0]
 
+        # Move to GPU
+        device = next(self.net.parameters()).device
+        rgb_template = rgb_template.to(device)
+        rgb_search = rgb_search.to(device)
+        sonar_template = sonar_template.to(device)
+        sonar_search = sonar_search.to(device)
+
         # Forward pass through model
         out_dict = self.net(
             rgb_template=rgb_template,
@@ -92,20 +99,27 @@ class AquaSOT3DActor(BaseActor):
             loss: Total weighted loss
             status: Dict of individual losses for logging
         """
-        # Get GT boxes (x, y, w, h format)
-        gt_bbox_rgb = gt_dict['rgb_anno'][-1]  # [B, 4]
-        gt_bbox_sonar = gt_dict['sonar_anno'][-1]  # [B, 4]
+        # Get device from predictions
+        device = pred_dict['rgb_boxes'].device
+
+        # Get GT boxes (x, y, w, h format) and move to GPU
+        gt_bbox_rgb = gt_dict['rgb_anno'][-1].to(device)  # [B, 4]
+        gt_bbox_sonar = gt_dict['sonar_anno'][-1].to(device)  # [B, 4]
 
         # Generate GT heatmaps
         search_size = self.cfg.DATA.SEARCH.SIZE
         stride = self.cfg.MODEL.BACKBONE.RGB.STRIDE
 
+        # Move annotations to device before generating heatmaps
+        rgb_anno_device = [anno.to(device) for anno in gt_dict['rgb_anno']]
+        sonar_anno_device = [anno.to(device) for anno in gt_dict['sonar_anno']]
+
         gt_gaussian_rgb = generate_heatmap(
-            gt_dict['rgb_anno'], search_size, stride
+            rgb_anno_device, search_size, stride
         )[-1].unsqueeze(1)  # [B, 1, H, W]
 
         gt_gaussian_sonar = generate_heatmap(
-            gt_dict['sonar_anno'], search_size, stride
+            sonar_anno_device, search_size, stride
         )[-1].unsqueeze(1)
 
         # Compute RGB losses
