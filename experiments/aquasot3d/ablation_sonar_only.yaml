@@ -1,0 +1,23 @@
+# Ablation: Sonar-only tracking (via modality dropout)
+#
+# Uses modality dropout to zero out RGB modality
+# This simulates single-modal operation while preserving dual architecture
+
+MODEL:
+  FUSION:
+    TYPE: dcma
+
+TRAIN:
+  EPOCH: 100
+
+DATA:
+  MODALITY_DROPOUT:
+    ENABLED: true
+    P_DROP_RGB: 1.0
+    P_DROP_SONAR: 0.0
+    P_DROP_BOTH: 0.0
+
+EXPERIMENT:
+  NAME: ablation_sonar_only
+  GROUP: ablation
+  TAGS: [sonar_only, ablation]

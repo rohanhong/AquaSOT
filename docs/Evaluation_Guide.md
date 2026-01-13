@@ -1,52 +1,128 @@
 # AquaSOT-3D Evaluation Guide
 
-## Evaluation
+## Basic Evaluation
 
 ```bash
-python scripts/eval.py --config configs/eval.yaml \
-    --checkpoint outputs/train/checkpoints/checkpoint_best.pth
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint outputs/train/aquasot3d/vitb_256_dual/checkpoints/AquaSOT3D_ep0100.pth.tar
 ```
 
-### Override Parameters
+## Command Line Options
+
+### Dataset Options
 
 ```bash
-python scripts/eval.py --config configs/eval.yaml \
-    --checkpoint outputs/train/checkpoints/checkpoint_best.pth \
-    --opts 'data.test_sequences=[uuv3]'
+# Specify dataset path
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --dataset_path /path/to/AquaSOT
+
+# Evaluate specific sequences
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --sequences uuv3 uuv6 uuv10
 ```
 
-## Visualization
-
-Visualization is enabled by default. Control via CLI flags:
+### Output Options
 
 ```bash
-# Disable visualization (faster)
-python scripts/eval.py --config configs/eval.yaml \
-    --checkpoint outputs/train/checkpoints/checkpoint_best.pth --no-visualize
+# Custom result directory
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --result_dir results/experiment_001 \
+    --report_dir reports/experiment_001
+```
 
-# Force enable visualization
-python scripts/eval.py --config configs/eval.yaml \
-    --checkpoint outputs/train/checkpoints/checkpoint_best.pth --visualize
+### Visualization
+
+```bash
+# Enable visualization
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --visualize
+
+# Plot success/precision curves
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --plot_curves
+```
+
+### Additional Options
+
+```bash
+# Overwrite existing results
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --overwrite
+
+# Generate report from existing results only
+python tracking/test.py --tracker aquasot3d \
+    --report_only
+
+# Custom model parameters
+python tracking/test.py --tracker aquasot3d \
+    --checkpoint path/to/checkpoint.pth \
+    --search_size 256 \
+    --template_size 128 \
+    --search_factor 4.0 \
+    --template_factor 2.0
 ```
 
 ## Output Structure
 
 ```
-outputs/eval/
-├── overall_metrics.json
-├── evaluation_report.txt
-├── eval_config.yaml
-├── sequences/
-│   └── <sequence_name>/
-│       ├── predictions.npz
-│       ├── metrics.json
-│       └── metadata.json
-├── visualization/
-└── logs/
-    └── eval.log
+results/
+    AquaSOT3D/
+        uuv3.txt              # Tracking predictions [x,y,w,h]
+        uuv3_time.txt         # Per-frame timing
+        uuv6.txt
+        uuv6_time.txt
+        ...
+
+reports/
+    performance.json          # Detailed metrics
+    curves.png                # Success/Precision curves (if --plot_curves)
 ```
 
-## Configuration Reference
+## Metrics
 
-- `configs/default.yaml` - Base configuration with detailed comments
-- `configs/eval.yaml` - Evaluation configuration
+| Metric | Description |
+|--------|-------------|
+| Success AUC | Area under success curve (IoU thresholds 0-1) |
+| Precision@20 | Precision at 20-pixel center error threshold |
+| Average IoU | Mean IoU across all frames |
+| Center Error | Mean Euclidean distance between predicted and GT centers |
+
+## Expected Console Output
+
+```
+[Evaluation] Dataset: aquasot3d
+[Evaluation] Dataset path: /path/to/data/AquaSOT
+[Evaluation] Found 12 sequences
+[Evaluation] Tracker: AquaSOT3D
+
+======================================================================
+Evaluation Summary
+======================================================================
+Tracker              Success AUC    Precision@20      Avg IoU
+----------------------------------------------------------------------
+AquaSOT3D                  0.652           0.823        0.587
+======================================================================
+
+[Results] AquaSOT3D:
+  Success AUC:  0.652
+  Precision@20: 0.823
+  Average IoU:  0.587
+  Center Error: 15.3 px
+```
+
+## Dataset Structure
+
+Evaluation uses rect-converted sonar data:
+- RGB: `light/img/` + `light/groundtruth.txt`
+- Sonar: `sonar/img_rect/` + `sonar/groundtruth_rect.txt`
+
+Run sonar preprocessing first if `img_rect/` does not exist:
+```bash
+python scripts/preprocess_sonar.py --all --data-root data/AquaSOT
+```

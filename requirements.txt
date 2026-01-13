@@ -27,6 +27,7 @@ Pillow>=9.5.0
 
 # Configuration and Utilities
 pyyaml>=6.0
+easydict>=1.9
 tqdm>=4.65.0
 tensorboard>=2.13.0
 

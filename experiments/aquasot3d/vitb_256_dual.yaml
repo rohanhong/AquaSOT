@@ -1,0 +1,103 @@
+# AquaSOT-3D Main Training Configuration
+# ViT-Base backbone, 256x256 search region, dual-modal fusion
+#
+# This YAML only overrides defaults from lib/config/aquasot3d/config.py
+# All parameters must be defined in config.py first
+
+MODEL:
+  PRETRAIN_FILE: "mae_pretrain_vit_base.pth"
+
+  BACKBONE:
+    RGB:
+      TYPE: vit_base_patch16_224
+      DROP_PATH_RATE: 0.1
+    SONAR:
+      TYPE: vit_base_patch16_224
+      DROP_PATH_RATE: 0.1
+
+  FUSION:
+    TYPE: dcma
+    NUM_LAYERS: 2
+    NUM_HEADS: 8
+
+  HEAD:
+    TYPE: CENTER
+    NUM_CHANNELS: 256
+
+TRAIN:
+  LR: 0.0001
+  WEIGHT_DECAY: 0.0001
+  EPOCH: 100
+  BATCH_SIZE: 2
+  NUM_WORKER: 12
+  BACKBONE_MULTIPLIER: 0.1
+  GRAD_CLIP_NORM: 0.1
+  GRADIENT_ACCUMULATION: 4
+
+  GIOU_WEIGHT: 2.0
+  L1_WEIGHT: 5.0
+  FOCAL_WEIGHT: 1.0
+  CONSISTENCY_WEIGHT: 0.1
+
+  SCHEDULER:
+    TYPE: cosine
+    WARMUP_EPOCHS: 5
+    WARMUP_LR: 0.00001
+    MIN_LR: 0.000001
+
+  CHECKPOINT:
+    SAVE_INTERVAL: 5
+    METRIC: val_total
+    MODE: min
+
+DATA:
+  ROOT: data
+
+  TRAIN:
+    SEQUENCES: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
+    VISIBILITY_POLICY: all
+
+  VAL:
+    SEQUENCES: [uuv3, uuv6, uuv10]
+
+  SEARCH:
+    SIZE: 256
+    FACTOR: 4.0
+    CENTER_JITTER: 0.15
+    SCALE_JITTER: 0.1
+
+  TEMPLATE:
+    SIZE: 128
+    FACTOR: 2.0
+    UPDATE_POLICY: mixformer
+
+  AUGMENTATION:
+    ENABLED: true
+    RGB:
+      COLOR_JITTER: true
+      BRIGHTNESS: 0.3
+      CONTRAST: 0.3
+      BLUR: true
+      BLUR_PROB: 0.3
+    SONAR:
+      SPECKLE: true
+      SPECKLE_LEVEL: 0.1
+
+TEST:
+  TEMPLATE_SIZE: 128
+  SEARCH_SIZE: 256
+  TEMPLATE_FACTOR: 2.0
+  SEARCH_FACTOR: 4.0
+
+SYSTEM:
+  SEED: 42
+
+PATHS:
+  WORK_DIR: outputs/train
+  CHECKPOINT_DIR: outputs/train/checkpoints
+  LOG_DIR: outputs/train/logs
+
+EXPERIMENT:
+  NAME: aquasot3d_vitb_256_dual
+  GROUP: full_training
+  TAGS: [vit_base, dual_modal, dcma]
