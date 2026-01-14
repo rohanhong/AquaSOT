@@ -46,6 +46,24 @@ wget -O pretrained/mae_pretrain_vit_base.pth \
     https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
 ```
 
+## Hardware Auto-Configuration
+
+Detect hardware and get recommended configuration:
+
+```bash
+# Show recommended configuration
+python scripts/auto_config.py
+
+# Generate config file
+python scripts/auto_config.py --output experiments/aquasot3d/auto_hardware.yaml
+```
+
+Example output:
+```
+Hardware Detection: RTX 3070 (8GB), 16 CPU cores
+Recommended: BATCH_SIZE=1, NUM_WORKER=12, AMP=True, GRADIENT_ACCUMULATION=8
+```
+
 ## Training
 
 ### Basic Training

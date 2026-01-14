@@ -70,15 +70,24 @@ class BaseTrainer:
 
             # Save checkpoint
             if self.settings.local_rank in [-1, 0]:
+                # Always save latest checkpoint (every epoch)
+                self.save_checkpoint(save_latest_only=True)
+
+                # Save numbered checkpoint at intervals
                 if epoch % self.settings.checkpoint_interval == 0:
-                    self.save_checkpoint()
+                    self.save_checkpoint(save_latest_only=False)
 
     def train_epoch(self):
         """Train one epoch. To be implemented by subclass."""
         raise NotImplementedError
 
-    def save_checkpoint(self):
-        """Save training checkpoint."""
+    def save_checkpoint(self, save_latest_only=False):
+        """Save training checkpoint.
+
+        Args:
+            save_latest_only: If True, only save checkpoint_latest.pth.
+                              If False, save both numbered and latest checkpoints.
+        """
         state = {
             'epoch': self.epoch,
             'net': self.actor.net.state_dict(),
@@ -91,11 +100,13 @@ class BaseTrainer:
         checkpoint_dir = self.settings.checkpoint_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        file_path = os.path.join(checkpoint_dir, f'checkpoint_ep{self.epoch:04d}.pth')
-        torch.save(state, file_path)
-        print(f'Saved checkpoint: {file_path}')
+        # Save numbered checkpoint (at intervals)
+        if not save_latest_only:
+            file_path = os.path.join(checkpoint_dir, f'checkpoint_ep{self.epoch:04d}.pth')
+            torch.save(state, file_path)
+            print(f'Saved checkpoint: {file_path}')
 
-        # Save as latest
+        # Always save latest checkpoint
         latest_path = os.path.join(checkpoint_dir, 'checkpoint_latest.pth')
         torch.save(state, latest_path)
 
