@@ -80,6 +80,10 @@ class LTRTrainer(BaseTrainer):
                 if key != 'WANDB':
                     config_dict[key] = dict(cfg[key]) if hasattr(cfg[key], 'keys') else cfg[key]
 
+            # Set wandb directory to outputs/wandb/
+            wandb_dir = os.path.join(self.settings.save_dir, 'wandb')
+            os.makedirs(wandb_dir, exist_ok=True)
+
             self.wandb_run = wandb.init(
                 project=cfg.WANDB.PROJECT,
                 entity=cfg.WANDB.ENTITY if cfg.WANDB.ENTITY else None,
@@ -90,6 +94,7 @@ class LTRTrainer(BaseTrainer):
                 config=config_dict,
                 mode=cfg.WANDB.MODE,
                 resume="allow",
+                dir=wandb_dir,
             )
             print(f"[wandb] Initialized: {self.wandb_run.url}")
         except Exception as e:
