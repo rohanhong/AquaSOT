@@ -302,8 +302,7 @@ class SonarSpeckleNoise(TransformBase):
         noise_std = random.uniform(0, self.noise_level) if do_noise else 0
         return (do_noise, noise_std)
 
-    def transform_image(self, image, rand_params):
-        do_noise, noise_std = rand_params
+    def transform_image(self, image, do_noise, noise_std):
         if not do_noise or noise_std == 0:
             return image
 
