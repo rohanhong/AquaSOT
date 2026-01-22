@@ -78,7 +78,7 @@ cfg.MODEL.HEAD.FREEZE_BN = False
 cfg.TRAIN = edict()
 cfg.TRAIN.LR = 0.0001
 cfg.TRAIN.WEIGHT_DECAY = 0.0001
-cfg.TRAIN.EPOCH = 100
+cfg.TRAIN.EPOCH = 200
 cfg.TRAIN.LR_DROP_EPOCH = 80
 cfg.TRAIN.BATCH_SIZE = 2
 cfg.TRAIN.NUM_WORKER = 12
@@ -147,13 +147,13 @@ cfg.DATA.SONAR_STD = [0.5]
 # DATA.TRAIN
 cfg.DATA.TRAIN = edict()
 cfg.DATA.TRAIN.SEQUENCES = ["uuv1", "uuv2", "uuv4", "uuv5", "uuv7", "uuv8", "uuv9", "uuv11", "uuv12"]
-cfg.DATA.TRAIN.SAMPLE_PER_EPOCH = 60000
+cfg.DATA.TRAIN.SAMPLE_PER_EPOCH = 20000
 cfg.DATA.TRAIN.VISIBILITY_POLICY = "all"  # all/any/both
 
 # DATA.VAL
 cfg.DATA.VAL = edict()
 cfg.DATA.VAL.SEQUENCES = ["uuv3", "uuv6", "uuv10"]
-cfg.DATA.VAL.SAMPLE_PER_EPOCH = 10000
+cfg.DATA.VAL.SAMPLE_PER_EPOCH = 4000
 
 # DATA.SEARCH (shared defaults)
 cfg.DATA.SEARCH = edict()
