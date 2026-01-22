@@ -12,6 +12,7 @@ import cv2
 from .base_tracker import Tracker
 from lib.models.aquasot3d import build_aquasot3d
 from lib.config.aquasot3d.config import cfg, update_config_from_file
+from lib.test.utils.hann import hann2d
 
 
 class AquaSOT3DTracker(Tracker):
@@ -74,6 +75,13 @@ class AquaSOT3DTracker(Tracker):
         # Mean/std for Sonar normalization
         self.mean_sonar = 0.5
         self.std_sonar = 0.5
+
+        # Hann window for motion constraint (reduces tracking drift)
+        stride = cfg.MODEL.BACKBONE.RGB.STRIDE
+        self.feat_sz = self.search_size // stride
+        self.output_window = hann2d(
+            torch.tensor([self.feat_sz, self.feat_sz]).long(), centered=True
+        ).to(self.device)
 
     def _load_checkpoint(self, checkpoint_path):
         """Load model checkpoint.
@@ -198,8 +206,15 @@ class AquaSOT3DTracker(Tracker):
         with torch.no_grad():
             out = self.network.track(rgb_search, sonar_search)
 
-        # Get RGB prediction (primary output)
-        pred_box = out['rgb_boxes'].cpu().numpy()[0]  # [cx, cy, w, h] normalized
+        # Apply Hann window to score map for motion constraint
+        pred_score_map = out['rgb_score_map']
+        response = self.output_window * pred_score_map
+
+        # Recalculate bbox using windowed response
+        pred_box = self.network.box_head.cal_bbox(
+            response, out['rgb_size_map'], out['rgb_offset_map']
+        )
+        pred_box = pred_box.cpu().numpy()[0]  # [cx, cy, w, h] normalized
 
         # Map back to original image coordinates
         pred_box = self._map_box_back(

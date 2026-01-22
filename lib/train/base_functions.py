@@ -62,89 +62,137 @@ def build_dataloaders(cfg, settings):
 
     Returns:
         Tuple of (train_loader, val_loader)
-
-    Note:
-        This is a placeholder implementation.
-        Full implementation will be added in Phase 4 (Data Loading).
     """
     # Import here to avoid circular imports
     from lib.train.data import LTRLoader
-
-    # Placeholder: Create dummy datasets for smoke testing
-    # Real implementation will use AquaSOT dataset
-    class DummyDataset(torch.utils.data.Dataset):
-        """Dummy dataset for smoke testing.
-
-        Returns data in OSTrack format:
-        - Images: [N, C, H, W] where N is number of templates/searches
-        - Annotations: [N, 4] in (x, y, w, h) normalized format
-        """
-
-        def __init__(self, size, samples_per_epoch=1000):
-            self.size = size
-            self.samples_per_epoch = samples_per_epoch
-
-        def __len__(self):
-            return self.samples_per_epoch
-
-        def __getitem__(self, idx):
-            rgb_template_sz = settings.output_sz['rgb_template']
-            rgb_search_sz = settings.output_sz['rgb_search']
-            sonar_template_sz = settings.output_sz['sonar_template']
-            sonar_search_sz = settings.output_sz['sonar_search']
-
-            # N_t = 1 template, N_s = 1 search
-            # Shape: [N, C, H, W] for images, [N, 4] for annotations
-            return {
-                'rgb_template': torch.randn(1, 3, rgb_template_sz, rgb_template_sz),
-                'rgb_search': torch.randn(1, 3, rgb_search_sz, rgb_search_sz),
-                'sonar_template': torch.randn(1, 1, sonar_template_sz, sonar_template_sz),
-                'sonar_search': torch.randn(1, 1, sonar_search_sz, sonar_search_sz),
-                # Annotations in (x, y, w, h) normalized format
-                'rgb_anno': torch.tensor([[0.35, 0.35, 0.3, 0.3]]),  # [N_s, 4]
-                'sonar_anno': torch.tensor([[0.35, 0.35, 0.3, 0.3]]),  # [N_s, 4]
-            }
-
-    # Create dummy datasets
-    dataset_train = DummyDataset(
-        size=cfg.DATA.RGB.SEARCH.SIZE,
-        samples_per_epoch=cfg.DATA.TRAIN.SAMPLE_PER_EPOCH
-    )
-    dataset_val = DummyDataset(
-        size=cfg.DATA.RGB.SEARCH.SIZE,
-        samples_per_epoch=cfg.DATA.VAL.SAMPLE_PER_EPOCH
+    from lib.train.dataset.aquasot3d import AquaSOT3DDataset
+    from lib.train.data.sampler import MultiModalSampler
+    from lib.train.data.processing import DualModalProcessing
+    from lib.train.data.transforms import (
+        Transform, ToTensorAndJitter, Normalize,
+        SonarToTensor, SonarNormalize, SonarSpeckleNoise
     )
 
-    # Create samplers for distributed training
-    train_sampler = DistributedSampler(dataset_train) if settings.local_rank != -1 else None
-    val_sampler = DistributedSampler(dataset_val) if settings.local_rank != -1 else None
+    # Build transforms for RGB
+    rgb_transform = Transform(
+        ToTensorAndJitter(brightness_jitter=0.2),
+        Normalize(mean=cfg.DATA.RGB_MEAN, std=cfg.DATA.RGB_STD)
+    )
+
+    # Build transforms for Sonar
+    sonar_transforms = [SonarToTensor()]
+    if cfg.DATA.AUGMENTATION.ENABLED and cfg.DATA.AUGMENTATION.SONAR.SPECKLE:
+        sonar_transforms.insert(0, SonarSpeckleNoise(
+            probability=cfg.DATA.AUGMENTATION.SONAR.SPECKLE_PROB,
+            noise_level=cfg.DATA.AUGMENTATION.SONAR.SPECKLE_LEVEL
+        ))
+    sonar_transforms.append(SonarNormalize(
+        mean=cfg.DATA.SONAR_MEAN[0],
+        std=cfg.DATA.SONAR_STD[0]
+    ))
+    sonar_transform = Transform(*sonar_transforms)
+
+    # Build processing
+    search_area_factor = {
+        'template': cfg.DATA.TEMPLATE.FACTOR,
+        'search': cfg.DATA.SEARCH.FACTOR
+    }
+    output_sz = {
+        'template': cfg.DATA.TEMPLATE.SIZE,
+        'search': cfg.DATA.SEARCH.SIZE
+    }
+    center_jitter_factor = {
+        'template': cfg.DATA.TEMPLATE.CENTER_JITTER,
+        'search': cfg.DATA.SEARCH.CENTER_JITTER
+    }
+    scale_jitter_factor = {
+        'template': cfg.DATA.TEMPLATE.SCALE_JITTER,
+        'search': cfg.DATA.SEARCH.SCALE_JITTER
+    }
+
+    processing = DualModalProcessing(
+        search_area_factor=search_area_factor,
+        output_sz=output_sz,
+        center_jitter_factor=center_jitter_factor,
+        scale_jitter_factor=scale_jitter_factor,
+        mode='sequence',
+        rgb_transform=rgb_transform,
+        sonar_transform=sonar_transform,
+        settings=settings,
+        stride=cfg.MODEL.BACKBONE.RGB.STRIDE
+    )
+
+    # Build training dataset
+    train_dataset = AquaSOT3DDataset(
+        root=cfg.DATA.ROOT,
+        sequence_names=cfg.DATA.TRAIN.SEQUENCES,
+        use_rect_sonar=True
+    )
+
+    # Build validation dataset
+    val_dataset = AquaSOT3DDataset(
+        root=cfg.DATA.ROOT,
+        sequence_names=cfg.DATA.VAL.SEQUENCES,
+        use_rect_sonar=True
+    )
+
+    # Build samplers
+    train_sampler = MultiModalSampler(
+        datasets=[train_dataset],
+        samples_per_epoch=cfg.DATA.TRAIN.SAMPLE_PER_EPOCH,
+        max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL,
+        num_search_frames=cfg.DATA.SEARCH.NUMBER,
+        num_template_frames=cfg.DATA.TEMPLATE.NUMBER,
+        processing=processing,
+        frame_sample_mode=cfg.DATA.SAMPLER_MODE
+    )
+
+    val_sampler = MultiModalSampler(
+        datasets=[val_dataset],
+        samples_per_epoch=cfg.DATA.VAL.SAMPLE_PER_EPOCH,
+        max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL,
+        num_search_frames=cfg.DATA.SEARCH.NUMBER,
+        num_template_frames=cfg.DATA.TEMPLATE.NUMBER,
+        processing=processing,
+        frame_sample_mode=cfg.DATA.SAMPLER_MODE
+    )
+
+    # Create distributed samplers if needed
+    dist_train_sampler = DistributedSampler(train_sampler) if settings.local_rank != -1 else None
+    dist_val_sampler = DistributedSampler(val_sampler) if settings.local_rank != -1 else None
 
     shuffle = False if settings.local_rank != -1 else True
 
     # Create data loaders
     loader_train = LTRLoader(
         'train',
-        dataset_train,
+        train_sampler,
         training=True,
         batch_size=cfg.TRAIN.BATCH_SIZE,
         shuffle=shuffle,
         num_workers=cfg.TRAIN.NUM_WORKER,
         drop_last=True,
         stack_dim=1,
-        sampler=train_sampler
+        sampler=dist_train_sampler
     )
 
     loader_val = LTRLoader(
         'val',
-        dataset_val,
+        val_sampler,
         training=False,
         batch_size=cfg.TRAIN.BATCH_SIZE,
         num_workers=cfg.TRAIN.NUM_WORKER,
         drop_last=True,
         stack_dim=1,
-        sampler=val_sampler,
+        sampler=dist_val_sampler,
         epoch_interval=cfg.TRAIN.VAL_EPOCH_INTERVAL
     )
+
+    if is_main_process():
+        print(f"Training sequences: {cfg.DATA.TRAIN.SEQUENCES}")
+        print(f"Validation sequences: {cfg.DATA.VAL.SEQUENCES}")
+        print(f"Training samples per epoch: {cfg.DATA.TRAIN.SAMPLE_PER_EPOCH}")
+        print(f"Validation samples per epoch: {cfg.DATA.VAL.SAMPLE_PER_EPOCH}")
 
     return loader_train, loader_val
 
@@ -230,7 +278,7 @@ def get_optimizer_scheduler(net, cfg):
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=cfg.TRAIN.EPOCH,
-            eta_min=cfg.TRAIN.LR * 0.01
+            eta_min=cfg.TRAIN.SCHEDULER.MIN_LR
         )
     else:
         raise ValueError(f"Unsupported scheduler: {scheduler_type}")

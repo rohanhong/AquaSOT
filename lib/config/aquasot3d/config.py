@@ -20,6 +20,8 @@ cfg = edict()
 cfg.MODEL = edict()
 cfg.MODEL.PRETRAIN_FILE = "mae_pretrain_vit_base.pth"
 cfg.MODEL.PRETRAIN_FILE_SONAR = ""  # Separate pretrain for sonar (optional)
+cfg.MODEL.RETURN_INTER = False  # Return intermediate features
+cfg.MODEL.RETURN_STAGES = [2, 5, 8, 11]  # Stages to return features from
 
 # MODEL.BACKBONE.RGB
 cfg.MODEL.BACKBONE = edict()
@@ -37,6 +39,7 @@ cfg.MODEL.BACKBONE.RGB.CAT_MODE = 'direct'  # template-search concatenation mode
 cfg.MODEL.BACKBONE.RGB.CE_LOC = []  # Candidate Elimination layer locations
 cfg.MODEL.BACKBONE.RGB.CE_KEEP_RATIO = []  # CE keep ratios
 cfg.MODEL.BACKBONE.RGB.CE_TEMPLATE_RANGE = 'ALL'
+cfg.MODEL.BACKBONE.RGB.SEP_SEG = False  # Separate segment embedding
 
 # MODEL.BACKBONE.SONAR
 cfg.MODEL.BACKBONE.SONAR = edict()
@@ -53,17 +56,15 @@ cfg.MODEL.BACKBONE.SONAR.CAT_MODE = 'direct'
 cfg.MODEL.BACKBONE.SONAR.CE_LOC = []
 cfg.MODEL.BACKBONE.SONAR.CE_KEEP_RATIO = []
 cfg.MODEL.BACKBONE.SONAR.CE_TEMPLATE_RANGE = 'ALL'
+cfg.MODEL.BACKBONE.SONAR.SEP_SEG = False  # Separate segment embedding
 
 # MODEL.FUSION
 cfg.MODEL.FUSION = edict()
-cfg.MODEL.FUSION.TYPE = "dcma"  # Deformable Cross-Modal Attention
+cfg.MODEL.FUSION.TYPE = "dcma"  # Cross-Modal Attention (standard attention, not deformable)
 cfg.MODEL.FUSION.EMBED_DIM = 768
 cfg.MODEL.FUSION.NUM_HEADS = 8
 cfg.MODEL.FUSION.NUM_LAYERS = 2
-cfg.MODEL.FUSION.NUM_POINTS = 4  # Deformable attention sampling points
-cfg.MODEL.FUSION.NUM_LEVELS = 1  # Feature pyramid levels
 cfg.MODEL.FUSION.DROPOUT = 0.1
-cfg.MODEL.FUSION.USE_DEFORMABLE = True
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()

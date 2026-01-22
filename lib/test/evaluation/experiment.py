@@ -132,21 +132,28 @@ class ExperimentAquaSOT3D:
         """
         seq_path = os.path.join(self.root_dir, seq_name)
 
+        def extract_frame_number(fname):
+            """Extract numeric frame number from filename for sorting."""
+            try:
+                return int(os.path.splitext(fname)[0])
+            except ValueError:
+                return float('inf')
+
         # Load RGB images (actual structure: light/img/)
         rgb_dir = os.path.join(seq_path, 'light', 'img')
         rgb_files = []
         if os.path.exists(rgb_dir):
-            for f in sorted(os.listdir(rgb_dir)):
-                if f.endswith(('.jpg', '.png', '.jpeg')):
-                    rgb_files.append(os.path.join(rgb_dir, f))
+            files = [f for f in os.listdir(rgb_dir) if f.endswith(('.jpg', '.png', '.jpeg'))]
+            files.sort(key=extract_frame_number)  # Numerical sort
+            rgb_files = [os.path.join(rgb_dir, f) for f in files]
 
         # Load Sonar images (actual structure: sonar/img_rect/)
         sonar_dir = os.path.join(seq_path, 'sonar', 'img_rect')
         sonar_files = []
         if os.path.exists(sonar_dir):
-            for f in sorted(os.listdir(sonar_dir)):
-                if f.endswith(('.jpg', '.png', '.jpeg')):
-                    sonar_files.append(os.path.join(sonar_dir, f))
+            files = [f for f in os.listdir(sonar_dir) if f.endswith(('.jpg', '.png', '.jpeg'))]
+            files.sort(key=extract_frame_number)  # Numerical sort
+            sonar_files = [os.path.join(sonar_dir, f) for f in files]
 
         # Load RGB ground truth (actual structure: light/groundtruth.txt)
         rgb_gt_file = os.path.join(seq_path, 'light', 'groundtruth.txt')

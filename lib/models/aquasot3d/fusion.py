@@ -1,7 +1,13 @@
 """
 Cross-Modal Fusion module for AquaSOT-3D.
 
-Simplified Deformable Cross-Modal Attention (DCMA).
+Cross-Modal Attention (CMA) for bidirectional feature fusion between RGB and Sonar.
+
+Note: Despite the class name 'DCMA' (Deformable Cross-Modal Attention), this module
+implements standard cross-attention, not deformable attention. The 'deformable' aspect
+refers to the flexible cross-modal interaction pattern, not the Deformable-DETR style
+sparse sampling mechanism. For true deformable attention with learnable sampling
+offsets and reference points, see external/Deformable-DETR/models/ops/modules/.
 """
 
 import torch
@@ -117,9 +123,10 @@ class DCMALayer(nn.Module):
 
 
 class DCMA(nn.Module):
-    """Deformable Cross-Modal Attention module.
+    """Cross-Modal Attention module.
 
-    Multi-layer bidirectional cross-attention between RGB and Sonar.
+    Multi-layer bidirectional cross-attention between RGB and Sonar modalities.
+    Uses standard scaled dot-product attention (not deformable attention).
     """
 
     def __init__(self, embed_dim=768, num_heads=8, num_layers=2, dropout=0.1):

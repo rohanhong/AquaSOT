@@ -279,8 +279,15 @@ class SonarPolarToRectConverter:
                 bbox = [float(x.strip()) for x in line.strip().split(',')]
                 bboxes.append(bbox)
 
-        # Get image files
-        img_files = sorted(img_dir.glob('*.jpg'))
+        # Get image files with NUMERICAL sorting (critical for bbox alignment)
+        # Files are named 1.jpg, 2.jpg, ... without leading zeros
+        def extract_frame_number(path):
+            try:
+                return int(path.stem)
+            except ValueError:
+                return float('inf')
+
+        img_files = sorted(img_dir.glob('*.jpg'), key=extract_frame_number)
 
         if len(img_files) == 0:
             raise ValueError(f"No images found in {img_dir}")

@@ -125,7 +125,11 @@ class AquaSOT3DDataset(BaseVideoDataset):
         return np.array(gt, dtype=np.float32)
 
     def _get_frame_list(self, seq_path, modality):
-        """Get sorted list of frame paths."""
+        """Get numerically sorted list of frame paths.
+
+        IMPORTANT: Files are named 1.jpg, 2.jpg, ... without leading zeros.
+        Must use numerical sorting to match groundtruth line order.
+        """
         if modality == 'rgb':
             # RGB: light/img/
             folder = os.path.join(seq_path, 'light', 'img')
@@ -138,11 +142,25 @@ class AquaSOT3DDataset(BaseVideoDataset):
 
         extensions = ['.jpg', '.jpeg', '.png', '.bmp']
 
-        frames = []
-        for fname in sorted(os.listdir(folder)):
+        # Collect valid image files
+        valid_files = []
+        for fname in os.listdir(folder):
             ext = os.path.splitext(fname)[1].lower()
             if ext in extensions:
-                frames.append(os.path.join(folder, fname))
+                valid_files.append(fname)
+
+        # Sort numerically by extracting the number from filename
+        # e.g., "123.jpg" -> 123
+        def extract_frame_number(fname):
+            try:
+                return int(os.path.splitext(fname)[0])
+            except ValueError:
+                return float('inf')  # Put non-numeric files at the end
+
+        valid_files.sort(key=extract_frame_number)
+
+        # Build full paths
+        frames = [os.path.join(folder, fname) for fname in valid_files]
 
         return frames
 

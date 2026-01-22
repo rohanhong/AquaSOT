@@ -56,6 +56,7 @@ class MultiModalProcessing(BaseProcessing):
         sonar_transform=None,
         joint_transform=None,
         settings=None,
+        stride=16,
     ):
         """
         Args:
@@ -68,6 +69,7 @@ class MultiModalProcessing(BaseProcessing):
             sonar_transform: Transforms for sonar images
             joint_transform: Joint transforms for template/search
             settings: Training settings
+            stride: Feature map stride (default 16 for ViT)
         """
         super().__init__(joint_transform=joint_transform)
 
@@ -79,6 +81,7 @@ class MultiModalProcessing(BaseProcessing):
         self.rgb_transform = rgb_transform
         self.sonar_transform = sonar_transform
         self.settings = settings
+        self.stride = stride
 
     def _get_jittered_box(self, box, mode):
         """Apply jitter to bounding box.
@@ -155,9 +158,9 @@ class MultiModalProcessing(BaseProcessing):
 
                 # Apply transforms
                 if modality == 'rgb' and self.rgb_transform is not None:
-                    crops = [self.rgb_transform(c) for c in crops]
+                    crops = [self.rgb_transform(image=c) for c in crops]
                 elif modality == 'sonar' and self.sonar_transform is not None:
-                    crops = [self.sonar_transform(c) for c in crops]
+                    crops = [self.sonar_transform(image=c) for c in crops]
                 else:
                     # Default: convert to tensor
                     if modality == 'rgb':
@@ -176,7 +179,7 @@ class MultiModalProcessing(BaseProcessing):
                         return data
 
                     # Check downsampled mask
-                    feat_size = out_sz // 16
+                    feat_size = out_sz // self.stride
                     mask_tensor = torch.from_numpy(mask) if isinstance(mask, np.ndarray) else mask
                     mask_down = F.interpolate(
                         mask_tensor[None, None].float(),
