@@ -122,11 +122,13 @@ class LTRTrainer(BaseTrainer):
                     loader.sampler.set_epoch(self.epoch)
                 self.cycle_dataset(loader)
 
-        self._stats_new_epoch()
-
+        # Write logs before resetting stats (critical order)
         if self.settings.local_rank in [-1, 0]:
             self._write_tensorboard()
             self._write_wandb()
+
+        # Reset stats for next epoch (must be after logging)
+        self._stats_new_epoch()
 
     def cycle_dataset(self, loader):
         """Run one cycle of training or validation."""
