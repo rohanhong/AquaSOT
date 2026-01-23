@@ -73,13 +73,13 @@ def load_boxes(file_path):
 
 
 def get_image_files(img_dir):
-    """Get sorted list of image files in directory.
+    """Get numerically sorted list of image files in directory.
 
     Args:
         img_dir: Directory containing images
 
     Returns:
-        List of image file paths
+        List of image file paths sorted by frame number
     """
     if not os.path.exists(img_dir):
         return []
@@ -90,7 +90,14 @@ def get_image_files(img_dir):
         if Path(f).suffix.lower() in extensions:
             files.append(os.path.join(img_dir, f))
 
-    return sorted(files)
+    def extract_frame_number(path):
+        """Extract numeric frame number from filename for sorting."""
+        try:
+            return int(Path(path).stem)
+        except ValueError:
+            return float('inf')
+
+    return sorted(files, key=extract_frame_number)
 
 
 def draw_box(image, box, color, thickness=2, label=None):
@@ -242,10 +249,11 @@ def visualize_sequence(seq_name, result_dir, data_root, output_dir,
         sonar_gt_box = sonar_gt[i] if sonar_gt is not None and i < len(sonar_gt) else None
 
         # Draw boxes on original images (before resize)
+        # RGB: draw both GT and prediction
         draw_box(rgb_img, rgb_gt_box, COLOR_GT, 2, 'GT')
         draw_box(rgb_img, pred_box, COLOR_PRED, 2, 'Pred')
+        # Sonar: only draw GT (pred_box is in RGB coordinate system, not sonar)
         draw_box(sonar_img, sonar_gt_box, COLOR_GT, 2, 'GT')
-        draw_box(sonar_img, pred_box, COLOR_PRED, 2, 'Pred')
 
         # Resize to target height
         rgb_resized = cv2.resize(rgb_img, (rgb_new_w, target_height))
