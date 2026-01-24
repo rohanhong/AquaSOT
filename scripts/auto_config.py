@@ -131,12 +131,13 @@ def compute_batch_size(gpu_memory_mb: int) -> int:
     """Compute optimal batch size based on GPU memory.
 
     Memory model for AquaSOT with ViT-Base, dual-modal fusion:
-    - Model weights and optimizer states: ~600 MB
-    - CUDA context and buffers: ~800 MB
-    - Per sample (forward + backward + gradients): ~2500 MB
+    - Model weights and optimizer states: ~1500 MB
+    - CUDA context and buffers: ~500 MB
+    - Per sample (forward + backward + gradients): ~1500 MB
 
     Calibrated against empirical tests:
     - 8GB GPU (RTX 3070 7.6GB): batch_size=2 validated
+    - 16GB GPU (A4000): batch_size=8 target (~80% utilization)
 
     Args:
         gpu_memory_mb: Available GPU memory in MB
@@ -144,10 +145,10 @@ def compute_batch_size(gpu_memory_mb: int) -> int:
     Returns:
         Recommended batch size (power of 2, minimum 1)
     """
-    MODEL_OVERHEAD_MB = 600
-    CUDA_OVERHEAD_MB = 800
-    PER_SAMPLE_MB = 2500
-    SAFETY_FACTOR = 0.95
+    MODEL_OVERHEAD_MB = 1500
+    CUDA_OVERHEAD_MB = 500
+    PER_SAMPLE_MB = 1500
+    SAFETY_FACTOR = 0.9
 
     available_mb = (gpu_memory_mb * SAFETY_FACTOR) - MODEL_OVERHEAD_MB - CUDA_OVERHEAD_MB
     batch_size = int(available_mb / PER_SAMPLE_MB)
