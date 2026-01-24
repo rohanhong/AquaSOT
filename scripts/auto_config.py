@@ -127,8 +127,100 @@ def detect_hardware() -> HardwareInfo:
     )
 
 
+def compute_batch_size(gpu_memory_mb: int) -> int:
+    """Compute optimal batch size based on GPU memory.
+
+    Memory model for AquaSOT with ViT-Base, dual-modal fusion:
+    - Model weights and optimizer states: ~600 MB
+    - CUDA context and buffers: ~800 MB
+    - Per sample (forward + backward + gradients): ~2500 MB
+
+    Calibrated against empirical tests:
+    - 8GB GPU (RTX 3070 7.6GB): batch_size=2 validated
+
+    Args:
+        gpu_memory_mb: Available GPU memory in MB
+
+    Returns:
+        Recommended batch size (minimum 1)
+    """
+    MODEL_OVERHEAD_MB = 600
+    CUDA_OVERHEAD_MB = 800
+    PER_SAMPLE_MB = 2500
+    SAFETY_FACTOR = 0.95
+
+    available_mb = (gpu_memory_mb * SAFETY_FACTOR) - MODEL_OVERHEAD_MB - CUDA_OVERHEAD_MB
+    batch_size = int(available_mb / PER_SAMPLE_MB)
+
+    return max(1, batch_size)
+
+
+def compute_gradient_accumulation(batch_size: int, target_effective_batch: int = 8) -> int:
+    """Compute gradient accumulation steps to reach target effective batch size.
+
+    Uses ceiling division to ensure effective batch size >= target.
+
+    Args:
+        batch_size: Per-GPU batch size
+        target_effective_batch: Desired effective batch size
+
+    Returns:
+        Gradient accumulation steps (minimum 1)
+    """
+    # Ceiling division: (a + b - 1) // b
+    accumulation = (target_effective_batch + batch_size - 1) // batch_size
+
+    return max(1, accumulation)
+
+
+def compute_num_workers(cpu_threads: int, batch_size: int) -> int:
+    """Compute optimal number of data loading workers.
+
+    Strategy:
+    - Base: scale with both batch size and CPU threads
+    - Use sqrt-based scaling for CPU to handle high-core systems
+    - Allow prefetching beyond immediate batch needs for better GPU utilization
+
+    For high-core systems (e.g., 72 threads):
+    - More workers enable aggressive prefetching
+    - Reduces GPU idle time waiting for data
+
+    Args:
+        cpu_threads: Number of CPU threads
+        batch_size: Training batch size
+
+    Returns:
+        Recommended number of workers
+    """
+    import math
+
+    MIN_WORKERS = 2
+    MAX_WORKERS = 32
+
+    # Special case for low-core systems
+    if cpu_threads <= 4:
+        return max(1, cpu_threads - 1)
+
+    # Scale with CPU threads using sqrt for diminishing returns
+    # sqrt(72) * 4 = 34, sqrt(16) * 4 = 16, sqrt(8) * 4 = 11
+    workers_by_cpu = int(math.sqrt(cpu_threads) * 4)
+
+    # Scale with batch size: more samples need more loading parallelism
+    # Minimum 6 workers per sample for dual-modal (RGB + Sonar) prefetching
+    workers_by_batch = batch_size * 6
+
+    # Use the larger of the two, capped by max
+    num_workers = min(max(workers_by_cpu, workers_by_batch), MAX_WORKERS)
+    num_workers = max(MIN_WORKERS, num_workers)
+
+    return num_workers
+
+
 def recommend_config(hw: HardwareInfo) -> ConfigRecommendation:
     """Generate configuration recommendation based on hardware.
+
+    Uses dynamic computation instead of fixed tiers to adapt to
+    various hardware configurations.
 
     Args:
         hw: HardwareInfo object
@@ -136,52 +228,17 @@ def recommend_config(hw: HardwareInfo) -> ConfigRecommendation:
     Returns:
         ConfigRecommendation object
     """
-    # GPU memory based recommendations (in MB)
-    # AquaSOT with ViT-Base, 256x256 search, 128x128 template
-    # Approximate memory usage per batch:
-    # - Model: ~350MB
-    # - Per sample (dual-modal): ~800MB with AMP, ~1200MB without AMP
+    # AMP disabled: causes training errors with dual-modal fusion
+    amp_enabled = False
 
-    gpu_mem_gb = hw.gpu_memory_mb / 1024
+    # Compute batch size based on GPU memory
+    batch_size = compute_batch_size(hw.gpu_memory_mb)
 
-    if gpu_mem_gb >= 24:
-        # 24GB+ (RTX 4090, A5000, etc.)
-        batch_size = 4
-        amp_enabled = False
-        gradient_accumulation = 2
-    elif gpu_mem_gb >= 16:
-        # 16-24GB (RTX 4080, A4000, etc.)
-        batch_size = 2
-        amp_enabled = False
-        gradient_accumulation = 4
-    elif gpu_mem_gb >= 12:
-        # 12-16GB (RTX 4070, RTX 3080, etc.)
-        batch_size = 2
-        amp_enabled = True
-        gradient_accumulation = 4
-    elif gpu_mem_gb >= 8:
-        # 8-12GB (RTX 3070, RTX 4060, etc.)
-        batch_size = 1
-        amp_enabled = True
-        gradient_accumulation = 8
-    elif gpu_mem_gb >= 6:
-        # 6-8GB (RTX 3060, GTX 1660, etc.)
-        batch_size = 1
-        amp_enabled = True
-        gradient_accumulation = 8
-    else:
-        # <6GB or no GPU
-        batch_size = 1
-        amp_enabled = True
-        gradient_accumulation = 8
+    # Compute gradient accumulation to reach target effective batch size
+    gradient_accumulation = compute_gradient_accumulation(batch_size)
 
-    # CPU based recommendations for num_workers
-    # Rule: use ~75% of available threads, minimum 2, maximum 16
-    num_workers = max(2, min(16, int(hw.cpu_threads * 0.75)))
-
-    # Adjust for low-end systems
-    if hw.cpu_threads <= 4:
-        num_workers = max(1, hw.cpu_threads - 1)
+    # Compute num_workers based on CPU threads and batch size
+    num_workers = compute_num_workers(hw.cpu_threads, batch_size)
 
     # Multi-GPU: use all available GPUs
     num_gpus = max(1, hw.gpu_count)
