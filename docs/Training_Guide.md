@@ -54,15 +54,27 @@ Detect hardware and get recommended configuration:
 # Show recommended configuration
 python scripts/auto_config.py
 
-# Generate config file
-python scripts/auto_config.py --output experiments/aquasot/auto_hardware.yaml
+# Create new config based on existing YAML (creates vitb_256_dual_auto.yaml)
+python scripts/auto_config.py --base experiments/aquasot/vitb_256_dual.yaml
+
+# Create with custom suffix (creates vitb_256_dual_custom.yaml)
+python scripts/auto_config.py --base experiments/aquasot/vitb_256_dual.yaml --suffix _custom
 ```
 
 Example output:
 ```
 Hardware Detection: RTX 3070 (8GB), 16 CPU cores
 Recommended: BATCH_SIZE=1, NUM_WORKER=12, AMP=True, GRADIENT_ACCUMULATION=8
+Configuration created: experiments/aquasot/vitb_256_dual_auto.yaml
 ```
+
+The `--base` option creates a new configuration file with modified parameters:
+- `TRAIN.BATCH_SIZE`
+- `TRAIN.NUM_WORKER`
+- `TRAIN.GRADIENT_ACCUMULATION`
+- `TRAIN.AMP`
+
+The original config file remains unchanged.
 
 ## Training
 
