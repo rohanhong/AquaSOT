@@ -6,13 +6,13 @@ Generate side-by-side RGB and Sonar visualization with bounding boxes.
 Usage:
     # Generate videos for all sequences
     python scripts/visualize_results.py \
-        --result_dir results/AquaSOT3D \
+        --result_dir outputs/test/results/AquaSOT3D \
         --data_root data \
         --output_dir outputs/visualization
 
     # Generate images for specific sequences
     python scripts/visualize_results.py \
-        --result_dir results/AquaSOT3D \
+        --result_dir outputs/test/results/AquaSOT3D \
         --data_root data \
         --output_dir outputs/visualization \
         --format images \

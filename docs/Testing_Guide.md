@@ -11,12 +11,12 @@ python tracking/test.py --tracker aquasot3d \
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--tracker` | Tracker name | Required |
+| `--tracker` | Tracker name | `aquasot3d` |
 | `--checkpoint` | Model checkpoint path | Required |
 | `--dataset_path` | Dataset root directory | `data/` |
 | `--sequences` | Specific sequences to evaluate | All |
-| `--result_dir` | Tracking results output directory | `results/` |
-| `--report_dir` | Evaluation reports directory | `reports/` |
+| `--result_dir` | Tracking results output directory | `outputs/test/results` |
+| `--report_dir` | Evaluation reports directory | `outputs/test/reports` |
 | `--visualize` | Enable real-time visualization | Off |
 | `--plot_curves` | Generate success/precision curves | Off |
 | `--overwrite` | Overwrite existing results | Off |
@@ -43,17 +43,21 @@ python tracking/test.py --tracker aquasot3d \
 ## Output Structure
 
 ```
-results/
-    AquaSOT3D/
-        uuv3.txt              # Tracking predictions [x,y,w,h]
-        uuv3_time.txt         # Per-frame timing
-        uuv6.txt
-        uuv6_time.txt
+outputs/
+    test/
+        results/
+            AquaSOT3D/
+                uuv3.txt              # Tracking predictions [x,y,w,h]
+                uuv3_time.txt         # Per-frame timing
+                uuv6.txt
+                ...
+        reports/
+            performance.json          # Detailed metrics
+            curves.png                # Success/Precision curves (if --plot_curves)
+    visualization/
+        uuv3.mp4                      # Combined RGB + Sonar video
+        uuv6.mp4
         ...
-
-reports/
-    performance.json          # Detailed metrics
-    curves.png                # Success/Precision curves (if --plot_curves)
 ```
 
 ## Metrics
@@ -65,29 +69,6 @@ reports/
 | Average IoU | Mean IoU across all frames |
 | Center Error | Mean Euclidean distance between predicted and GT centers |
 
-## Expected Console Output
-
-```
-[Evaluation] Dataset: aquasot3d
-[Evaluation] Dataset path: /path/to/data
-[Evaluation] Found 12 sequences
-[Evaluation] Tracker: AquaSOT3D
-
-======================================================================
-Evaluation Summary
-======================================================================
-Tracker              Success AUC    Precision@20      Avg IoU
-----------------------------------------------------------------------
-AquaSOT3D                  0.652           0.823        0.587
-======================================================================
-
-[Results] AquaSOT3D:
-  Success AUC:  0.652
-  Precision@20: 0.823
-  Average IoU:  0.587
-  Center Error: 15.3 px
-```
-
 ## Visualize Results
 
 Generate side-by-side RGB and Sonar visualization with GT (green) and Pred (red) boxes:
@@ -95,13 +76,14 @@ Generate side-by-side RGB and Sonar visualization with GT (green) and Pred (red)
 ```bash
 # Generate videos
 python scripts/visualize_results.py \
-    --result_dir results/AquaSOT3D \
+    --result_dir outputs/test/results/AquaSOT3D \
     --data_root data \
     --output_dir outputs/visualization
 
 # Generate images for specific sequences
 python scripts/visualize_results.py \
-    --result_dir results/AquaSOT3D \
+    --result_dir outputs/test/results/AquaSOT3D \
+    --data_root data \
     --format images \
     --sequences uuv3 uuv6
 ```
@@ -115,15 +97,6 @@ python scripts/visualize_results.py \
 | `--format` | Output format: `video` or `images` | `video` |
 | `--fps` | Video frame rate | 10 |
 | `--height` | Output frame height | 480 |
-
-**Output format:** Side-by-side (left: RGB, right: Sonar), same height, with legend.
-
-```
-outputs/visualization/
-    uuv3.mp4          # Combined RGB + Sonar video
-    uuv6.mp4
-    ...
-```
 
 ## Dataset Structure
 

@@ -36,9 +36,9 @@ def parse_args():
                         help='Specific sequences to evaluate')
 
     # Output settings
-    parser.add_argument('--result_dir', type=str, default='results',
+    parser.add_argument('--result_dir', type=str, default='outputs/test/results',
                         help='Directory to save results')
-    parser.add_argument('--report_dir', type=str, default='reports',
+    parser.add_argument('--report_dir', type=str, default='outputs/test/reports',
                         help='Directory to save reports')
 
     # Evaluation settings
