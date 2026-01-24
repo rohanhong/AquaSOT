@@ -142,7 +142,7 @@ def compute_batch_size(gpu_memory_mb: int) -> int:
         gpu_memory_mb: Available GPU memory in MB
 
     Returns:
-        Recommended batch size (minimum 1)
+        Recommended batch size (power of 2, minimum 1)
     """
     MODEL_OVERHEAD_MB = 600
     CUDA_OVERHEAD_MB = 800
@@ -151,8 +151,14 @@ def compute_batch_size(gpu_memory_mb: int) -> int:
 
     available_mb = (gpu_memory_mb * SAFETY_FACTOR) - MODEL_OVERHEAD_MB - CUDA_OVERHEAD_MB
     batch_size = int(available_mb / PER_SAMPLE_MB)
+    batch_size = max(1, batch_size)
 
-    return max(1, batch_size)
+    # Round down to nearest power of 2 for GPU memory alignment
+    # e.g., 5 -> 4, 7 -> 4, 9 -> 8
+    if batch_size > 1:
+        batch_size = 1 << (batch_size.bit_length() - 1)
+
+    return batch_size
 
 
 def compute_gradient_accumulation(batch_size: int, target_effective_batch: int = 8) -> int:
