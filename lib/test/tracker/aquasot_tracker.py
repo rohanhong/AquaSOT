@@ -1,5 +1,5 @@
 """
-AquaSOT-3D tracker wrapper for evaluation.
+AquaSOT tracker wrapper for evaluation.
 
 Based on OSTrack's tracker wrapper pattern.
 """
@@ -10,15 +10,15 @@ import numpy as np
 import cv2
 
 from .base_tracker import Tracker
-from lib.models.aquasot3d import build_aquasot3d
-from lib.config.aquasot3d.config import cfg, update_config_from_file
+from lib.models.aquasot import build_aquasot
+from lib.config.aquasot.config import cfg, update_config_from_file
 from lib.test.utils.hann import hann2d
 
 
-class AquaSOT3DTracker(Tracker):
-    """AquaSOT-3D tracker for evaluation.
+class AquaSOTTracker(Tracker):
+    """AquaSOT tracker for evaluation.
 
-    Wraps the AquaSOT-3D model for running on benchmarks.
+    Wraps the AquaSOT model for running on benchmarks.
 
     Args:
         params: Tracker parameters (config path, checkpoint path, etc.)
@@ -26,7 +26,7 @@ class AquaSOT3DTracker(Tracker):
     """
 
     def __init__(self, params, dataset_name=None):
-        super().__init__(name='AquaSOT3D', is_deterministic=True)
+        super().__init__(name='AquaSOT', is_deterministic=True)
         self.params = params
         self.dataset_name = dataset_name
 
@@ -46,7 +46,7 @@ class AquaSOT3DTracker(Tracker):
             cfg.DATA.TEMPLATE.SIZE = params['template_size']
 
         # Build model
-        self.network = build_aquasot3d(cfg, training=False)
+        self.network = build_aquasot(cfg, training=False)
 
         # Load checkpoint
         checkpoint = params.get('checkpoint', None)
@@ -102,9 +102,9 @@ class AquaSOT3DTracker(Tracker):
 
         missing, unexpected = self.network.load_state_dict(state_dict, strict=False)
         if missing:
-            print(f'[AquaSOT3DTracker] Missing keys: {missing}')
+            print(f'[AquaSOTTracker] Missing keys: {missing}')
         if unexpected:
-            print(f'[AquaSOT3DTracker] Unexpected keys: {unexpected}')
+            print(f'[AquaSOTTracker] Unexpected keys: {unexpected}')
 
     def init(self, image, box):
         """Initialize tracker with first frame.
@@ -405,4 +405,4 @@ class AquaSOT3DTracker(Tracker):
 
 def get_tracker_class():
     """Return tracker class for external loading."""
-    return AquaSOT3DTracker
+    return AquaSOTTracker

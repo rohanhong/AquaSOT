@@ -1,13 +1,13 @@
 """
-Training module for AquaSOT-3D.
+Training module for AquaSOT.
 """
 
-from .actors import BaseActor, AquaSOT3DActor
+from .actors import BaseActor, AquaSOTActor
 from .trainers import BaseTrainer, LTRTrainer
 
 __all__ = [
     'BaseActor',
-    'AquaSOT3DActor',
+    'AquaSOTActor',
     'BaseTrainer',
     'LTRTrainer',
 ]

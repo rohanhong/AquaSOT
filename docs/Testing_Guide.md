@@ -1,17 +1,17 @@
-# AquaSOT-3D Testing Guide
+# AquaSOT Testing Guide
 
 ## Basic Testing
 
 ```bash
-python tracking/test.py --tracker aquasot3d \
-    --checkpoint outputs/train/aquasot3d/vitb_256_dual/checkpoints/AquaSOT3D_ep0100.pth.tar
+python tracking/test.py --tracker aquasot \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/AquaSOT_ep0100.pth.tar
 ```
 
 ## Command Line Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--tracker` | Tracker name | `aquasot3d` |
+| `--tracker` | Tracker name | `aquasot` |
 | `--checkpoint` | Model checkpoint path | Required |
 | `--dataset_path` | Dataset root directory | `data/` |
 | `--sequences` | Specific sequences to evaluate | All |
@@ -28,15 +28,15 @@ python tracking/test.py --tracker aquasot3d \
 
 **Full evaluation with visualization:**
 ```bash
-python tracking/test.py --tracker aquasot3d \
-    --checkpoint outputs/train/aquasot3d/vitb_256_dual/checkpoints/AquaSOT3D_ep0100.pth.tar \
+python tracking/test.py --tracker aquasot \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/AquaSOT_ep0100.pth.tar \
     --visualize --plot_curves
 ```
 
 **Evaluate specific sequences only:**
 ```bash
-python tracking/test.py --tracker aquasot3d \
-    --checkpoint outputs/train/aquasot3d/vitb_256_dual/checkpoints/AquaSOT3D_ep0100.pth.tar \
+python tracking/test.py --tracker aquasot \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/AquaSOT_ep0100.pth.tar \
     --sequences uuv3 uuv6 uuv10
 ```
 
@@ -46,7 +46,7 @@ python tracking/test.py --tracker aquasot3d \
 outputs/
     test/
         results/
-            AquaSOT3D/
+            AquaSOT/
                 uuv3.txt              # Tracking predictions [x,y,w,h]
                 uuv3_time.txt         # Per-frame timing
                 uuv6.txt
@@ -76,13 +76,13 @@ Generate side-by-side RGB and Sonar visualization with GT (green) and Pred (red)
 ```bash
 # Generate videos
 python scripts/visualize_results.py \
-    --result_dir outputs/test/results/AquaSOT3D \
+    --result_dir outputs/test/results/AquaSOT \
     --data_root data \
     --output_dir outputs/visualization
 
 # Generate images for specific sequences
 python scripts/visualize_results.py \
-    --result_dir outputs/test/results/AquaSOT3D \
+    --result_dir outputs/test/results/AquaSOT \
     --data_root data \
     --format images \
     --sequences uuv3 uuv6

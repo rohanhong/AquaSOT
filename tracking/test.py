@@ -1,9 +1,9 @@
 """
-Evaluation CLI for AquaSOT-3D.
+Evaluation CLI for AquaSOT.
 
 Usage:
-    python tracking/test.py --tracker aquasot3d --checkpoint path/to/checkpoint.pth
-    python tracking/test.py --tracker aquasot3d --config experiments/aquasot3d/baseline.yaml
+    python tracking/test.py --tracker aquasot --checkpoint path/to/checkpoint.pth
+    python tracking/test.py --tracker aquasot --config experiments/aquasot/baseline.yaml
 """
 
 import argparse
@@ -17,10 +17,10 @@ sys.path.insert(0, project_root)
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='AquaSOT-3D Evaluation')
+    parser = argparse.ArgumentParser(description='AquaSOT Evaluation')
 
     # Tracker settings
-    parser.add_argument('--tracker', type=str, default='aquasot3d',
+    parser.add_argument('--tracker', type=str, default='aquasot',
                         help='Tracker name')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to model checkpoint')
@@ -28,7 +28,7 @@ def parse_args():
                         help='Path to config file')
 
     # Dataset settings
-    parser.add_argument('--dataset', type=str, default='aquasot3d',
+    parser.add_argument('--dataset', type=str, default='aquasot',
                         help='Dataset name')
     parser.add_argument('--dataset_path', type=str, default=None,
                         help='Path to dataset')
@@ -71,7 +71,7 @@ def get_dataset_path(dataset_name, dataset_path=None):
 
     # Default paths
     default_paths = {
-        'aquasot3d': os.path.join(project_root, 'data'),
+        'aquasot': os.path.join(project_root, 'data'),
         'uot100': os.path.join(project_root, 'data', 'UOT100'),
     }
 
@@ -84,7 +84,7 @@ def get_dataset_path(dataset_name, dataset_path=None):
 
 def create_tracker(args):
     """Create tracker from arguments."""
-    from lib.test.tracker import AquaSOT3DTracker
+    from lib.test.tracker import AquaSOTTracker
 
     params = {
         'checkpoint': args.checkpoint,
@@ -95,7 +95,7 @@ def create_tracker(args):
         'template_area_factor': args.template_factor,
     }
 
-    return AquaSOT3DTracker(params, dataset_name=args.dataset)
+    return AquaSOTTracker(params, dataset_name=args.dataset)
 
 
 def main():
@@ -108,9 +108,9 @@ def main():
     print(f'[Evaluation] Dataset path: {dataset_path}')
 
     # Create experiment
-    from lib.test.evaluation import ExperimentAquaSOT3D
+    from lib.test.evaluation import ExperimentAquaSOT
 
-    experiment = ExperimentAquaSOT3D(
+    experiment = ExperimentAquaSOT(
         root_dir=dataset_path,
         result_dir=args.result_dir,
         report_dir=args.report_dir,

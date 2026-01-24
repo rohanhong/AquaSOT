@@ -1,5 +1,5 @@
 """
-Base tracker interface for AquaSOT-3D.
+Base tracker interface for AquaSOT.
 
 Based on got10k-toolkit Tracker class.
 """

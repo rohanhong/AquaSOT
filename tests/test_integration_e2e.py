@@ -1,5 +1,5 @@
 """
-End-to-end integration tests for AquaSOT-3D.
+End-to-end integration tests for AquaSOT.
 
 This module tests the complete pipeline:
 1. End-to-end training (1 epoch)
@@ -27,7 +27,7 @@ sys.path.insert(0, project_root)
 
 @pytest.fixture
 def mock_dataset_dir(tmp_path):
-    """Create a mock AquaSOT-3D dataset structure (matching actual structure)."""
+    """Create a mock AquaSOT dataset structure (matching actual structure)."""
     import cv2
 
     # Create multiple sequences
@@ -68,7 +68,7 @@ def mock_dataset_dir(tmp_path):
 @pytest.fixture
 def clear_pretrained():
     """Clear pretrained weights config for tests."""
-    from lib.config.aquasot3d.config import cfg
+    from lib.config.aquasot.config import cfg
     original = cfg.MODEL.PRETRAIN_FILE
     cfg.MODEL.PRETRAIN_FILE = ""
     yield cfg
@@ -88,9 +88,9 @@ class TestE2ETraining:
 
     def test_single_epoch_training(self, clear_pretrained, tmp_path):
         """Test training for a single epoch with synthetic data."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
-        from lib.train.actors.aquasot3d import AquaSOT3DActor
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
+        from lib.train.actors.aquasot import AquaSOTActor
         from lib.utils.focal_loss import FocalLoss
         from lib.utils.box_ops import giou_loss
 
@@ -99,7 +99,7 @@ class TestE2ETraining:
         cfg.TRAIN.BATCH_SIZE = 2
 
         # Build model
-        model = build_aquasot3d(cfg, training=True)
+        model = build_aquasot(cfg, training=True)
         device = TEST_DEVICE
         model = model.to(device)
 
@@ -129,7 +129,7 @@ class TestE2ETraining:
                 self.description = 'test'
 
         settings = Settings(str(tmp_path))
-        actor = AquaSOT3DActor(model, objective, loss_weight, settings, cfg)
+        actor = AquaSOTActor(model, objective, loss_weight, settings, cfg)
 
         # Build optimizer
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -166,13 +166,13 @@ class TestE2ETraining:
 
     def test_training_with_lr_scheduler(self, mock_dataset_dir, clear_pretrained):
         """Test training with learning rate scheduler."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         # Build model
-        model = build_aquasot3d(cfg, training=True)
+        model = build_aquasot(cfg, training=True)
         device = TEST_DEVICE
         model = model.to(device)
 
@@ -206,13 +206,13 @@ class TestE2ETraining:
 
     def test_gradient_clipping(self, clear_pretrained):
         """Test gradient clipping during training."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         # Build model
-        model = build_aquasot3d(cfg, training=True)
+        model = build_aquasot(cfg, training=True)
         device = TEST_DEVICE
         model = model.to(device)
 
@@ -262,18 +262,18 @@ class TestE2EEvaluation:
 
     def test_single_sequence_evaluation(self, mock_dataset_dir, clear_pretrained):
         """Test evaluation on a single sequence."""
-        from lib.test.tracker import AquaSOT3DTracker
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.test.tracker import AquaSOTTracker
+        from lib.test.evaluation import ExperimentAquaSOT
 
         # Create tracker
         params = {
             'search_size': 256,
             'template_size': 128,
         }
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # Create experiment
-        experiment = ExperimentAquaSOT3D(
+        experiment = ExperimentAquaSOT(
             root_dir=str(mock_dataset_dir),
             result_dir=str(mock_dataset_dir / 'results'),
             report_dir=str(mock_dataset_dir / 'reports'),
@@ -284,7 +284,7 @@ class TestE2EEvaluation:
         experiment.run(tracker, visualize=False)
 
         # Check results saved
-        result_file = mock_dataset_dir / 'results' / 'AquaSOT3D' / 'uuv_test_0.txt'
+        result_file = mock_dataset_dir / 'results' / 'AquaSOT' / 'uuv_test_0.txt'
         assert result_file.exists()
 
         # Load and verify results
@@ -293,21 +293,21 @@ class TestE2EEvaluation:
         assert results.shape[1] == 4   # [x, y, w, h]
 
         # Generate report
-        performance = experiment.report(['AquaSOT3D'])
-        assert 'AquaSOT3D' in performance
-        assert 'overall' in performance['AquaSOT3D']
+        performance = experiment.report(['AquaSOT'])
+        assert 'AquaSOT' in performance
+        assert 'overall' in performance['AquaSOT']
 
     def test_multi_sequence_evaluation(self, mock_dataset_dir, clear_pretrained):
         """Test evaluation on multiple sequences."""
-        from lib.test.tracker import AquaSOT3DTracker
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.test.tracker import AquaSOTTracker
+        from lib.test.evaluation import ExperimentAquaSOT
 
         # Create tracker
         params = {'search_size': 256, 'template_size': 128}
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # Create experiment with all sequences
-        experiment = ExperimentAquaSOT3D(
+        experiment = ExperimentAquaSOT(
             root_dir=str(mock_dataset_dir),
             result_dir=str(mock_dataset_dir / 'results'),
             report_dir=str(mock_dataset_dir / 'reports'),
@@ -319,16 +319,16 @@ class TestE2EEvaluation:
         experiment.run(tracker, visualize=False)
 
         # Generate report
-        performance = experiment.report(['AquaSOT3D'])
+        performance = experiment.report(['AquaSOT'])
 
         # Check per-sequence results
-        assert 'sequences' in performance['AquaSOT3D']
-        assert len(performance['AquaSOT3D']['sequences']) == 3
+        assert 'sequences' in performance['AquaSOT']
+        assert len(performance['AquaSOT']['sequences']) == 3
 
     def test_evaluation_metrics_computation(self, mock_dataset_dir, clear_pretrained):
         """Test that evaluation metrics are computed correctly."""
         from lib.test.tracker import Tracker
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.test.evaluation import ExperimentAquaSOT
 
         # Create a perfect tracker that returns ground truth
         class PerfectTracker(Tracker):
@@ -348,7 +348,7 @@ class TestE2EEvaluation:
 
         tracker = PerfectTracker()
 
-        experiment = ExperimentAquaSOT3D(
+        experiment = ExperimentAquaSOT(
             root_dir=str(mock_dataset_dir),
             result_dir=str(mock_dataset_dir / 'results'),
             report_dir=str(mock_dataset_dir / 'reports'),
@@ -373,13 +373,13 @@ class TestCheckpoint:
 
     def test_save_load_checkpoint(self, clear_pretrained, tmp_path):
         """Test saving and loading model checkpoint."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         # Build model
-        model = build_aquasot3d(cfg, training=True)
+        model = build_aquasot(cfg, training=True)
         device = TEST_DEVICE
         model = model.to(device)
 
@@ -411,7 +411,7 @@ class TestCheckpoint:
         assert checkpoint_path.exists()
 
         # Build new model and load checkpoint
-        model2 = build_aquasot3d(cfg, training=True)
+        model2 = build_aquasot(cfg, training=True)
         model2 = model2.to(device)
         optimizer2 = torch.optim.AdamW(model2.parameters(), lr=1e-4)
 
@@ -428,14 +428,14 @@ class TestCheckpoint:
 
     def test_checkpoint_for_inference(self, clear_pretrained, tmp_path):
         """Test loading checkpoint for inference."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
-        from lib.test.tracker import AquaSOT3DTracker
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
+        from lib.test.tracker import AquaSOTTracker
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         # Build and save model
-        model = build_aquasot3d(cfg, training=True)
+        model = build_aquasot(cfg, training=True)
         device = TEST_DEVICE
         model = model.to(device)
 
@@ -449,7 +449,7 @@ class TestCheckpoint:
             'template_size': 128,
         }
 
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # Run inference
         rgb_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
@@ -464,15 +464,15 @@ class TestCheckpoint:
 
     def test_resume_training_from_checkpoint(self, clear_pretrained, tmp_path):
         """Test resuming training from checkpoint."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         device = TEST_DEVICE
 
         # First training session
-        model1 = build_aquasot3d(cfg, training=True).to(device)
+        model1 = build_aquasot(cfg, training=True).to(device)
         optimizer1 = torch.optim.AdamW(model1.parameters(), lr=1e-4)
         scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=10, gamma=0.1)
 
@@ -502,7 +502,7 @@ class TestCheckpoint:
         }, str(checkpoint_path))
 
         # Resume training
-        model2 = build_aquasot3d(cfg, training=True).to(device)
+        model2 = build_aquasot(cfg, training=True).to(device)
         optimizer2 = torch.optim.AdamW(model2.parameters(), lr=1e-4)
         scheduler2 = torch.optim.lr_scheduler.StepLR(optimizer2, step_size=10, gamma=0.1)
 
@@ -525,17 +525,17 @@ class TestFullPipeline:
 
     def test_train_then_evaluate(self, mock_dataset_dir, clear_pretrained, tmp_path):
         """Test complete pipeline: train then evaluate."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
-        from lib.test.tracker import AquaSOT3DTracker
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
+        from lib.test.tracker import AquaSOTTracker
+        from lib.test.evaluation import ExperimentAquaSOT
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         device = TEST_DEVICE
 
         # 1. Build and train model
-        model = build_aquasot3d(cfg, training=True).to(device)
+        model = build_aquasot(cfg, training=True).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
         # Simple training loop
@@ -563,10 +563,10 @@ class TestFullPipeline:
             'search_size': 256,
             'template_size': 128,
         }
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # 4. Run evaluation
-        experiment = ExperimentAquaSOT3D(
+        experiment = ExperimentAquaSOT(
             root_dir=str(mock_dataset_dir),
             result_dir=str(tmp_path / 'results'),
             report_dir=str(tmp_path / 'reports'),
@@ -576,22 +576,22 @@ class TestFullPipeline:
         experiment.run(tracker, visualize=False)
 
         # 5. Generate report
-        performance = experiment.report(['AquaSOT3D'])
+        performance = experiment.report(['AquaSOT'])
 
         # Verify complete pipeline works
-        assert 'AquaSOT3D' in performance
-        assert 'overall' in performance['AquaSOT3D']
-        assert 'success_auc' in performance['AquaSOT3D']['overall']
+        assert 'AquaSOT' in performance
+        assert 'overall' in performance['AquaSOT']
+        assert 'success_auc' in performance['AquaSOT']['overall']
 
     def test_model_output_consistency(self, clear_pretrained):
         """Test that model outputs are consistent between train and eval mode."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.config.aquasot.config import cfg
+        from lib.models.aquasot import build_aquasot
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         device = TEST_DEVICE
-        model = build_aquasot3d(cfg, training=True).to(device)
+        model = build_aquasot(cfg, training=True).to(device)
 
         # Fixed input
         torch.manual_seed(42)
@@ -621,15 +621,15 @@ class TestFullPipeline:
 
     def test_data_pipeline_to_model(self, mock_dataset_dir, clear_pretrained):
         """Test that data pipeline produces expected output structure."""
-        from lib.config.aquasot3d.config import cfg
-        from lib.train.dataset import AquaSOT3DDataset
+        from lib.config.aquasot.config import cfg
+        from lib.train.dataset import AquaSOTDataset
         from lib.train.data import MultiModalSampler, LTRLoader
 
         cfg.MODEL.PRETRAIN_FILE = ""
 
         # Build data pipeline
         sequence_names = [f'uuv_test_{i}' for i in range(3)]
-        dataset = AquaSOT3DDataset(str(mock_dataset_dir), sequence_names=sequence_names, use_rect_sonar=True)
+        dataset = AquaSOTDataset(str(mock_dataset_dir), sequence_names=sequence_names, use_rect_sonar=True)
         sampler = MultiModalSampler(
             datasets=[dataset],
             samples_per_epoch=4,

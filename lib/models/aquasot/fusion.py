@@ -1,5 +1,5 @@
 """
-Cross-Modal Fusion module for AquaSOT-3D.
+Cross-Modal Fusion module for AquaSOT.
 
 Cross-Modal Attention (CMA) for bidirectional feature fusion between RGB and Sonar.
 

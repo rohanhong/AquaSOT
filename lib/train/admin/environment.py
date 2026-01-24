@@ -1,5 +1,5 @@
 """
-Environment settings for AquaSOT-3D training.
+Environment settings for AquaSOT training.
 
 Defines paths to datasets and other environment-specific settings.
 """
@@ -12,7 +12,7 @@ class EnvSettings:
 
     def __init__(self):
         # Base paths
-        self.workspace_dir = os.path.expanduser('~/Workspace/AquaSOT-3D')
+        self.workspace_dir = os.path.expanduser('~/Workspace/AquaSOT')
         self.data_dir = os.path.join(self.workspace_dir, 'data')
 
         # AquaSOT dataset paths

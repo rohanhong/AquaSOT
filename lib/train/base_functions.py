@@ -1,5 +1,5 @@
 """
-Base training functions for AquaSOT-3D.
+Base training functions for AquaSOT.
 
 Based on OSTrack's base_functions.py.
 Contains utilities for settings, dataloaders, and optimizers.
@@ -65,7 +65,7 @@ def build_dataloaders(cfg, settings):
     """
     # Import here to avoid circular imports
     from lib.train.data import LTRLoader
-    from lib.train.dataset.aquasot3d import AquaSOT3DDataset
+    from lib.train.dataset.aquasot import AquaSOTDataset
     from lib.train.data.sampler import MultiModalSampler
     from lib.train.data.processing import DualModalProcessing
     from lib.train.data.transforms import (
@@ -123,14 +123,14 @@ def build_dataloaders(cfg, settings):
     )
 
     # Build training dataset
-    train_dataset = AquaSOT3DDataset(
+    train_dataset = AquaSOTDataset(
         root=cfg.DATA.ROOT,
         sequence_names=cfg.DATA.TRAIN.SEQUENCES,
         use_rect_sonar=True
     )
 
     # Build validation dataset
-    val_dataset = AquaSOT3DDataset(
+    val_dataset = AquaSOTDataset(
         root=cfg.DATA.ROOT,
         sequence_names=cfg.DATA.VAL.SEQUENCES,
         use_rect_sonar=True

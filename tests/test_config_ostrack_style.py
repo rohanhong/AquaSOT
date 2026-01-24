@@ -18,7 +18,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'lib'))
 
-from lib.config.aquasot3d import cfg, update_config_from_file, get_config, gen_config
+from lib.config.aquasot import cfg, update_config_from_file, get_config, gen_config
 
 
 class TestConfigDefaults:
@@ -196,7 +196,7 @@ class TestActualConfigFiles:
 
     @pytest.fixture
     def experiments_dir(self):
-        return project_root / 'experiments' / 'aquasot3d'
+        return project_root / 'experiments' / 'aquasot'
 
     def test_load_main_config(self, experiments_dir):
         """Test loading the main training config."""

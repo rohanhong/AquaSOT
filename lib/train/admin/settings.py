@@ -1,5 +1,5 @@
 """
-Training settings for AquaSOT-3D.
+Training settings for AquaSOT.
 
 Based on OSTrack's settings module.
 """

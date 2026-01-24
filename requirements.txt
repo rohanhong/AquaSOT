@@ -1,4 +1,4 @@
-# AquaSOT-3D Requirements
+# AquaSOT Requirements
 # Python 3.8+
 
 # Core Deep Learning (CUDA 11.8)

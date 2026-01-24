@@ -1,5 +1,5 @@
 """
-Training data utilities for AquaSOT-3D.
+Training data utilities for AquaSOT.
 """
 
 from .loader import LTRLoader, ltr_collate, ltr_collate_stack1

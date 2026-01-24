@@ -1,7 +1,7 @@
 """
 Base video dataset class.
 
-Copied from OSTrack with minimal modifications for AquaSOT-3D.
+Copied from OSTrack with minimal modifications for AquaSOT.
 """
 
 import torch.utils.data

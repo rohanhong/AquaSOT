@@ -1,5 +1,5 @@
 """
-Data loader for AquaSOT-3D training.
+Data loader for AquaSOT training.
 
 Based on OSTrack's LTRLoader with simplifications.
 """

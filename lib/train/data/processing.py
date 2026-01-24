@@ -1,5 +1,5 @@
 """
-Data processing for AquaSOT-3D training.
+Data processing for AquaSOT training.
 
 Based on OSTrack's STARKProcessing, extended for dual-modal RGB-Sonar data.
 """
@@ -217,7 +217,7 @@ class MultiModalProcessing(BaseProcessing):
 class DualModalProcessing(MultiModalProcessing):
     """Simplified processing that outputs in actor-expected format.
 
-    Converts the processed data to the format expected by AquaSOT3DActor:
+    Converts the processed data to the format expected by AquaSOTActor:
         - rgb_template: [N, B, C, H, W]
         - rgb_search: [N, B, C, H, W]
         - sonar_template: [N, B, 1, H, W]

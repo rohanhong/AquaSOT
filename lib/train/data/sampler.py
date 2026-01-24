@@ -1,5 +1,5 @@
 """
-Sampling module for AquaSOT-3D training.
+Sampling module for AquaSOT training.
 
 Based on OSTrack's TrackingSampler, extended for dual-modal RGB-Sonar data.
 """
@@ -36,7 +36,7 @@ class MultiModalSampler(torch.utils.data.Dataset):
     ):
         """
         Args:
-            datasets: List of AquaSOT3DDataset instances
+            datasets: List of AquaSOTDataset instances
             p_datasets: List of probabilities for sampling each dataset
             samples_per_epoch: Number of samples per epoch
             max_gap: Maximum frame gap between template and search

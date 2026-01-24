@@ -1,7 +1,7 @@
 """
 LTR Trainer from OSTrack.
 
-Simplified for AquaSOT-3D with wandb integration.
+Simplified for AquaSOT with wandb integration.
 """
 
 import os
@@ -18,7 +18,7 @@ from lib.train.admin import AverageMeter, StatValue, TensorboardWriter
 
 
 class LTRTrainer(BaseTrainer):
-    """LTR-style trainer for AquaSOT-3D."""
+    """LTR-style trainer for AquaSOT."""
 
     def __init__(self, actor, loaders, optimizer, settings, lr_scheduler=None,
                  use_amp=False, cfg=None):
@@ -281,7 +281,7 @@ class LTRTrainer(BaseTrainer):
         if self.tensorboard_writer is not None:
             if self.epoch == 1:
                 self.tensorboard_writer.write_info(
-                    getattr(self.settings, 'script_name', 'aquasot3d'),
+                    getattr(self.settings, 'script_name', 'aquasot'),
                     self.settings.description
                 )
             self.tensorboard_writer.write_epoch(self.stats, self.epoch)

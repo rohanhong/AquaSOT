@@ -30,12 +30,12 @@ class TestTrainingConfiguration:
 
     def test_config_module_import(self):
         """Test that config module can be imported."""
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         assert cfg is not None
 
     def test_config_has_train_section(self):
         """Test that config has TRAIN section."""
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         assert hasattr(cfg, 'TRAIN')
         assert hasattr(cfg.TRAIN, 'LR')
         assert hasattr(cfg.TRAIN, 'EPOCH')
@@ -43,7 +43,7 @@ class TestTrainingConfiguration:
 
     def test_config_has_model_section(self):
         """Test that config has MODEL section."""
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         assert hasattr(cfg, 'MODEL')
         assert hasattr(cfg.MODEL, 'BACKBONE')
         assert hasattr(cfg.MODEL.BACKBONE, 'RGB')
@@ -51,15 +51,15 @@ class TestTrainingConfiguration:
 
     def test_config_has_data_section(self):
         """Test that config has DATA section."""
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         assert hasattr(cfg, 'DATA')
         assert hasattr(cfg.DATA, 'RGB')
         assert hasattr(cfg.DATA, 'SONAR')
 
     def test_update_config_from_file(self):
         """Test config update from YAML file."""
-        from lib.config.aquasot3d.config import cfg, update_config_from_file
-        config_file = os.path.join(project_root, 'experiments/aquasot3d/vitb_256_dual.yaml')
+        from lib.config.aquasot.config import cfg, update_config_from_file
+        config_file = os.path.join(project_root, 'experiments/aquasot/vitb_256_dual.yaml')
         if os.path.exists(config_file):
             update_config_from_file(config_file)
             # Config should still be valid after update
@@ -103,8 +103,8 @@ class TestActor:
     @pytest.fixture
     def mock_model(self):
         """Create mock model for testing."""
-        from lib.models.aquasot3d import build_aquasot3d
-        from lib.config.aquasot3d.config import cfg
+        from lib.models.aquasot import build_aquasot
+        from lib.config.aquasot.config import cfg
 
         # Disable pretrained weights for testing
         cfg.MODEL.PRETRAIN_FILE = ""
@@ -112,7 +112,7 @@ class TestActor:
         # Create small model for testing
         cfg.MODEL.BACKBONE.RGB.DEPTH = 2  # Reduce depth for faster testing
         cfg.MODEL.BACKBONE.SONAR.DEPTH = 2
-        model = build_aquasot3d(cfg, training=False)
+        model = build_aquasot(cfg, training=False)
         return model
 
     @pytest.fixture
@@ -132,15 +132,15 @@ class TestActor:
 
     def test_actor_import(self):
         """Test that actor can be imported."""
-        from lib.train.actors import AquaSOT3DActor, BaseActor
-        assert AquaSOT3DActor is not None
+        from lib.train.actors import AquaSOTActor, BaseActor
+        assert AquaSOTActor is not None
         assert BaseActor is not None
 
     def test_actor_creation(self, mock_model):
         """Test actor creation."""
-        from lib.train.actors import AquaSOT3DActor
+        from lib.train.actors import AquaSOTActor
         from lib.train.admin import Settings
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         from lib.utils import giou_loss, FocalLoss
         from torch.nn.functional import l1_loss
 
@@ -158,7 +158,7 @@ class TestActor:
             'focal': 1.0,
         }
 
-        actor = AquaSOT3DActor(
+        actor = AquaSOTActor(
             net=mock_model,
             objective=objective,
             loss_weight=loss_weight,
@@ -169,9 +169,9 @@ class TestActor:
 
     def test_actor_forward_pass(self, mock_model, mock_data):
         """Test actor forward pass."""
-        from lib.train.actors import AquaSOT3DActor
+        from lib.train.actors import AquaSOTActor
         from lib.train.admin import Settings
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         from lib.utils import giou_loss, FocalLoss
         from torch.nn.functional import l1_loss
 
@@ -189,7 +189,7 @@ class TestActor:
             'focal': 1.0,
         }
 
-        actor = AquaSOT3DActor(
+        actor = AquaSOTActor(
             net=mock_model,
             objective=objective,
             loss_weight=loss_weight,
@@ -237,7 +237,7 @@ class TestBaseFunctions:
         """Test settings update from config."""
         from lib.train.base_functions import update_settings
         from lib.train.admin import Settings
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
 
         settings = Settings()
         update_settings(settings, cfg)
@@ -249,7 +249,7 @@ class TestBaseFunctions:
     def test_get_optimizer_scheduler(self):
         """Test optimizer and scheduler creation."""
         from lib.train.base_functions import get_optimizer_scheduler
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
 
         # Create simple model for testing
         model = nn.Sequential(
@@ -269,7 +269,7 @@ class TestBaseFunctions:
         """Test dataloader creation."""
         from lib.train.base_functions import build_dataloaders, update_settings
         from lib.train.admin import Settings
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
 
         settings = Settings()
         settings.local_rank = -1
@@ -293,7 +293,7 @@ class TestTrainingIntegration:
     @pytest.fixture
     def setup_training_env(self):
         """Set up minimal training environment."""
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         from lib.train.admin import Settings
 
         # Disable pretrained weights for testing
@@ -317,9 +317,9 @@ class TestTrainingIntegration:
         cfg, settings = setup_training_env
 
         from lib.train.base_functions import update_settings, build_dataloaders, get_optimizer_scheduler
-        from lib.train.actors import AquaSOT3DActor
+        from lib.train.actors import AquaSOTActor
         from lib.train.trainers import LTRTrainer
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.models.aquasot import build_aquasot
         from lib.utils import giou_loss, FocalLoss
         from torch.nn.functional import l1_loss
 
@@ -331,7 +331,7 @@ class TestTrainingIntegration:
         assert len(train_loader) > 0
 
         # Build model
-        model = build_aquasot3d(cfg, training=False)
+        model = build_aquasot(cfg, training=False)
         assert model is not None
 
         # Create actor
@@ -345,7 +345,7 @@ class TestTrainingIntegration:
             'l1': cfg.TRAIN.L1_WEIGHT,
             'focal': cfg.TRAIN.FOCAL_WEIGHT,
         }
-        actor = AquaSOT3DActor(
+        actor = AquaSOTActor(
             net=model,
             objective=objective,
             loss_weight=loss_weight,
@@ -363,15 +363,15 @@ class TestTrainingIntegration:
         cfg, settings = setup_training_env
 
         from lib.train.base_functions import update_settings, get_optimizer_scheduler
-        from lib.train.actors import AquaSOT3DActor
-        from lib.models.aquasot3d import build_aquasot3d
+        from lib.train.actors import AquaSOTActor
+        from lib.models.aquasot import build_aquasot
         from lib.utils import giou_loss, FocalLoss
         from torch.nn.functional import l1_loss
 
         update_settings(settings, cfg)
 
         # Build small model
-        model = build_aquasot3d(cfg, training=False)
+        model = build_aquasot(cfg, training=False)
 
         # Create actor
         objective = {
@@ -384,7 +384,7 @@ class TestTrainingIntegration:
             'l1': 5.0,
             'focal': 1.0,
         }
-        actor = AquaSOT3DActor(
+        actor = AquaSOTActor(
             net=model,
             objective=objective,
             loss_weight=loss_weight,

@@ -1,5 +1,5 @@
 """
-Utility functions for AquaSOT-3D model.
+Utility functions for AquaSOT model.
 
 From OSTrack with minimal modifications.
 """

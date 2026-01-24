@@ -1,22 +1,22 @@
 """
-Evaluation and testing utilities for AquaSOT-3D.
+Evaluation and testing utilities for AquaSOT.
 """
 
-from .tracker import Tracker, AquaSOT3DTracker
+from .tracker import Tracker, AquaSOTTracker
 from .evaluation import (
     rect_iou,
     center_error,
     success_curve,
     precision_curve,
-    ExperimentAquaSOT3D,
+    ExperimentAquaSOT,
 )
 
 __all__ = [
     'Tracker',
-    'AquaSOT3DTracker',
+    'AquaSOTTracker',
     'rect_iou',
     'center_error',
     'success_curve',
     'precision_curve',
-    'ExperimentAquaSOT3D',
+    'ExperimentAquaSOT',
 ]

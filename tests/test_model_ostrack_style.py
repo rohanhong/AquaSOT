@@ -14,9 +14,9 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'lib'))
 
-from lib.config.aquasot3d import cfg
-from lib.models.aquasot3d import (
-    AquaSOT3D, build_aquasot3d,
+from lib.config.aquasot import cfg
+from lib.models.aquasot import (
+    AquaSOT, build_aquasot,
     VisionTransformer, vit_base_patch16_224,
     build_vit_rgb, build_vit_sonar,
     DCMA, IdentityFusion, build_fusion,
@@ -151,8 +151,8 @@ class TestViT:
         assert out.shape == (2, 320, 768)
 
 
-class TestAquaSOT3D:
-    """Test full AquaSOT3D model."""
+class TestAquaSOT:
+    """Test full AquaSOT model."""
 
     @pytest.fixture
     def model(self):
@@ -161,14 +161,14 @@ class TestAquaSOT3D:
         original_pretrain = cfg.MODEL.PRETRAIN_FILE
         cfg.MODEL.PRETRAIN_FILE = ""
 
-        model = build_aquasot3d(cfg, training=False)
+        model = build_aquasot(cfg, training=False)
 
         cfg.MODEL.PRETRAIN_FILE = original_pretrain
         return model
 
     def test_model_creation(self, model):
         """Test model can be created."""
-        assert isinstance(model, AquaSOT3D)
+        assert isinstance(model, AquaSOT)
         assert hasattr(model, 'rgb_backbone')
         assert hasattr(model, 'sonar_backbone')
         assert hasattr(model, 'fusion')
@@ -246,9 +246,9 @@ class TestBuildFunctions:
 class TestModelSize:
     """Test model complexity is within bounds."""
 
-    def test_aquasot3d_lines(self):
+    def test_aquasot_lines(self):
         """Verify model file is simplified."""
-        model_file = project_root / 'lib' / 'models' / 'aquasot3d' / 'aquasot3d.py'
+        model_file = project_root / 'lib' / 'models' / 'aquasot' / 'aquasot.py'
         if model_file.exists():
             with open(model_file) as f:
                 lines = len(f.readlines())

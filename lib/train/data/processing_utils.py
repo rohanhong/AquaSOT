@@ -1,5 +1,5 @@
 """
-Processing utilities for AquaSOT-3D training.
+Processing utilities for AquaSOT training.
 
 Based on OSTrack's processing_utils.py.
 """

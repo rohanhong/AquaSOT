@@ -1,5 +1,5 @@
 """
-Training script for AquaSOT-3D.
+Training script for AquaSOT.
 
 Based on OSTrack's train_script.py.
 This is the main training logic that is called by run_training.py.
@@ -15,11 +15,11 @@ from torch.nn import BCEWithLogitsLoss
 
 # Training pipeline
 from lib.train.trainers import LTRTrainer
-from lib.train.actors import AquaSOT3DActor
+from lib.train.actors import AquaSOTActor
 from lib.train.base_functions import update_settings, build_dataloaders, get_optimizer_scheduler
 
 # Model
-from lib.models.aquasot3d import build_aquasot3d
+from lib.models.aquasot import build_aquasot
 
 # Loss functions
 from lib.utils.box_ops import giou_loss
@@ -32,7 +32,7 @@ def run(settings):
     Args:
         settings: Training settings object
     """
-    settings.description = 'Training script for AquaSOT-3D dual-stream RGB-Sonar tracker'
+    settings.description = 'Training script for AquaSOT dual-stream RGB-Sonar tracker'
 
     # Load configuration
     if not os.path.exists(settings.cfg_file):
@@ -79,7 +79,7 @@ def run(settings):
     loader_train, loader_val = build_dataloaders(cfg, settings)
 
     # Build model
-    net = build_aquasot3d(cfg, training=True)
+    net = build_aquasot(cfg, training=True)
 
     # Move to GPU
     net.cuda()
@@ -107,7 +107,7 @@ def run(settings):
     }
 
     # Create actor
-    actor = AquaSOT3DActor(
+    actor = AquaSOTActor(
         net=net,
         objective=objective,
         loss_weight=loss_weight,

@@ -3,7 +3,7 @@ Test data loading pipeline following OSTrack structure.
 
 This module tests:
 1. BaseVideoDataset interface
-2. AquaSOT3DDataset for dual-modal data
+2. AquaSOTDataset for dual-modal data
 3. MultiModalSampler for frame sampling
 4. Processing utilities for cropping
 5. Transforms for data augmentation
@@ -55,22 +55,22 @@ class TestBaseVideoDataset:
 
 
 # ==============================================================================
-# AquaSOT3DDataset Tests
+# AquaSOTDataset Tests
 # ==============================================================================
 
-class TestAquaSOT3DDataset:
-    """Test AquaSOT3D dual-modal dataset."""
+class TestAquaSOTDataset:
+    """Test AquaSOT dual-modal dataset."""
 
     def test_dataset_import(self):
-        """Test that AquaSOT3DDataset can be imported."""
-        from lib.train.dataset import AquaSOT3DDataset
-        assert AquaSOT3DDataset is not None
+        """Test that AquaSOTDataset can be imported."""
+        from lib.train.dataset import AquaSOTDataset
+        assert AquaSOTDataset is not None
 
     def test_dataset_with_mock_data(self, tmp_path):
         """Test dataset with mock data structure."""
-        from lib.train.dataset import AquaSOT3DDataset
+        from lib.train.dataset import AquaSOTDataset
 
-        # Create mock data structure (matching actual AquaSOT-3D structure)
+        # Create mock data structure (matching actual AquaSOT structure)
         seq_path = tmp_path / "uuv_test"
         rgb_path = seq_path / "light" / "img"
         sonar_path = seq_path / "sonar" / "img_rect"
@@ -98,11 +98,11 @@ class TestAquaSOT3DDataset:
                 f.write(f"{100+i},{100+i},{50},{50}\n")
 
         # Create dataset
-        dataset = AquaSOT3DDataset(str(tmp_path), sequence_names=['uuv_test'], use_rect_sonar=True)
+        dataset = AquaSOTDataset(str(tmp_path), sequence_names=['uuv_test'], use_rect_sonar=True)
 
         # Test basic properties
         assert dataset.get_num_sequences() == 1
-        assert dataset.get_name() == 'aquasot3d'
+        assert dataset.get_name() == 'aquasot'
 
         # Test sequence info
         seq_info = dataset.get_sequence_info(0)
@@ -136,10 +136,10 @@ class TestMultiModalSampler:
 
     def test_sampler_with_mock_dataset(self, tmp_path):
         """Test sampler with mock dataset."""
-        from lib.train.dataset import AquaSOT3DDataset
+        from lib.train.dataset import AquaSOTDataset
         from lib.train.data import MultiModalSampler
 
-        # Create mock data (matching actual AquaSOT-3D structure)
+        # Create mock data (matching actual AquaSOT structure)
         seq_path = tmp_path / "uuv_test"
         rgb_path = seq_path / "light" / "img"
         sonar_path = seq_path / "sonar" / "img_rect"
@@ -160,7 +160,7 @@ class TestMultiModalSampler:
             for i in range(30):
                 f.write(f"{100},{100},{50},{50}\n")
 
-        dataset = AquaSOT3DDataset(str(tmp_path), sequence_names=['uuv_test'], use_rect_sonar=True)
+        dataset = AquaSOTDataset(str(tmp_path), sequence_names=['uuv_test'], use_rect_sonar=True)
 
         # Create sampler
         sampler = MultiModalSampler(
@@ -338,10 +338,10 @@ class TestDataLoaderIntegration:
 
     def test_full_pipeline_smoke(self, tmp_path):
         """Smoke test for full data loading pipeline."""
-        from lib.train.dataset import AquaSOT3DDataset
+        from lib.train.dataset import AquaSOTDataset
         from lib.train.data import MultiModalSampler, LTRLoader
 
-        # Create mock data (matching actual AquaSOT-3D structure)
+        # Create mock data (matching actual AquaSOT structure)
         seq_path = tmp_path / "uuv_test"
         rgb_path = seq_path / "light" / "img"
         sonar_path = seq_path / "sonar" / "img_rect"
@@ -363,7 +363,7 @@ class TestDataLoaderIntegration:
                 f.write(f"{100},{100},{50},{50}\n")
 
         # Create pipeline
-        dataset = AquaSOT3DDataset(str(tmp_path), sequence_names=['uuv_test'], use_rect_sonar=True)
+        dataset = AquaSOTDataset(str(tmp_path), sequence_names=['uuv_test'], use_rect_sonar=True)
         sampler = MultiModalSampler(
             datasets=[dataset],
             samples_per_epoch=4,

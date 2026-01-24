@@ -1,13 +1,13 @@
 """
-Tracker interfaces for AquaSOT-3D evaluation.
+Tracker interfaces for AquaSOT evaluation.
 
 Based on got10k-toolkit tracker interface.
 """
 
 from .base_tracker import Tracker
-from .aquasot3d_tracker import AquaSOT3DTracker
+from .aquasot_tracker import AquaSOTTracker
 
 __all__ = [
     'Tracker',
-    'AquaSOT3DTracker',
+    'AquaSOTTracker',
 ]

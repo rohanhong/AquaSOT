@@ -1,5 +1,5 @@
 """
-Utility functions for AquaSOT-3D.
+Utility functions for AquaSOT.
 """
 
 from .box_ops import (

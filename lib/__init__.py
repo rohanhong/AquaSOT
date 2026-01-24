@@ -1,5 +1,5 @@
 """
-AquaSOT-3D Library
+AquaSOT Library
 
 Core library following OSTrack structure.
 """

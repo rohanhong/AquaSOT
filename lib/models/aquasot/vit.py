@@ -1,5 +1,5 @@
 """
-Vision Transformer backbone for AquaSOT-3D.
+Vision Transformer backbone for AquaSOT.
 
 Based on OSTrack ViT with support for:
 - 3-channel RGB input
@@ -416,7 +416,7 @@ def vit_large_patch16_224(pretrained=False, in_chans=3, **kwargs):
     return model
 
 
-# Factory functions for AquaSOT-3D
+# Factory functions for AquaSOT
 
 def _resolve_pretrained_path(cfg, pretrained=None):
     """Resolve pretrained checkpoint path.

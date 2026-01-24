@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for AquaSOT-3D tests.
+Pytest configuration and shared fixtures for AquaSOT tests.
 
 This module provides common test fixtures and configuration for all test modules.
 """

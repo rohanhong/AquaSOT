@@ -4,7 +4,7 @@ Sonar Polar-to-Rectangular Conversion Script
 
 Converts fan-shaped polar sonar images to rectangular coordinates with
 synchronized bounding box transformation. Designed for preprocessing
-AquaSOT-3D dataset to eliminate runtime coordinate transformations.
+AquaSOT dataset to eliminate runtime coordinate transformations.
 
 Architecture Strategy:
 - One-time preprocessing before training
@@ -12,7 +12,7 @@ Architecture Strategy:
 - Preserves original data (outputs to *_rect suffixes)
 - Lightweight implementation (~300 LOC)
 
-Author: AquaSOT-3D Team
+Author: AquaSOT Team
 Date: 2025-11-19
 """
 
@@ -401,7 +401,7 @@ def main():
     if args.sequence:
         sequences = [args.sequence]
     elif args.all:
-        # All AquaSOT-3D sequences
+        # All AquaSOT sequences
         sequences = [
             'uuv1', 'uuv2', 'uuv3', 'uuv4', 'uuv5', 'uuv6',
             'uuv7', 'uuv8', 'uuv9', 'uuv10', 'uuv11', 'uuv12'

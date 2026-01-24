@@ -1,12 +1,12 @@
 """
-Default configuration for AquaSOT-3D.
+Default configuration for AquaSOT.
 
 This module defines all default parameters following OSTrack pattern.
 YAML config files only override these defaults - they cannot introduce new parameters.
 
 Usage:
-    from lib.config.aquasot3d.config import cfg, update_config_from_file
-    update_config_from_file('experiments/aquasot3d/train.yaml')
+    from lib.config.aquasot.config import cfg, update_config_from_file
+    update_config_from_file('experiments/aquasot/train.yaml')
 """
 
 from easydict import EasyDict as edict
@@ -279,7 +279,7 @@ cfg.PATHS.PRETRAINED_DIR = "pretrained"
 # EXPERIMENT
 # ==============================================================================
 cfg.EXPERIMENT = edict()
-cfg.EXPERIMENT.NAME = "aquasot3d_default"
+cfg.EXPERIMENT.NAME = "aquasot_default"
 cfg.EXPERIMENT.GROUP = "default"
 cfg.EXPERIMENT.TAGS = []
 
@@ -288,7 +288,7 @@ cfg.EXPERIMENT.TAGS = []
 # ==============================================================================
 cfg.WANDB = edict()
 cfg.WANDB.ENABLED = False
-cfg.WANDB.PROJECT = "aquasot3d"
+cfg.WANDB.PROJECT = "aquasot"
 cfg.WANDB.ENTITY = ""  # Your wandb username or team name
 cfg.WANDB.NAME = ""  # Run name (defaults to EXPERIMENT.NAME if empty)
 cfg.WANDB.TAGS = []  # Additional tags
@@ -371,7 +371,7 @@ def print_config():
                 print(f"{prefix}{k}: {v}")
 
     print("=" * 60)
-    print("AquaSOT-3D Configuration")
+    print("AquaSOT Configuration")
     print("=" * 60)
     _print_dict(cfg)
     print("=" * 60)

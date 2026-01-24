@@ -3,9 +3,9 @@ Test evaluation pipeline following got10k-toolkit structure.
 
 This module tests:
 1. Tracker base interface
-2. AquaSOT3DTracker wrapper
+2. AquaSOTTracker wrapper
 3. Metrics (IoU, center error, curves)
-4. ExperimentAquaSOT3D for evaluation
+4. ExperimentAquaSOT for evaluation
 """
 
 import os
@@ -212,16 +212,16 @@ class TestTrackerInterface:
 
 
 # ==============================================================================
-# AquaSOT3DTracker Tests
+# AquaSOTTracker Tests
 # ==============================================================================
 
-class TestAquaSOT3DTracker:
-    """Test AquaSOT3D tracker wrapper."""
+class TestAquaSOTTracker:
+    """Test AquaSOT tracker wrapper."""
 
     @pytest.fixture(autouse=True)
     def clear_pretrained(self):
         """Clear pretrained weights config for tests."""
-        from lib.config.aquasot3d.config import cfg
+        from lib.config.aquasot.config import cfg
         # Save original value
         original = cfg.MODEL.PRETRAIN_FILE
         # Clear for test
@@ -231,13 +231,13 @@ class TestAquaSOT3DTracker:
         cfg.MODEL.PRETRAIN_FILE = original
 
     def test_tracker_import(self):
-        """Test that AquaSOT3DTracker can be imported."""
-        from lib.test.tracker import AquaSOT3DTracker
-        assert AquaSOT3DTracker is not None
+        """Test that AquaSOTTracker can be imported."""
+        from lib.test.tracker import AquaSOTTracker
+        assert AquaSOTTracker is not None
 
     def test_tracker_creation(self):
-        """Test creating AquaSOT3DTracker instance."""
-        from lib.test.tracker import AquaSOT3DTracker
+        """Test creating AquaSOTTracker instance."""
+        from lib.test.tracker import AquaSOTTracker
 
         params = {
             'search_area_factor': 4.0,
@@ -247,19 +247,19 @@ class TestAquaSOT3DTracker:
         }
 
         # Should create without checkpoint (random weights)
-        tracker = AquaSOT3DTracker(params)
-        assert tracker.name == 'AquaSOT3D'
+        tracker = AquaSOTTracker(params)
+        assert tracker.name == 'AquaSOT'
 
     def test_tracker_init_update(self):
         """Test tracker init and update methods."""
-        from lib.test.tracker import AquaSOT3DTracker
+        from lib.test.tracker import AquaSOTTracker
 
         params = {
             'search_size': 256,
             'template_size': 128,
         }
 
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # Create dummy images
         rgb_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
@@ -281,14 +281,14 @@ class TestAquaSOT3DTracker:
 
     def test_tracker_rgb_only(self):
         """Test tracker with RGB only (no sonar)."""
-        from lib.test.tracker import AquaSOT3DTracker
+        from lib.test.tracker import AquaSOTTracker
 
         params = {
             'search_size': 256,
             'template_size': 128,
         }
 
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # RGB only image
         rgb_image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
@@ -302,10 +302,10 @@ class TestAquaSOT3DTracker:
 
     def test_coordinate_conversion(self):
         """Test coordinate conversion utilities."""
-        from lib.test.tracker import AquaSOT3DTracker
+        from lib.test.tracker import AquaSOTTracker
 
         params = {}
-        tracker = AquaSOT3DTracker(params)
+        tracker = AquaSOTTracker(params)
 
         # Test xywh to cxcywh
         xywh = np.array([10, 20, 30, 40])
@@ -322,23 +322,23 @@ class TestAquaSOT3DTracker:
 # Experiment Tests
 # ==============================================================================
 
-class TestExperimentAquaSOT3D:
+class TestExperimentAquaSOT:
     """Test experiment class for evaluation."""
 
     def test_experiment_import(self):
-        """Test that ExperimentAquaSOT3D can be imported."""
-        from lib.test.evaluation import ExperimentAquaSOT3D
-        assert ExperimentAquaSOT3D is not None
+        """Test that ExperimentAquaSOT can be imported."""
+        from lib.test.evaluation import ExperimentAquaSOT
+        assert ExperimentAquaSOT is not None
 
     def test_experiment_creation(self, tmp_path):
         """Test creating experiment instance."""
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.test.evaluation import ExperimentAquaSOT
 
         # Create mock dataset directory
         dataset_dir = tmp_path / 'dataset'
         dataset_dir.mkdir()
 
-        exp = ExperimentAquaSOT3D(
+        exp = ExperimentAquaSOT(
             root_dir=str(dataset_dir),
             result_dir=str(tmp_path / 'results'),
             report_dir=str(tmp_path / 'reports'),
@@ -351,10 +351,10 @@ class TestExperimentAquaSOT3D:
     def test_experiment_with_mock_data(self, tmp_path):
         """Test experiment with mock dataset."""
         import cv2
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.test.evaluation import ExperimentAquaSOT
         from lib.test.tracker import Tracker
 
-        # Create mock sequence (actual AquaSOT-3D structure)
+        # Create mock sequence (actual AquaSOT structure)
         seq_path = tmp_path / 'dataset' / 'test_seq'
         rgb_path = seq_path / 'light' / 'img'
         sonar_path = seq_path / 'sonar' / 'img_rect'
@@ -391,7 +391,7 @@ class TestExperimentAquaSOT3D:
                 return self.init_box + np.random.randn(4) * 2
 
         # Create experiment
-        exp = ExperimentAquaSOT3D(
+        exp = ExperimentAquaSOT(
             root_dir=str(tmp_path / 'dataset'),
             result_dir=str(tmp_path / 'results'),
             report_dir=str(tmp_path / 'reports'),
@@ -416,9 +416,9 @@ class TestExperimentAquaSOT3D:
 
     def test_load_groundtruth(self, tmp_path):
         """Test ground truth loading."""
-        from lib.test.evaluation import ExperimentAquaSOT3D
+        from lib.test.evaluation import ExperimentAquaSOT
 
-        exp = ExperimentAquaSOT3D(
+        exp = ExperimentAquaSOT(
             root_dir=str(tmp_path),
             result_dir=str(tmp_path / 'results'),
             report_dir=str(tmp_path / 'reports'),
@@ -450,9 +450,9 @@ class TestEvaluationIntegration:
         """Full integration test of evaluation pipeline."""
         import cv2
         from lib.test.tracker import Tracker
-        from lib.test.evaluation import ExperimentAquaSOT3D, rect_iou
+        from lib.test.evaluation import ExperimentAquaSOT, rect_iou
 
-        # Create mock dataset with 2 sequences (actual AquaSOT-3D structure)
+        # Create mock dataset with 2 sequences (actual AquaSOT structure)
         for seq_idx in range(2):
             seq_name = f'seq_{seq_idx}'
             seq_path = tmp_path / 'dataset' / seq_name
@@ -493,7 +493,7 @@ class TestEvaluationIntegration:
                 return self.box.copy()
 
         # Run evaluation
-        exp = ExperimentAquaSOT3D(
+        exp = ExperimentAquaSOT(
             root_dir=str(tmp_path / 'dataset'),
             result_dir=str(tmp_path / 'results'),
             report_dir=str(tmp_path / 'reports'),

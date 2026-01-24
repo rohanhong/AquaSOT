@@ -1,5 +1,5 @@
 """
-Image transforms for AquaSOT-3D training.
+Image transforms for AquaSOT training.
 
 Based on OSTrack's transforms.py with additions for sonar data.
 """

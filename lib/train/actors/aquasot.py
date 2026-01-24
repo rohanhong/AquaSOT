@@ -1,5 +1,5 @@
 """
-AquaSOT-3D Actor for training.
+AquaSOT Actor for training.
 
 Handles forward pass and loss computation for dual-modal tracking.
 Following OSTrack Actor pattern.
@@ -13,13 +13,13 @@ from lib.utils.box_ops import box_cxcywh_to_xyxy, box_xywh_to_xyxy
 from lib.utils.heatmap_utils import generate_heatmap
 
 
-class AquaSOT3DActor(BaseActor):
-    """Actor for training AquaSOT-3D model."""
+class AquaSOTActor(BaseActor):
+    """Actor for training AquaSOT model."""
 
     def __init__(self, net, objective, loss_weight, settings, cfg=None):
         """
         Args:
-            net: AquaSOT3D model
+            net: AquaSOT model
             objective: Dict of loss functions {giou, l1, focal}
             loss_weight: Dict of loss weights
             settings: Training settings

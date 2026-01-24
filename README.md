@@ -1,4 +1,4 @@
-# AquaSOT-3D
+# AquaSOT
 
 **End-to-End RGB-Sonar Single Object Tracking for Underwater Environments**
 
@@ -6,7 +6,7 @@
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-AquaSOT-3D is an end-to-end multi-modal single object tracking framework that fuses RGB camera and Forward-Looking Sonar (FLS) data without requiring extrinsic calibration. The system employs a dual-stream Vision Transformer architecture with Deformable Cross-Modal Attention (DCMA) for calibration-free correspondence learning.
+AquaSOT is an end-to-end multi-modal single object tracking framework that fuses RGB camera and Forward-Looking Sonar (FLS) data without requiring extrinsic calibration. The system employs a dual-stream Vision Transformer architecture with Deformable Cross-Modal Attention (DCMA) for calibration-free correspondence learning.
 
 ## Architecture
 
@@ -25,8 +25,8 @@ Sonar Input ──> ViT Backbone ─┘
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/AquaSOT-3D.git
-cd AquaSOT-3D
+git clone https://github.com/yourusername/AquaSOT.git
+cd AquaSOT
 
 # Install PyTorch with CUDA
 pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
@@ -37,7 +37,7 @@ pip install -e .
 
 ## Dataset
 
-The AquaSOT-3D dataset contains 12 sequences with paired RGB-Sonar frames:
+The AquaSOT dataset contains 12 sequences with paired RGB-Sonar frames:
 
 ```
 data/
@@ -58,25 +58,25 @@ python scripts/preprocess_sonar.py --all
 
 ```bash
 # Standard training
-python tracking/train.py --script aquasot3d --config vitb_256_dual
+python tracking/train.py --script aquasot --config vitb_256_dual
 
 # With W&B logging
-python tracking/train.py --script aquasot3d --config vitb_256_dual --wandb
+python tracking/train.py --script aquasot --config vitb_256_dual --wandb
 
 # Ablation configurations
-python tracking/train.py --script aquasot3d --config ablation_rgb_only
-python tracking/train.py --script aquasot3d --config ablation_sonar_only
+python tracking/train.py --script aquasot --config ablation_rgb_only
+python tracking/train.py --script aquasot --config ablation_sonar_only
 ```
 
-Configuration files are located in `experiments/aquasot3d/`.
+Configuration files are located in `experiments/aquasot/`.
 
 ## Evaluation
 
 ```bash
 python tracking/test.py \
-    --tracker aquasot3d \
+    --tracker aquasot \
     --checkpoint outputs/train/checkpoints/model.pth \
-    --dataset aquasot3d \
+    --dataset aquasot \
     --dataset_path data/
 ```
 
@@ -85,16 +85,16 @@ python tracking/test.py \
 ## Project Structure
 
 ```
-AquaSOT-3D/
+AquaSOT/
 ├── lib/
-│   ├── models/aquasot3d/    # Model: backbone, fusion, head
+│   ├── models/aquasot/    # Model: backbone, fusion, head
 │   ├── train/               # Training: dataset, actor, trainer
 │   ├── test/                # Evaluation: tracker, metrics
 │   └── config/              # Default configuration
 ├── tracking/
 │   ├── train.py             # Training entry point
 │   └── test.py              # Evaluation entry point
-├── experiments/aquasot3d/   # YAML configurations
+├── experiments/aquasot/   # YAML configurations
 ├── scripts/                 # Utility scripts
 └── data/                    # Dataset directory
 ```
@@ -108,11 +108,11 @@ AquaSOT-3D/
 ## Citation
 
 ```bibtex
-@software{aquasot3d2025,
-  title={AquaSOT-3D: End-to-End RGB-Sonar Single Object Tracking},
-  author={AquaSOT-3D Team},
+@software{aquasot2025,
+  title={AquaSOT: End-to-End RGB-Sonar Single Object Tracking},
+  author={AquaSOT Team},
   year={2025},
-  url={https://github.com/yourusername/AquaSOT-3D}
+  url={https://github.com/yourusername/AquaSOT}
 }
 ```
 

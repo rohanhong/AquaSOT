@@ -1,10 +1,10 @@
-# AquaSOT-3D Training Guide
+# AquaSOT Training Guide
 
 ## Prerequisites
 
 ### 1. Data Preparation
 
-AquaSOT-3D dataset structure:
+AquaSOT dataset structure:
 ```
 data/
     uuv1/
@@ -55,7 +55,7 @@ Detect hardware and get recommended configuration:
 python scripts/auto_config.py
 
 # Generate config file
-python scripts/auto_config.py --output experiments/aquasot3d/auto_hardware.yaml
+python scripts/auto_config.py --output experiments/aquasot/auto_hardware.yaml
 ```
 
 Example output:
@@ -69,13 +69,13 @@ Recommended: BATCH_SIZE=1, NUM_WORKER=12, AMP=True, GRADIENT_ACCUMULATION=8
 ### Basic Training
 
 ```bash
-python tracking/train.py --script aquasot3d --config vitb_256_dual
+python tracking/train.py --script aquasot --config vitb_256_dual
 ```
 
 ### Specify Output Directory
 
 ```bash
-python tracking/train.py --script aquasot3d --config vitb_256_dual \
+python tracking/train.py --script aquasot --config vitb_256_dual \
     --save_dir outputs/experiment_001
 ```
 
@@ -85,7 +85,7 @@ python tracking/train.py --script aquasot3d --config vitb_256_dual \
 python -m torch.distributed.launch \
     --nproc_per_node=4 \
     tracking/train.py \
-    --script aquasot3d \
+    --script aquasot \
     --config vitb_256_dual
 ```
 
@@ -98,16 +98,16 @@ Training automatically resumes from latest checkpoint if available.
 ### TensorBoard
 
 ```bash
-tensorboard --logdir outputs/train/aquasot3d/vitb_256_dual/logs --port 6006
+tensorboard --logdir outputs/train/aquasot/vitb_256_dual/logs --port 6006
 ```
 
 ### Weights & Biases (wandb)
 
 **Command-line (recommended):**
 ```bash
-python tracking/train.py --script aquasot3d --config vitb_256_dual \
+python tracking/train.py --script aquasot --config vitb_256_dual \
     --wandb \
-    --wandb_project aquasot3d \
+    --wandb_project aquasot \
     --wandb_name exp001_baseline \
     --wandb_entity your-username
 ```
@@ -116,7 +116,7 @@ python tracking/train.py --script aquasot3d --config vitb_256_dual \
 ```yaml
 WANDB:
   ENABLED: true
-  PROJECT: "aquasot3d"
+  PROJECT: "aquasot"
   ENTITY: "your-username"  # optional
 
 EXPERIMENT:
@@ -133,10 +133,10 @@ wandb login
 ## Output Structure
 
 ```
-outputs/train/aquasot3d/vitb_256_dual/
+outputs/train/aquasot/vitb_256_dual/
     checkpoints/
-        AquaSOT3D_ep0001.pth.tar
-        AquaSOT3D_ep0005.pth.tar
+        AquaSOT_ep0001.pth.tar
+        AquaSOT_ep0005.pth.tar
         ...
     logs/
         events.out.tfevents.*
@@ -146,8 +146,8 @@ outputs/train/aquasot3d/vitb_256_dual/
 
 ### Configuration Hierarchy
 
-1. **Default config**: `lib/config/aquasot3d/config.py` - All parameters defined here
-2. **Experiment config**: `experiments/aquasot3d/*.yaml` - Overrides defaults
+1. **Default config**: `lib/config/aquasot/config.py` - All parameters defined here
+2. **Experiment config**: `experiments/aquasot/*.yaml` - Overrides defaults
 
 YAML configs can only override existing parameters from config.py.
 

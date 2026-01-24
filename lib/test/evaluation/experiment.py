@@ -1,5 +1,5 @@
 """
-Experiment class for AquaSOT-3D evaluation.
+Experiment class for AquaSOT evaluation.
 
 Based on got10k-toolkit ExperimentOTB.
 """
@@ -12,8 +12,8 @@ from collections import OrderedDict
 from .metrics import rect_iou, center_error, success_curve, precision_curve, calculate_auc
 
 
-class ExperimentAquaSOT3D:
-    """Experiment for evaluating trackers on AquaSOT-3D dataset.
+class ExperimentAquaSOT:
+    """Experiment for evaluating trackers on AquaSOT dataset.
 
     Supports:
         - Running trackers on sequences
@@ -21,7 +21,7 @@ class ExperimentAquaSOT3D:
         - Generating evaluation reports
 
     Args:
-        root_dir: Root directory of AquaSOT-3D dataset
+        root_dir: Root directory of AquaSOT dataset
         result_dir: Directory to save tracking results
         report_dir: Directory to save reports
         sequence_names: List of sequence names to evaluate (None = all)
@@ -69,7 +69,7 @@ class ExperimentAquaSOT3D:
             visualize: Whether to visualize results
             overwrite: Whether to overwrite existing results
         """
-        print(f'[ExperimentAquaSOT3D] Running {tracker.name} on {len(self.sequence_names)} sequences')
+        print(f'[ExperimentAquaSOT] Running {tracker.name} on {len(self.sequence_names)} sequences')
 
         for seq_idx, seq_name in enumerate(self.sequence_names):
             print(f'  [{seq_idx + 1}/{len(self.sequence_names)}] {seq_name}')
@@ -421,6 +421,6 @@ class ExperimentAquaSOT3D:
         # Save figure
         fig_file = os.path.join(self.report_dir, 'curves.png')
         plt.savefig(fig_file, dpi=150)
-        print(f'[ExperimentAquaSOT3D] Curves saved to {fig_file}')
+        print(f'[ExperimentAquaSOT] Curves saved to {fig_file}')
 
         plt.close()

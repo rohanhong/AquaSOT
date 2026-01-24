@@ -1,7 +1,7 @@
-# AquaSOT-3D Main Training Configuration
+# AquaSOT Main Training Configuration
 # ViT-Base backbone, 256x256 search region, dual-modal fusion
 #
-# This YAML only overrides defaults from lib/config/aquasot3d/config.py
+# This YAML only overrides defaults from lib/config/aquasot/config.py
 # All parameters must be defined in config.py first
 
 MODEL:
@@ -98,6 +98,6 @@ PATHS:
   LOG_DIR: outputs/train/logs
 
 EXPERIMENT:
-  NAME: aquasot3d_vitb_256_dual
+  NAME: aquasot_vitb_256_dual
   GROUP: full_training
   TAGS: [vit_base, dual_modal, dcma]

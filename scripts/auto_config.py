@@ -8,7 +8,7 @@ Usage:
     python scripts/auto_config.py
 
     # Generate config override file
-    python scripts/auto_config.py --output experiments/aquasot3d/auto_hardware.yaml
+    python scripts/auto_config.py --output experiments/aquasot/auto_hardware.yaml
 
     # Show detailed hardware info
     python scripts/auto_config.py --verbose
@@ -133,7 +133,7 @@ def recommend_config(hw: HardwareInfo) -> ConfigRecommendation:
         ConfigRecommendation object
     """
     # GPU memory based recommendations (in MB)
-    # AquaSOT-3D with ViT-Base, 256x256 search, 128x128 template
+    # AquaSOT with ViT-Base, 256x256 search, 128x128 template
     # Approximate memory usage per batch:
     # - Model: ~350MB
     # - Per sample (dual-modal): ~800MB with AMP, ~1200MB without AMP
@@ -295,7 +295,7 @@ def generate_command(rec: ConfigRecommendation) -> str:
     """
     cmd_parts = [
         "python tracking/train.py",
-        "--script aquasot3d",
+        "--script aquasot",
         "--config vitb_256_dual",
         f"--batch_size {rec.batch_size}",
         f"--num_workers {rec.num_workers}",
@@ -317,7 +317,7 @@ def parse_args():
         '--output', '-o',
         type=str,
         default=None,
-        help='Output YAML config file path (e.g., experiments/aquasot3d/auto_hardware.yaml)'
+        help='Output YAML config file path (e.g., experiments/aquasot/auto_hardware.yaml)'
     )
 
     parser.add_argument(
@@ -377,7 +377,7 @@ def main():
         print("=" * 60)
         print()
         print("To use this configuration:")
-        print(f"  python tracking/train.py --script aquasot3d --config auto_hardware")
+        print(f"  python tracking/train.py --script aquasot --config auto_hardware")
         print()
 
 

@@ -1,5 +1,5 @@
 """
-AquaSOT-3D: Dual-stream RGB-Sonar Tracker.
+AquaSOT: Dual-stream RGB-Sonar Tracker.
 
 This is the main tracker model following OSTrack's simplified design.
 Total: ~150 lines (vs. 1349 in old implementation).
@@ -13,7 +13,7 @@ from .fusion import build_fusion
 from lib.models.layers.head import build_box_head
 
 
-class AquaSOT3D(nn.Module):
+class AquaSOT(nn.Module):
     """Dual-stream RGB-Sonar tracking model.
 
     Architecture:
@@ -134,15 +134,15 @@ class AquaSOT3D(nn.Module):
             )
 
 
-def build_aquasot3d(cfg, training=True):
-    """Build AquaSOT-3D model from config.
+def build_aquasot(cfg, training=True):
+    """Build AquaSOT model from config.
 
     Args:
         cfg: Configuration object
         training: Whether to load pretrained weights
 
     Returns:
-        AquaSOT3D model
+        AquaSOT model
     """
     # Build backbones
     pretrained = cfg.MODEL.PRETRAIN_FILE if training else None
@@ -157,7 +157,7 @@ def build_aquasot3d(cfg, training=True):
     box_head = build_box_head(cfg, hidden_dim)
 
     # Create model
-    model = AquaSOT3D(
+    model = AquaSOT(
         rgb_backbone=rgb_backbone,
         sonar_backbone=sonar_backbone,
         fusion=fusion,

@@ -1,5 +1,5 @@
 """
-AquaSOT-3D Dataset for RGB-Sonar paired video tracking.
+AquaSOT Dataset for RGB-Sonar paired video tracking.
 
 Following OSTrack's BaseVideoDataset pattern.
 
@@ -35,10 +35,10 @@ def sonar_image_loader(path):
     return img
 
 
-class AquaSOT3DDataset(BaseVideoDataset):
-    """RGB-Sonar paired video dataset for AquaSOT-3D.
+class AquaSOTDataset(BaseVideoDataset):
+    """RGB-Sonar paired video dataset for AquaSOT.
 
-    Supports actual AquaSOT-3D data structure:
+    Supports actual AquaSOT data structure:
         - RGB: light/img/ + light/groundtruth.txt
         - Sonar: sonar/img_rect/ + sonar/groundtruth_rect.txt (rect-converted)
     """
@@ -53,7 +53,7 @@ class AquaSOT3DDataset(BaseVideoDataset):
             sonar_loader: Function to load sonar images
             use_rect_sonar: If True, use rect-converted sonar (img_rect/groundtruth_rect.txt)
         """
-        super().__init__('aquasot3d', root, image_loader)
+        super().__init__('aquasot', root, image_loader)
         self.sonar_loader = sonar_loader
         self.use_rect_sonar = use_rect_sonar
 
@@ -264,25 +264,25 @@ class AquaSOT3DDataset(BaseVideoDataset):
         return rgb_frames, sonar_frames, rgb_anno, sonar_anno, meta
 
 
-class AquaSOT3DDatasetWrapper(BaseVideoDataset):
+class AquaSOTDatasetWrapper(BaseVideoDataset):
     """Wrapper that returns combined RGB-Sonar data in OSTrack-compatible format.
 
-    This wrapper adapts the dual-modal AquaSOT3DDataset to work with
+    This wrapper adapts the dual-modal AquaSOTDataset to work with
     OSTrack-style samplers that expect single-modal input.
     """
 
-    def __init__(self, aquasot3d_dataset):
+    def __init__(self, aquasot_dataset):
         """
         Args:
-            aquasot3d_dataset: AquaSOT3DDataset instance
+            aquasot_dataset: AquaSOTDataset instance
         """
-        self._dataset = aquasot3d_dataset
+        self._dataset = aquasot_dataset
         super().__init__(
-            name=aquasot3d_dataset.name,
-            root=aquasot3d_dataset.root,
-            image_loader=aquasot3d_dataset.image_loader
+            name=aquasot_dataset.name,
+            root=aquasot_dataset.root,
+            image_loader=aquasot_dataset.image_loader
         )
-        self.sequence_list = aquasot3d_dataset.sequence_list
+        self.sequence_list = aquasot_dataset.sequence_list
 
     def get_sequence_info(self, seq_id):
         """Get sequence info in OSTrack-compatible format."""

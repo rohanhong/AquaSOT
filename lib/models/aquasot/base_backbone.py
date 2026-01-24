@@ -1,5 +1,5 @@
 """
-Base Backbone class for AquaSOT-3D.
+Base Backbone class for AquaSOT.
 
 Adapted from OSTrack with support for variable input channels.
 """

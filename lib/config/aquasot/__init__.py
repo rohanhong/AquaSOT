@@ -1,11 +1,11 @@
 """
-AquaSOT-3D Configuration Module
+AquaSOT Configuration Module
 
 Usage:
-    from lib.config.aquasot3d import cfg, update_config_from_file
+    from lib.config.aquasot import cfg, update_config_from_file
 
     # Load config overrides from YAML
-    update_config_from_file('experiments/aquasot3d/train.yaml')
+    update_config_from_file('experiments/aquasot/train.yaml')
 
     # Access config values
     print(cfg.TRAIN.LR)

@@ -1,6 +1,6 @@
 """
-Unit tests for AquaSOT-3D.
+Unit tests for AquaSOT.
 
 This package contains all unit tests, integration tests, and test utilities
-for the AquaSOT-3D tracking system.
+for the AquaSOT tracking system.
 """

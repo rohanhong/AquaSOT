@@ -6,13 +6,13 @@ Generate side-by-side RGB and Sonar visualization with bounding boxes.
 Usage:
     # Generate videos for all sequences
     python scripts/visualize_results.py \
-        --result_dir outputs/test/results/AquaSOT3D \
+        --result_dir outputs/test/results/AquaSOT \
         --data_root data \
         --output_dir outputs/visualization
 
     # Generate images for specific sequences
     python scripts/visualize_results.py \
-        --result_dir outputs/test/results/AquaSOT3D \
+        --result_dir outputs/test/results/AquaSOT \
         --data_root data \
         --output_dir outputs/visualization \
         --format images \
@@ -38,7 +38,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Visualize tracking results')
 
     parser.add_argument('--result_dir', type=str, required=True,
-                        help='Directory containing tracking results (e.g., results/AquaSOT3D)')
+                        help='Directory containing tracking results (e.g., results/AquaSOT)')
     parser.add_argument('--data_root', type=str, default='data',
                         help='Dataset root directory')
     parser.add_argument('--output_dir', type=str, default='outputs/visualization',

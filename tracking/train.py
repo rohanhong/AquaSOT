@@ -1,9 +1,9 @@
 """
-Training entry point for AquaSOT-3D.
+Training entry point for AquaSOT.
 
 Based on OSTrack's run_training.py.
 Usage:
-    python tracking/train.py --script aquasot3d --config vitb_256_dual --save_dir outputs/train
+    python tracking/train.py --script aquasot --config vitb_256_dual --save_dir outputs/train
 """
 
 import os
@@ -50,7 +50,7 @@ def run_training(
     """Run the training script.
 
     Args:
-        script_name: Name of experiment script (e.g., 'aquasot3d')
+        script_name: Name of experiment script (e.g., 'aquasot')
         config_name: Name of config file (e.g., 'vitb_256_dual')
         cudnn_benchmark: Use cudnn benchmark
         local_rank: Local rank for distributed training
@@ -113,13 +113,13 @@ def run_training(
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description='AquaSOT-3D Training')
+    parser = argparse.ArgumentParser(description='AquaSOT Training')
 
     parser.add_argument(
         '--script',
         type=str,
         required=True,
-        help='Name of the training script (e.g., aquasot3d)'
+        help='Name of the training script (e.g., aquasot)'
     )
     parser.add_argument(
         '--config',

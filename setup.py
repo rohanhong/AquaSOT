@@ -1,5 +1,5 @@
 """
-AquaSOT-3D: End-to-End RGB+Sonar Single-Object Tracking with Weak 3D Estimation
+AquaSOT: End-to-End RGB+Sonar Single-Object Tracking
 
 Setup configuration for pip installation.
 """
@@ -23,14 +23,14 @@ if os.path.exists(readme_path):
         long_description = f.read()
 
 setup(
-    name='aquasot3d',
+    name='aquasot',
     version='0.1.0',
-    description='End-to-End RGB+Sonar Single-Object Tracking with Weak 3D Estimation',
+    description='End-to-End RGB+Sonar Single-Object Tracking',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    author='AquaSOT-3D Team',
-    author_email='aquasot3d@example.com',
-    url='https://github.com/yourusername/AquaSOT-3D',
+    author='AquaSOT Team',
+    author_email='aquasot@example.com',
+    url='https://github.com/yourusername/AquaSOT',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     install_requires=read_requirements('requirements.txt'),
@@ -60,15 +60,15 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'aquasot3d-train=scripts.train:main',
-            'aquasot3d-eval=scripts.eval:main',
-            'aquasot3d-demo=scripts.demo:main',
+            'aquasot-train=scripts.train:main',
+            'aquasot-eval=scripts.eval:main',
+            'aquasot-demo=scripts.demo:main',
         ],
     },
     keywords='underwater tracking sonar rgb multi-modal object-tracking deep-learning',
     project_urls={
-        'Documentation': 'https://github.com/yourusername/AquaSOT-3D/docs',
-        'Source': 'https://github.com/yourusername/AquaSOT-3D',
-        'Tracker': 'https://github.com/yourusername/AquaSOT-3D/issues',
+        'Documentation': 'https://github.com/yourusername/AquaSOT/docs',
+        'Source': 'https://github.com/yourusername/AquaSOT',
+        'Tracker': 'https://github.com/yourusername/AquaSOT/issues',
     },
 )
