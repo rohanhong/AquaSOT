@@ -76,7 +76,7 @@ class ExperimentAquaSOT:
 
             # Check if result exists
             result_file = os.path.join(
-                self.result_dir, tracker.name, f'{seq_name}.txt'
+                self.result_dir, tracker.name, f'{seq_name}_rgb.txt'
             )
             if os.path.exists(result_file) and not overwrite:
                 print(f'    Result exists, skipping')
@@ -113,13 +113,23 @@ class ExperimentAquaSOT:
 
             # Run tracker
             try:
-                boxes, times = tracker.track(img_files, init_box, visualize=visualize)
+                results = tracker.track(img_files, init_box, visualize=visualize)
             except Exception as e:
                 print(f'    Tracker failed: {e}')
                 continue
 
-            # Save results
-            self._save_results(tracker.name, seq_name, boxes, times)
+            # Save results (handle both new dict format and legacy tuple format)
+            if isinstance(results, dict):
+                self._save_results(tracker.name, seq_name, results)
+            else:
+                # Legacy format: (boxes, times)
+                boxes, times = results
+                self._save_results(tracker.name, seq_name, {
+                    'boxes': boxes,
+                    'rgb_boxes': boxes,
+                    'sonar_boxes': boxes,
+                    'times': times,
+                })
 
     def _load_sequence(self, seq_name):
         """Load sequence data.
@@ -202,26 +212,48 @@ class ExperimentAquaSOT:
 
         return np.array(gt) if gt else None
 
-    def _save_results(self, tracker_name, seq_name, boxes, times):
+    def _save_results(self, tracker_name, seq_name, results):
         """Save tracking results.
 
         Args:
             tracker_name: Tracker name
             seq_name: Sequence name
-            boxes: Predicted boxes (N, 4)
-            times: Frame times (N,)
+            results: dict with keys:
+                - boxes/rgb_boxes: RGB predicted boxes (N, 4)
+                - sonar_boxes: Sonar predicted boxes (N, 4)
+                - rgb_scores: RGB confidence scores (N,) (optional)
+                - sonar_scores: Sonar confidence scores (N,) (optional)
+                - times: Frame times (N,)
         """
         # Create tracker directory
         tracker_dir = os.path.join(self.result_dir, tracker_name)
         os.makedirs(tracker_dir, exist_ok=True)
 
-        # Save boxes
-        result_file = os.path.join(tracker_dir, f'{seq_name}.txt')
-        np.savetxt(result_file, boxes, delimiter=',', fmt='%.4f')
+        # Get boxes (support both 'boxes' and 'rgb_boxes' keys)
+        rgb_boxes = results.get('rgb_boxes', results.get('boxes'))
+        sonar_boxes = results.get('sonar_boxes', rgb_boxes)
+        times = results.get('times', np.zeros(len(rgb_boxes)))
+
+        # Save RGB boxes
+        rgb_file = os.path.join(tracker_dir, f'{seq_name}_rgb.txt')
+        np.savetxt(rgb_file, rgb_boxes, delimiter=',', fmt='%.4f')
+
+        # Save Sonar boxes
+        sonar_file = os.path.join(tracker_dir, f'{seq_name}_sonar.txt')
+        np.savetxt(sonar_file, sonar_boxes, delimiter=',', fmt='%.4f')
 
         # Save times
         time_file = os.path.join(tracker_dir, f'{seq_name}_time.txt')
         np.savetxt(time_file, times, fmt='%.6f')
+
+        # Save scores if available
+        if 'rgb_scores' in results:
+            rgb_scores_file = os.path.join(tracker_dir, f'{seq_name}_rgb_scores.txt')
+            np.savetxt(rgb_scores_file, results['rgb_scores'], fmt='%.6f')
+
+        if 'sonar_scores' in results:
+            sonar_scores_file = os.path.join(tracker_dir, f'{seq_name}_sonar_scores.txt')
+            np.savetxt(sonar_scores_file, results['sonar_scores'], fmt='%.6f')
 
     def report(self, tracker_names, plot_curves=False):
         """Generate evaluation report.
@@ -274,8 +306,8 @@ class ExperimentAquaSOT:
         seq_metrics = {}
 
         for seq_name in self.sequence_names:
-            # Load predicted boxes
-            result_file = os.path.join(tracker_dir, f'{seq_name}.txt')
+            # Load predicted boxes (RGB)
+            result_file = os.path.join(tracker_dir, f'{seq_name}_rgb.txt')
             if not os.path.exists(result_file):
                 continue
 

@@ -132,15 +132,16 @@ class BaseBackbone(nn.Module):
                     layer_name = f'norm{i_layer}'
                     self.add_module(layer_name, layer)
 
-    def forward_features(self, z, x):
+    def forward_features(self, z, x, z_online=None):
         """Extract features from template and search.
 
         Args:
             z: Template image [B, C, H_z, W_z]
             x: Search image [B, C, H_x, W_x]
+            z_online: Online templates [B, N, C, H_z, W_z] or [B*N, C, H_z, W_z] or None
 
         Returns:
-            x: Combined features [B, L_z + L_x, C]
+            x: Combined features [B, L_z + L_x, C] (or [B, L_z*(1+N) + L_x, C] if z_online)
             aux_dict: Auxiliary outputs
         """
         B, H, W = x.shape[0], x.shape[2], x.shape[3]
@@ -159,6 +160,31 @@ class BaseBackbone(nn.Module):
             x += self.search_segment_pos_embed
             z += self.template_segment_pos_embed
 
+        # Process online templates if provided
+        if z_online is not None:
+            # Handle different input formats
+            if z_online.dim() == 5:
+                # [B, N, C, H, W] -> [B*N, C, H, W]
+                N = z_online.shape[1]
+                z_online = z_online.view(-1, *z_online.shape[2:])
+            else:
+                # [B*N, C, H, W] - infer N
+                N = z_online.shape[0] // B
+
+            # Patch embed online templates
+            z_online = self.patch_embed(z_online)  # [B*N, L_z, C]
+            z_online += self.pos_embed_z
+
+            if self.add_sep_seg:
+                z_online += self.template_segment_pos_embed
+
+            # Reshape to [B, N*L_z, C]
+            L_z = z_online.shape[1]
+            z_online = z_online.reshape(B, N * L_z, -1)
+
+            # Concatenate first-frame template with online templates
+            z = torch.cat([z, z_online], dim=1)  # [B, L_z*(1+N), C]
+
         x = combine_tokens(z, x, mode=self.cat_mode)
         if self.add_cls_token:
             x = torch.cat([cls_tokens, x], dim=1)
@@ -168,23 +194,29 @@ class BaseBackbone(nn.Module):
         for i, blk in enumerate(self.blocks):
             x = blk(x)
 
-        lens_z = self.pos_embed_z.shape[1]
+        # Calculate template length (including online templates)
+        lens_z_base = self.pos_embed_z.shape[1]
+        if z_online is not None:
+            lens_z = lens_z_base * (1 + N)
+        else:
+            lens_z = lens_z_base
         lens_x = self.pos_embed_x.shape[1]
         x = recover_tokens(x, lens_z, lens_x, mode=self.cat_mode)
 
-        aux_dict = {"attn": None}
+        aux_dict = {"attn": None, "lens_z": lens_z, "lens_x": lens_x}
         return self.norm(x), aux_dict
 
-    def forward(self, z, x, **kwargs):
+    def forward(self, z, x, z_online=None, **kwargs):
         """Joint feature extraction for template and search.
 
         Args:
             z: Template [B, C, H_z, W_z]
             x: Search [B, C, H_x, W_x]
+            z_online: Online templates [B, N, C, H_z, W_z] or [B*N, C, H_z, W_z] or None
 
         Returns:
             x: Merged features [B, L_z + L_x, C]
             aux_dict: Auxiliary outputs
         """
-        x, aux_dict = self.forward_features(z, x)
+        x, aux_dict = self.forward_features(z, x, z_online)
         return x, aux_dict

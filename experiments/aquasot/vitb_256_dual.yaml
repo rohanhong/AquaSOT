@@ -1,5 +1,6 @@
 # AquaSOT Main Training Configuration
 # ViT-Base backbone, 256x256 search region, dual-modal fusion
+# MixFormer-style three-tier template strategy enabled
 #
 # This YAML only overrides defaults from lib/config/aquasot/config.py
 # All parameters must be defined in config.py first
@@ -71,6 +72,7 @@ DATA:
     SIZE: 128
     FACTOR: 2.0
     UPDATE_POLICY: mixformer
+    ONLINE_NUMBER: 1  # Online template sampling during training
 
   AUGMENTATION:
     ENABLED: true
@@ -90,6 +92,15 @@ TEST:
   TEMPLATE_FACTOR: 2.0
   SEARCH_FACTOR: 4.0
 
+  # MixFormer three-tier template update strategy
+  TEMPLATE_UPDATE:
+    ENABLED: true
+    STRATEGY: mixformer
+    ONLINE_SIZE: 2
+    UPDATE_INTERVAL: 200
+    SCORE_THRESHOLD: 0.5
+    MAX_SCORE_DECAY: 1.0
+
 SYSTEM:
   SEED: 42
 
@@ -101,4 +112,4 @@ PATHS:
 EXPERIMENT:
   NAME: aquasot_vitb_256_dual
   GROUP: full_training
-  TAGS: [vit_base, dual_modal, dcma]
+  TAGS: [vit_base, dual_modal, dcma, online_template]

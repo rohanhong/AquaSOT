@@ -1,4 +1,4 @@
-# Test config without pretrained weights
+# Test config without pretrained weights (for testing training pipeline)
 MODEL:
   PRETRAIN_FILE: ""  # No pretrained weights
 
@@ -34,6 +34,9 @@ DATA:
   VAL:
     SEQUENCES: [uuv3]
     SAMPLE_PER_EPOCH: 5
+
+  TEMPLATE:
+    ONLINE_NUMBER: 1  # Online template sampling during training
 
 SYSTEM:
   SEED: 42

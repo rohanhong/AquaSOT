@@ -47,9 +47,12 @@ outputs/
     test/
         results/
             AquaSOT/
-                uuv3.txt              # Tracking predictions [x,y,w,h]
+                uuv3_rgb.txt          # RGB predictions [x,y,w,h]
+                uuv3_sonar.txt        # Sonar predictions [x,y,w,h]
+                uuv3_rgb_scores.txt   # RGB confidence scores
+                uuv3_sonar_scores.txt # Sonar confidence scores
                 uuv3_time.txt         # Per-frame timing
-                uuv6.txt
+                uuv6_rgb.txt
                 ...
         reports/
             performance.json          # Detailed metrics
@@ -59,6 +62,10 @@ outputs/
         uuv6.mp4
         ...
 ```
+
+The tracker outputs dual-modal predictions:
+- `{seq}_rgb.txt`: RGB predictions
+- `{seq}_sonar.txt`: Sonar predictions
 
 ## Metrics
 
@@ -71,7 +78,10 @@ outputs/
 
 ## Visualize Results
 
-Generate side-by-side RGB and Sonar visualization with GT (green) and Pred (red) boxes:
+Generate side-by-side RGB and Sonar visualization:
+- Ground truth boxes shown in **green**
+- RGB predictions shown in **red** on RGB image
+- Sonar predictions shown in **red** on Sonar image
 
 ```bash
 # Generate videos
@@ -97,6 +107,36 @@ python scripts/visualize_results.py \
 | `--format` | Output format: `video` or `images` | `video` |
 | `--fps` | Video frame rate | 10 |
 | `--height` | Output frame height | 480 |
+
+## Template Update (MixFormer Strategy)
+
+The tracker uses MixFormer-style three-tier template management for robust tracking:
+
+1. **First-frame template**: Fixed, never updated
+2. **Best-frame cache**: Highest confidence frame in current interval
+3. **Online template queue**: FIFO collection of recent best frames
+
+### Configuration
+
+Template update is enabled by default. Key parameters in config:
+
+```yaml
+TEST:
+  TEMPLATE_UPDATE:
+    ENABLED: true           # Enable/disable template update
+    STRATEGY: mixformer     # Update strategy
+    ONLINE_SIZE: 2          # Number of online templates in queue
+    UPDATE_INTERVAL: 200    # Frames between queue updates
+    SCORE_THRESHOLD: 0.5    # Minimum confidence for update
+    MAX_SCORE_DECAY: 1.0    # Score decay rate (1.0 = no decay)
+```
+
+To disable template update (use first-frame only):
+```yaml
+TEST:
+  TEMPLATE_UPDATE:
+    ENABLED: false
+```
 
 ## Dataset Structure
 

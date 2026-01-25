@@ -137,12 +137,16 @@ def build_dataloaders(cfg, settings):
     )
 
     # Build samplers
+    # Get online template number (0 for validation to match original behavior)
+    num_online_template = getattr(cfg.DATA.TEMPLATE, 'ONLINE_NUMBER', 0)
+
     train_sampler = MultiModalSampler(
         datasets=[train_dataset],
         samples_per_epoch=cfg.DATA.TRAIN.SAMPLE_PER_EPOCH,
         max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL,
         num_search_frames=cfg.DATA.SEARCH.NUMBER,
         num_template_frames=cfg.DATA.TEMPLATE.NUMBER,
+        num_online_template_frames=num_online_template,
         processing=processing,
         frame_sample_mode=cfg.DATA.SAMPLER_MODE
     )
@@ -153,6 +157,7 @@ def build_dataloaders(cfg, settings):
         max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL,
         num_search_frames=cfg.DATA.SEARCH.NUMBER,
         num_template_frames=cfg.DATA.TEMPLATE.NUMBER,
+        num_online_template_frames=0,  # No online templates for validation
         processing=processing,
         frame_sample_mode=cfg.DATA.SAMPLER_MODE
     )

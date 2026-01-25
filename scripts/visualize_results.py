@@ -170,12 +170,19 @@ def visualize_sequence(seq_name, result_dir, data_root, output_dir,
     """
     print(f'[Visualize] Processing {seq_name}...')
 
-    # Load prediction boxes
-    pred_file = os.path.join(result_dir, f'{seq_name}.txt')
-    pred_boxes = load_boxes(pred_file)
-    if pred_boxes is None:
-        print(f'  Warning: No prediction file found: {pred_file}')
+    # Load RGB prediction boxes
+    rgb_pred_file = os.path.join(result_dir, f'{seq_name}_rgb.txt')
+    rgb_pred_boxes = load_boxes(rgb_pred_file)
+    if rgb_pred_boxes is None:
+        print(f'  Warning: No RGB prediction file found: {rgb_pred_file}')
         return
+
+    # Load Sonar prediction boxes (if available)
+    sonar_pred_file = os.path.join(result_dir, f'{seq_name}_sonar.txt')
+    sonar_pred_boxes = load_boxes(sonar_pred_file)
+    if sonar_pred_boxes is None:
+        print(f'  Note: No Sonar prediction file, using RGB predictions for both')
+        sonar_pred_boxes = rgb_pred_boxes
 
     seq_path = os.path.join(data_root, seq_name)
 
@@ -199,7 +206,7 @@ def visualize_sequence(seq_name, result_dir, data_root, output_dir,
     rgb_gt = load_boxes(rgb_gt_file)
     sonar_gt = load_boxes(sonar_gt_file)
 
-    num_frames = min(len(rgb_files), len(sonar_files), len(pred_boxes))
+    num_frames = min(len(rgb_files), len(sonar_files), len(rgb_pred_boxes))
     print(f'  Frames: {num_frames}')
 
     # Read first frames to calculate dimensions
@@ -244,16 +251,18 @@ def visualize_sequence(seq_name, result_dir, data_root, output_dir,
             sonar_img = cv2.cvtColor(sonar_img, cv2.COLOR_GRAY2BGR)
 
         # Get boxes for this frame
-        pred_box = pred_boxes[i] if i < len(pred_boxes) else None
+        rgb_pred_box = rgb_pred_boxes[i] if i < len(rgb_pred_boxes) else None
+        sonar_pred_box = sonar_pred_boxes[i] if i < len(sonar_pred_boxes) else None
         rgb_gt_box = rgb_gt[i] if rgb_gt is not None and i < len(rgb_gt) else None
         sonar_gt_box = sonar_gt[i] if sonar_gt is not None and i < len(sonar_gt) else None
 
         # Draw boxes on original images (before resize)
         # RGB: draw both GT and prediction
         draw_box(rgb_img, rgb_gt_box, COLOR_GT, 2, 'GT')
-        draw_box(rgb_img, pred_box, COLOR_PRED, 2, 'Pred')
-        # Sonar: only draw GT (pred_box is in RGB coordinate system, not sonar)
+        draw_box(rgb_img, rgb_pred_box, COLOR_PRED, 2, 'Pred')
+        # Sonar: draw both GT and Sonar prediction
         draw_box(sonar_img, sonar_gt_box, COLOR_GT, 2, 'GT')
+        draw_box(sonar_img, sonar_pred_box, COLOR_PRED, 2, 'Pred')
 
         # Resize to target height
         rgb_resized = cv2.resize(rgb_img, (rgb_new_w, target_height))
@@ -303,16 +312,16 @@ def main():
         print(f'Error: Result directory not found: {args.result_dir}')
         sys.exit(1)
 
-    # Find all result files
+    # Find all RGB result files (exclude auxiliary files)
     result_files = [f for f in os.listdir(args.result_dir)
-                    if f.endswith('.txt') and not f.endswith('_time.txt')]
+                    if f.endswith('_rgb.txt')]
 
     if not result_files:
         print(f'Error: No result files found in {args.result_dir}')
         sys.exit(1)
 
-    # Get sequence names
-    all_sequences = [os.path.splitext(f)[0] for f in result_files]
+    # Get sequence names (strip _rgb.txt suffix)
+    all_sequences = [f.replace('_rgb.txt', '') for f in result_files]
 
     # Filter sequences if specified
     if args.sequences:

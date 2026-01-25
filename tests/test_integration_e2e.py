@@ -284,7 +284,7 @@ class TestE2EEvaluation:
         experiment.run(tracker, visualize=False)
 
         # Check results saved
-        result_file = mock_dataset_dir / 'results' / 'AquaSOT' / 'uuv_test_0.txt'
+        result_file = mock_dataset_dir / 'results' / 'AquaSOT' / 'uuv_test_0_rgb.txt'
         assert result_file.exists()
 
         # Load and verify results

@@ -187,6 +187,23 @@ DATA:
     SEQUENCES: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
   VAL:
     SEQUENCES: [uuv3, uuv6, uuv10]
+  TEMPLATE:
+    ONLINE_NUMBER: 1      # Online template sampling (MixFormer style)
+```
+
+### Multi-Template Training
+
+The training pipeline supports MixFormer-style multi-template learning:
+
+- `DATA.TEMPLATE.ONLINE_NUMBER`: Number of online templates sampled per iteration (default: 1)
+- Online templates are sampled from frames between the first-frame template and search frame
+- This enables the model to learn adaptive template update during tracking
+
+To disable online template sampling:
+```yaml
+DATA:
+  TEMPLATE:
+    ONLINE_NUMBER: 0
 ```
 
 ## Train/Val Split

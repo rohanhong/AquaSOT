@@ -31,6 +31,7 @@ class MultiModalSampler(torch.utils.data.Dataset):
         max_gap=20,
         num_search_frames=1,
         num_template_frames=1,
+        num_online_template_frames=0,
         processing=no_processing,
         frame_sample_mode='causal',
     ):
@@ -42,6 +43,7 @@ class MultiModalSampler(torch.utils.data.Dataset):
             max_gap: Maximum frame gap between template and search
             num_search_frames: Number of search frames to sample
             num_template_frames: Number of template frames to sample
+            num_online_template_frames: Number of online template frames (MixFormer style)
             processing: Processing function for data augmentation
             frame_sample_mode: 'causal' (search after template) or 'interval'
         """
@@ -57,6 +59,7 @@ class MultiModalSampler(torch.utils.data.Dataset):
         self.max_gap = max_gap
         self.num_search_frames = num_search_frames
         self.num_template_frames = num_template_frames
+        self.num_online_template_frames = num_online_template_frames
         self.processing = processing
         self.frame_sample_mode = frame_sample_mode
 
@@ -109,7 +112,7 @@ class MultiModalSampler(torch.utils.data.Dataset):
         return self.getitem()
 
     def getitem(self):
-        """Sample template and search frames."""
+        """Sample template, online template, and search frames."""
         valid = False
 
         while not valid:
@@ -119,33 +122,48 @@ class MultiModalSampler(torch.utils.data.Dataset):
             # Sample a sequence
             seq_id, visible, seq_info = self._sample_sequence(dataset)
 
-            # Sample frame IDs
-            template_frame_ids, search_frame_ids = self._sample_frame_ids(visible)
+            # Sample frame IDs (including online templates)
+            template_frame_ids, online_template_frame_ids, search_frame_ids = \
+                self._sample_frame_ids(visible)
 
             if template_frame_ids is None or search_frame_ids is None:
                 continue
 
             try:
+                # Combine all frame IDs for batch retrieval
+                all_frame_ids = template_frame_ids
+                if online_template_frame_ids:
+                    all_frame_ids = all_frame_ids + online_template_frame_ids
+                all_frame_ids = all_frame_ids + search_frame_ids
+
                 # Get frames
                 rgb_frames, sonar_frames, rgb_anno, sonar_anno, meta = \
-                    dataset.get_frames(seq_id, template_frame_ids + search_frame_ids, seq_info)
+                    dataset.get_frames(seq_id, all_frame_ids, seq_info)
 
-                # Split into template and search
+                # Split into template, online template, and search
                 n_t = self.num_template_frames
+                n_o = self.num_online_template_frames
                 n_s = self.num_search_frames
 
                 data = {
                     'rgb_template_images': rgb_frames[:n_t],
-                    'rgb_search_images': rgb_frames[n_t:n_t + n_s],
+                    'rgb_search_images': rgb_frames[n_t + n_o:n_t + n_o + n_s],
                     'sonar_template_images': sonar_frames[:n_t],
-                    'sonar_search_images': sonar_frames[n_t:n_t + n_s],
+                    'sonar_search_images': sonar_frames[n_t + n_o:n_t + n_o + n_s],
                     'rgb_template_anno': rgb_anno['bbox'][:n_t],
-                    'rgb_search_anno': rgb_anno['bbox'][n_t:n_t + n_s],
+                    'rgb_search_anno': rgb_anno['bbox'][n_t + n_o:n_t + n_o + n_s],
                     'sonar_template_anno': sonar_anno['bbox'][:n_t],
-                    'sonar_search_anno': sonar_anno['bbox'][n_t:n_t + n_s],
+                    'sonar_search_anno': sonar_anno['bbox'][n_t + n_o:n_t + n_o + n_s],
                     'dataset': dataset.get_name(),
                     'sequence': meta.get('sequence_name', ''),
                 }
+
+                # Add online templates if requested
+                if n_o > 0:
+                    data['rgb_online_template_images'] = rgb_frames[n_t:n_t + n_o]
+                    data['sonar_online_template_images'] = sonar_frames[n_t:n_t + n_o]
+                    data['rgb_online_template_anno'] = rgb_anno['bbox'][n_t:n_t + n_o]
+                    data['sonar_online_template_anno'] = sonar_anno['bbox'][n_t:n_t + n_o]
 
                 # Apply processing (augmentation, cropping, etc.)
                 data = self.processing(data)
@@ -186,13 +204,14 @@ class MultiModalSampler(torch.utils.data.Dataset):
         return seq_id, visible, seq_info
 
     def _sample_frame_ids(self, visible):
-        """Sample template and search frame IDs.
+        """Sample template, online template, and search frame IDs.
 
         Args:
             visible: Visibility tensor
 
         Returns:
             template_frame_ids: List of template frame indices
+            online_template_frame_ids: List of online template indices (or [])
             search_frame_ids: List of search frame indices
         """
         if self.frame_sample_mode == 'causal':
@@ -207,25 +226,26 @@ class MultiModalSampler(torch.utils.data.Dataset):
             visible: Visibility tensor
 
         Returns:
-            template_frame_ids, search_frame_ids
+            template_frame_ids, online_template_frame_ids, search_frame_ids
         """
         template_frame_ids = None
+        online_template_frame_ids = []
         search_frame_ids = None
         gap_increase = 0
 
         while search_frame_ids is None:
-            # Sample base frame for template
+            # Sample base frame for template (first frame in MixFormer style)
             base_frame_id = self._sample_visible_ids(
                 visible,
                 num_ids=1,
                 min_id=self.num_template_frames - 1,
-                max_id=len(visible) - self.num_search_frames
+                max_id=len(visible) - self.num_search_frames - self.num_online_template_frames
             )
 
             if base_frame_id is None:
                 gap_increase += 5
                 if gap_increase > 100:
-                    return None, None
+                    return None, [], None
                 continue
 
             # Sample additional template frames before base
@@ -243,20 +263,38 @@ class MultiModalSampler(torch.utils.data.Dataset):
             else:
                 template_frame_ids = base_frame_id
 
-            # Sample search frames after template
+            # Sample online template frames (between template and search, MixFormer style)
+            if self.num_online_template_frames > 0:
+                online_template_frame_ids = self._sample_visible_ids(
+                    visible,
+                    num_ids=self.num_online_template_frames,
+                    min_id=template_frame_ids[0] + 1,
+                    max_id=min(len(visible) - self.num_search_frames,
+                               template_frame_ids[0] + self.max_gap + gap_increase)
+                )
+                if online_template_frame_ids is None:
+                    online_template_frame_ids = []
+                    gap_increase += 5
+                    continue
+
+            # Sample search frames after online templates (or after template if no online)
+            search_start = template_frame_ids[0] + 1
+            if online_template_frame_ids:
+                search_start = max(online_template_frame_ids) + 1
+
             search_frame_ids = self._sample_visible_ids(
                 visible,
                 num_ids=self.num_search_frames,
-                min_id=template_frame_ids[0] + 1,
+                min_id=search_start,
                 max_id=min(len(visible), template_frame_ids[0] + self.max_gap + gap_increase)
             )
 
             gap_increase += 5
 
             if gap_increase > 100:
-                return None, None
+                return None, [], None
 
-        return template_frame_ids, search_frame_ids
+        return template_frame_ids, online_template_frame_ids, search_frame_ids
 
     def _sample_interval(self, visible):
         """Sample frames within an interval (non-causal).
@@ -265,7 +303,7 @@ class MultiModalSampler(torch.utils.data.Dataset):
             visible: Visibility tensor
 
         Returns:
-            template_frame_ids, search_frame_ids
+            template_frame_ids, online_template_frame_ids, search_frame_ids
         """
         # Sample template frame
         template_frame_ids = self._sample_visible_ids(
@@ -274,10 +312,23 @@ class MultiModalSampler(torch.utils.data.Dataset):
         )
 
         if template_frame_ids is None:
-            return None, None
+            return None, [], None
+
+        center_id = template_frame_ids[0]
+
+        # Sample online template frames (randomly between template and search)
+        online_template_frame_ids = []
+        if self.num_online_template_frames > 0:
+            online_template_frame_ids = self._sample_visible_ids(
+                visible,
+                num_ids=self.num_online_template_frames,
+                min_id=max(0, center_id - self.max_gap),
+                max_id=min(len(visible), center_id + self.max_gap)
+            )
+            if online_template_frame_ids is None:
+                online_template_frame_ids = []
 
         # Sample search frame within max_gap of template
-        center_id = template_frame_ids[0]
         search_frame_ids = self._sample_visible_ids(
             visible,
             num_ids=self.num_search_frames,
@@ -285,4 +336,4 @@ class MultiModalSampler(torch.utils.data.Dataset):
             max_id=min(len(visible), center_id + self.max_gap)
         )
 
-        return template_frame_ids, search_frame_ids
+        return template_frame_ids, online_template_frame_ids, search_frame_ids

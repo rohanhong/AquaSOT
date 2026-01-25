@@ -171,6 +171,7 @@ cfg.DATA.TEMPLATE.CENTER_JITTER = 0.0  # No jitter for template
 cfg.DATA.TEMPLATE.SCALE_JITTER = 0.0
 cfg.DATA.TEMPLATE.NUMBER = 1
 cfg.DATA.TEMPLATE.UPDATE_POLICY = "mixformer"  # first_frame/recent/mixformer
+cfg.DATA.TEMPLATE.ONLINE_NUMBER = 1  # Number of online templates during training
 
 # DATA.RGB (RGB-specific settings)
 cfg.DATA.RGB = edict()
@@ -239,11 +240,14 @@ cfg.TEST.SEARCH_FACTOR = 4.0
 cfg.TEST.SEARCH_SIZE = 256
 cfg.TEST.EPOCH = 100
 
-# Template update during tracking
+# Template update during tracking (MixFormer-style three-tier strategy)
 cfg.TEST.TEMPLATE_UPDATE = edict()
-cfg.TEST.TEMPLATE_UPDATE.ENABLED = False
-cfg.TEST.TEMPLATE_UPDATE.INTERVAL = 10
-cfg.TEST.TEMPLATE_UPDATE.THRESHOLD = 0.7
+cfg.TEST.TEMPLATE_UPDATE.ENABLED = True  # Enable by default
+cfg.TEST.TEMPLATE_UPDATE.STRATEGY = "mixformer"  # mixformer/simple
+cfg.TEST.TEMPLATE_UPDATE.ONLINE_SIZE = 2  # Number of online templates
+cfg.TEST.TEMPLATE_UPDATE.UPDATE_INTERVAL = 200  # Frames between updates
+cfg.TEST.TEMPLATE_UPDATE.SCORE_THRESHOLD = 0.5  # Min confidence to update
+cfg.TEST.TEMPLATE_UPDATE.MAX_SCORE_DECAY = 1.0  # Decay rate per frame (1.0=no decay)
 
 # Validity gating
 cfg.TEST.VALIDITY_GATING = edict()

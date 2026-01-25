@@ -54,16 +54,29 @@ class Tracker(ABC):
             visualize: Whether to visualize tracking results
 
         Returns:
-            boxes: Array of predicted boxes (N, 4)
-            times: Array of frame processing times (N,)
+            dict: Tracking results with keys:
+                - boxes: Array of primary boxes (N, 4), same as rgb_boxes
+                - rgb_boxes: Array of RGB predictions (N, 4)
+                - sonar_boxes: Array of Sonar predictions (N, 4)
+                - rgb_scores: Array of RGB confidence scores (N,)
+                - sonar_scores: Array of Sonar confidence scores (N,)
+                - times: Array of frame processing times (N,)
         """
         import numpy as np
         import time
 
         frame_num = len(img_files)
-        boxes = np.zeros((frame_num, 4))
-        boxes[0] = box
+        rgb_boxes = np.zeros((frame_num, 4))
+        sonar_boxes = np.zeros((frame_num, 4))
+        rgb_scores = np.zeros(frame_num)
+        sonar_scores = np.zeros(frame_num)
         times = np.zeros(frame_num)
+
+        # First frame uses initial box
+        rgb_boxes[0] = box
+        sonar_boxes[0] = box
+        rgb_scores[0] = 1.0
+        sonar_scores[0] = 1.0
 
         for f, img_file in enumerate(img_files):
             # Load image
@@ -73,13 +86,32 @@ class Tracker(ABC):
             if f == 0:
                 self.init(image, box)
             else:
-                boxes[f, :] = self.update(image)
+                result = self.update(image)
+                # Handle dict return (new format) or array return (legacy)
+                if isinstance(result, dict):
+                    rgb_boxes[f, :] = result['rgb_bbox']
+                    sonar_boxes[f, :] = result['sonar_bbox']
+                    rgb_scores[f] = result['rgb_score']
+                    sonar_scores[f] = result['sonar_score']
+                else:
+                    # Legacy: single bbox return
+                    rgb_boxes[f, :] = result
+                    sonar_boxes[f, :] = result
+                    rgb_scores[f] = 1.0
+                    sonar_scores[f] = 1.0
             times[f] = time.time() - start_time
 
             if visualize:
-                self._visualize(image, boxes[f])
+                self._visualize(image, rgb_boxes[f])
 
-        return boxes, times
+        return {
+            'boxes': rgb_boxes,  # Primary boxes (backward compatible)
+            'rgb_boxes': rgb_boxes,
+            'sonar_boxes': sonar_boxes,
+            'rgb_scores': rgb_scores,
+            'sonar_scores': sonar_scores,
+            'times': times,
+        }
 
     def _load_image(self, img_file):
         """Load image from file path or return dict for multi-modal.

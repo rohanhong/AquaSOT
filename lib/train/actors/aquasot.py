@@ -77,12 +77,38 @@ class AquaSOTActor(BaseActor):
         sonar_template = sonar_template.to(device)
         sonar_search = sonar_search.to(device)
 
+        # Handle online templates if present (MixFormer style multi-template training)
+        rgb_online_template = None
+        sonar_online_template = None
+
+        if 'rgb_online_template' in data and data['rgb_online_template'] is not None:
+            # Shape: [N_online, B, C, H, W] -> [B, N_online, C, H, W] -> [B*N, C, H, W]
+            rgb_online = data['rgb_online_template'].to(device)
+            if rgb_online.dim() == 5:
+                # [N, B, C, H, W] -> [B, N, C, H, W]
+                rgb_online = rgb_online.transpose(0, 1)
+                B, N = rgb_online.shape[:2]
+                rgb_online_template = rgb_online.reshape(B * N, *rgb_online.shape[2:])
+            else:
+                rgb_online_template = rgb_online
+
+        if 'sonar_online_template' in data and data['sonar_online_template'] is not None:
+            sonar_online = data['sonar_online_template'].to(device)
+            if sonar_online.dim() == 5:
+                sonar_online = sonar_online.transpose(0, 1)
+                B, N = sonar_online.shape[:2]
+                sonar_online_template = sonar_online.reshape(B * N, *sonar_online.shape[2:])
+            else:
+                sonar_online_template = sonar_online
+
         # Forward pass through model
         out_dict = self.net(
             rgb_template=rgb_template,
             rgb_search=rgb_search,
             sonar_template=sonar_template,
-            sonar_search=sonar_search
+            sonar_search=sonar_search,
+            rgb_online_template=rgb_online_template,
+            sonar_online_template=sonar_online_template
         )
 
         return out_dict

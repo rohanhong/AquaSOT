@@ -276,7 +276,11 @@ class TestAquaSOTTracker:
         # Update
         result = tracker.update(image)
 
-        assert len(result) == 4  # [x, y, w, h]
+        # Result is now a dict with dual-modal predictions
+        assert isinstance(result, dict)
+        assert 'rgb_bbox' in result
+        assert 'sonar_bbox' in result
+        assert len(result['rgb_bbox']) == 4  # [x, y, w, h]
         assert tracker.frame_id == 1
 
     def test_tracker_rgb_only(self):
@@ -298,7 +302,9 @@ class TestAquaSOTTracker:
         tracker.init(rgb_image, init_box)
         result = tracker.update(rgb_image)
 
-        assert len(result) == 4
+        # Result is a dict with dual-modal predictions
+        assert isinstance(result, dict)
+        assert len(result['rgb_bbox']) == 4
 
     def test_coordinate_conversion(self):
         """Test coordinate conversion utilities."""
@@ -404,7 +410,7 @@ class TestExperimentAquaSOT:
         exp.run(tracker, visualize=False)
 
         # Check results saved
-        result_file = tmp_path / 'results' / 'DummyTracker' / 'test_seq.txt'
+        result_file = tmp_path / 'results' / 'DummyTracker' / 'test_seq_rgb.txt'
         assert result_file.exists()
 
         # Generate report

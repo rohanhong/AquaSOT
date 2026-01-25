@@ -38,13 +38,16 @@ class AquaSOT(nn.Module):
         self.feat_len_s = self.feat_sz ** 2  # Search region feature length
 
     def forward(self, rgb_template, rgb_search, sonar_template, sonar_search,
+                rgb_online_template=None, sonar_online_template=None,
                 gt_score_map_rgb=None, gt_score_map_sonar=None):
         """
         Args:
-            rgb_template: [B, 3, H_t, W_t] - RGB template
+            rgb_template: [B, 3, H_t, W_t] - RGB first-frame template
             rgb_search: [B, 3, H_s, W_s] - RGB search region
-            sonar_template: [B, 1, H_t, W_t] - Sonar template
+            sonar_template: [B, 1, H_t, W_t] - Sonar first-frame template
             sonar_search: [B, 1, H_s, W_s] - Sonar search region
+            rgb_online_template: [B, N, 3, H_t, W_t] or [B*N, 3, H_t, W_t] - RGB online templates (optional)
+            sonar_online_template: [B, N, 1, H_t, W_t] or [B*N, 1, H_t, W_t] - Sonar online templates (optional)
             gt_score_map_rgb: Optional GT score map for RGB (training)
             gt_score_map_sonar: Optional GT score map for Sonar (training)
 
@@ -56,9 +59,9 @@ class AquaSOT(nn.Module):
                 - sonar_score_map: [B, 1, H, W]
                 - (other auxiliary outputs)
         """
-        # Extract backbone features
-        rgb_feat, rgb_aux = self.rgb_backbone(rgb_template, rgb_search)
-        sonar_feat, sonar_aux = self.sonar_backbone(sonar_template, sonar_search)
+        # Extract backbone features (with optional online templates)
+        rgb_feat, rgb_aux = self.rgb_backbone(rgb_template, rgb_search, rgb_online_template)
+        sonar_feat, sonar_aux = self.sonar_backbone(sonar_template, sonar_search, sonar_online_template)
 
         # Cross-modal fusion
         fused_rgb, fused_sonar = self.fusion(rgb_feat, sonar_feat)
@@ -106,16 +109,21 @@ class AquaSOT(nn.Module):
             'offset_map': offset_map,
         }
 
-    def set_online(self, rgb_template, sonar_template):
+    def set_online(self, rgb_template, sonar_template,
+                   rgb_online_template=None, sonar_online_template=None):
         """Cache template features for online tracking.
 
         Args:
-            rgb_template: [1, 3, H_t, W_t]
-            sonar_template: [1, 1, H_t, W_t]
+            rgb_template: [1, 3, H_t, W_t] - First-frame RGB template
+            sonar_template: [1, 1, H_t, W_t] - First-frame Sonar template
+            rgb_online_template: [1, N, 3, H_t, W_t] or [N, 3, H_t, W_t] - Online RGB templates (optional)
+            sonar_online_template: [1, N, 1, H_t, W_t] or [N, 1, H_t, W_t] - Online Sonar templates (optional)
         """
         # Store template images for later use
         self._rgb_template = rgb_template
         self._sonar_template = sonar_template
+        self._rgb_online_template = rgb_online_template
+        self._sonar_online_template = sonar_online_template
 
     def track(self, rgb_search, sonar_search):
         """Online tracking with cached template.
@@ -130,7 +138,8 @@ class AquaSOT(nn.Module):
         with torch.no_grad():
             return self.forward(
                 self._rgb_template, rgb_search,
-                self._sonar_template, sonar_search
+                self._sonar_template, sonar_search,
+                self._rgb_online_template, self._sonar_online_template
             )
 
 

@@ -83,6 +83,14 @@ class AquaSOTTracker(Tracker):
             torch.tensor([self.feat_sz, self.feat_sz]).long(), centered=True
         ).to(self.device)
 
+        # Template update parameters (MixFormer-style three-tier strategy)
+        self.template_update_enabled = cfg.TEST.TEMPLATE_UPDATE.ENABLED
+        self.template_update_strategy = cfg.TEST.TEMPLATE_UPDATE.STRATEGY
+        self.online_size = cfg.TEST.TEMPLATE_UPDATE.ONLINE_SIZE
+        self.update_interval = cfg.TEST.TEMPLATE_UPDATE.UPDATE_INTERVAL
+        self.score_threshold = cfg.TEST.TEMPLATE_UPDATE.SCORE_THRESHOLD
+        self.max_score_decay = cfg.TEST.TEMPLATE_UPDATE.MAX_SCORE_DECAY
+
     def _load_checkpoint(self, checkpoint_path):
         """Load model checkpoint.
 
@@ -152,8 +160,33 @@ class AquaSOTTracker(Tracker):
         rgb_template = rgb_template.to(self.device)
         sonar_template = sonar_template.to(self.device)
 
-        # Set template in model
-        self.network.set_online(rgb_template, sonar_template)
+        # Initialize three-tier template structure (MixFormer style)
+        # Tier 1: First-frame template (fixed, never updated)
+        self.rgb_template = rgb_template.clone()
+        self.sonar_template = sonar_template.clone()
+
+        # Tier 2: Online template collection (FIFO queue)
+        self.rgb_online_template = rgb_template.clone()
+        self.sonar_online_template = sonar_template.clone()
+
+        # Tier 3: Best-frame cache (highest score in current interval)
+        self.rgb_online_max_template = rgb_template.clone()
+        self.sonar_online_max_template = sonar_template.clone()
+
+        # Template update tracking
+        self.rgb_max_pred_score = -1.0
+        self.sonar_max_pred_score = -1.0
+        self.online_forget_id = 0
+        self.last_update_frame = 0
+
+        # Set templates in model
+        if self.template_update_enabled and self.online_size > 0:
+            self.network.set_online(
+                self.rgb_template, self.sonar_template,
+                self.rgb_online_template, self.sonar_online_template
+            )
+        else:
+            self.network.set_online(rgb_template, sonar_template)
 
         # Save state
         self.state = {
@@ -171,7 +204,12 @@ class AquaSOTTracker(Tracker):
             image: Current frame (dict with 'rgb' and 'sonar' keys) or RGB image
 
         Returns:
-            box: Predicted bounding box [x, y, w, h]
+            dict: Dual-modal prediction results with keys:
+                - target_bbox: Primary bbox [x, y, w, h] (RGB)
+                - rgb_bbox: RGB prediction [x, y, w, h]
+                - sonar_bbox: Sonar prediction [x, y, w, h]
+                - rgb_score: RGB confidence score
+                - sonar_score: Sonar confidence score
         """
         self.frame_id += 1
 
@@ -206,34 +244,130 @@ class AquaSOTTracker(Tracker):
         with torch.no_grad():
             out = self.network.track(rgb_search, sonar_search)
 
-        # Apply Hann window to score map for motion constraint
-        pred_score_map = out['rgb_score_map']
-        response = self.output_window * pred_score_map
+        # Extract confidence scores from score maps (peak value)
+        rgb_score = out['rgb_score_map'].flatten(1).max(dim=1)[0].item()
+        sonar_score = out['sonar_score_map'].flatten(1).max(dim=1)[0].item()
 
-        # Recalculate bbox using windowed response
-        pred_box = self.network.box_head.cal_bbox(
-            response, out['rgb_size_map'], out['rgb_offset_map']
-        )
-        pred_box = pred_box.cpu().numpy()[0]  # [cx, cy, w, h] normalized
+        # Apply Hann window to RGB score map for motion constraint
+        rgb_response = self.output_window * out['rgb_score_map']
 
-        # Map back to original image coordinates
-        pred_box = self._map_box_back(
-            pred_box, self.state['rgb_box'], rgb_resize_factor, self.search_size
+        # Recalculate RGB bbox using windowed response
+        rgb_pred_box = self.network.box_head.cal_bbox(
+            rgb_response, out['rgb_size_map'], out['rgb_offset_map']
         )
+        rgb_pred_box = rgb_pred_box.cpu().numpy()[0]  # [cx, cy, w, h] normalized
+
+        # Map RGB bbox back to original image coordinates
+        rgb_pred_box = self._map_box_back(
+            rgb_pred_box, self.state['rgb_box'], rgb_resize_factor, self.search_size
+        )
+
+        # Process Sonar prediction
+        if sonar_image is not None:
+            # Apply Hann window to Sonar score map
+            sonar_response = self.output_window * out['sonar_score_map']
+            sonar_pred_box = self.network.box_head.cal_bbox(
+                sonar_response, out['sonar_size_map'], out['sonar_offset_map']
+            )
+            sonar_pred_box = sonar_pred_box.cpu().numpy()[0]
+            sonar_pred_box = self._map_box_back(
+                sonar_pred_box, self.state['sonar_box'], sonar_resize_factor, self.search_size
+            )
+        else:
+            sonar_pred_box = rgb_pred_box.copy()
 
         # Update state
-        self.state['rgb_box'] = pred_box.copy()
+        self.state['rgb_box'] = rgb_pred_box.copy()
+        self.state['sonar_box'] = sonar_pred_box.copy()
 
-        # Also update sonar state if we have sonar output
-        if 'sonar_boxes' in out and sonar_image is not None:
-            sonar_pred = out['sonar_boxes'].cpu().numpy()[0]
-            sonar_pred = self._map_box_back(
-                sonar_pred, self.state['sonar_box'], sonar_resize_factor, self.search_size
+        # Template update logic (MixFormer three-tier strategy)
+        if self.template_update_enabled:
+            self._update_template(image, rgb_pred_box, sonar_pred_box, rgb_score, sonar_score)
+
+        # Return dual-modal results
+        return {
+            'target_bbox': self._cxcywh_to_xywh(rgb_pred_box),
+            'rgb_bbox': self._cxcywh_to_xywh(rgb_pred_box),
+            'sonar_bbox': self._cxcywh_to_xywh(sonar_pred_box),
+            'rgb_score': rgb_score,
+            'sonar_score': sonar_score,
+        }
+
+    def _update_template(self, image, rgb_box, sonar_box, rgb_score, sonar_score):
+        """Update templates using MixFormer three-tier strategy.
+
+        Args:
+            image: Current frame (dict or image)
+            rgb_box: RGB prediction [cx, cy, w, h]
+            sonar_box: Sonar prediction [cx, cy, w, h]
+            rgb_score: RGB confidence score
+            sonar_score: Sonar confidence score
+        """
+        # Get images
+        if isinstance(image, dict):
+            rgb_image = image.get('rgb')
+            sonar_image = image.get('sonar')
+        else:
+            rgb_image = image
+            sonar_image = None
+
+        # Decay max scores (MixFormer uses decay to gradually lower threshold)
+        self.rgb_max_pred_score *= self.max_score_decay
+        self.sonar_max_pred_score *= self.max_score_decay
+
+        # Update RGB best-frame cache if current score is better
+        if rgb_score > self.score_threshold and rgb_score > self.rgb_max_pred_score:
+            rgb_template_new, _ = self._sample_target(
+                rgb_image, rgb_box, self.template_factor, self.template_size
             )
-            self.state['sonar_box'] = sonar_pred
+            self.rgb_online_max_template = self._preprocess_rgb(rgb_template_new).to(self.device)
+            self.rgb_max_pred_score = rgb_score
 
-        # Convert to [x, y, w, h] for output
-        return self._cxcywh_to_xywh(pred_box)
+        # Update Sonar best-frame cache if current score is better
+        if sonar_image is not None:
+            if sonar_score > self.score_threshold and sonar_score > self.sonar_max_pred_score:
+                sonar_template_new, _ = self._sample_target(
+                    sonar_image, sonar_box, self.template_factor, self.template_size
+                )
+                self.sonar_online_max_template = self._preprocess_sonar(sonar_template_new).to(self.device)
+                self.sonar_max_pred_score = sonar_score
+
+        # Push best-frame to online queue at update interval
+        if self.frame_id % self.update_interval == 0 and self.frame_id > 0:
+            self._push_to_online_queue()
+
+    def _push_to_online_queue(self):
+        """Push best-frame templates to online template queue (FIFO)."""
+        if self.online_size == 1:
+            # Single template mode: direct replacement
+            self.rgb_online_template = self.rgb_online_max_template.clone()
+            self.sonar_online_template = self.sonar_online_max_template.clone()
+        elif self.rgb_online_template.shape[0] < self.online_size:
+            # Queue not full: append new template
+            self.rgb_online_template = torch.cat([
+                self.rgb_online_template, self.rgb_online_max_template
+            ], dim=0)
+            self.sonar_online_template = torch.cat([
+                self.sonar_online_template, self.sonar_online_max_template
+            ], dim=0)
+        else:
+            # Queue full: FIFO replacement
+            self.rgb_online_template[self.online_forget_id] = self.rgb_online_max_template[0]
+            self.sonar_online_template[self.online_forget_id] = self.sonar_online_max_template[0]
+            self.online_forget_id = (self.online_forget_id + 1) % self.online_size
+
+        # Update model with new templates
+        self.network.set_online(
+            self.rgb_template, self.sonar_template,
+            self.rgb_online_template, self.sonar_online_template
+        )
+
+        # Reset best-frame cache for next interval
+        self.rgb_max_pred_score = -1.0
+        self.sonar_max_pred_score = -1.0
+        self.rgb_online_max_template = self.rgb_template.clone()
+        self.sonar_online_max_template = self.sonar_template.clone()
+        self.last_update_frame = self.frame_id
 
     def _xywh_to_cxcywh(self, box):
         """Convert [x, y, w, h] to [cx, cy, w, h]."""

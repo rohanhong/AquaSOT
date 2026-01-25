@@ -116,13 +116,17 @@ class MultiModalProcessing(BaseProcessing):
                 - rgb_search_anno: RGB search bboxes
                 - sonar_template_anno: Sonar template bboxes
                 - sonar_search_anno: Sonar search bboxes
+                - rgb_online_template_images: (optional) Online RGB templates
+                - sonar_online_template_images: (optional) Online sonar templates
+                - rgb_online_template_anno: (optional) Online RGB template bboxes
+                - sonar_online_template_anno: (optional) Online sonar template bboxes
 
         Returns:
             Processed data dict with cropped/normalized images and boxes
         """
-        # Process each modality and role (template/search)
+        # Process each modality and role (template/search/online_template)
         for modality in ['rgb', 'sonar']:
-            for role in ['template', 'search']:
+            for role in ['template', 'search', 'online_template']:
                 images_key = f'{modality}_{role}_images'
                 anno_key = f'{modality}_{role}_anno'
 
@@ -132,6 +136,9 @@ class MultiModalProcessing(BaseProcessing):
                 images = data[images_key]
                 annos = data[anno_key]
 
+                # Map online_template to template for parameter lookup
+                param_role = 'template' if role == 'online_template' else role
+
                 # Ensure tensor format for annotations
                 annos = [torch.tensor(a) if not isinstance(a, torch.Tensor) else a
                          for a in annos]
@@ -139,18 +146,18 @@ class MultiModalProcessing(BaseProcessing):
                 # Check bbox validity
                 w = torch.stack(annos)[:, 2]
                 h = torch.stack(annos)[:, 3]
-                crop_sz = torch.ceil(torch.sqrt(w * h) * self.search_area_factor[role])
+                crop_sz = torch.ceil(torch.sqrt(w * h) * self.search_area_factor[param_role])
 
                 if (crop_sz < 1).any():
                     data['valid'] = False
                     return data
 
                 # Apply jitter to get extraction boxes
-                jittered_anno = [self._get_jittered_box(a, role) for a in annos]
+                jittered_anno = [self._get_jittered_box(a, param_role) for a in annos]
 
                 # Crop and resize
-                factor = self.search_area_factor[role]
-                out_sz = self.output_sz[role]
+                factor = self.search_area_factor[param_role]
+                out_sz = self.output_sz[param_role]
 
                 crops, boxes, att_mask, _ = prutils.jittered_center_crop(
                     images, jittered_anno, annos, factor, out_sz
@@ -248,6 +255,8 @@ class DualModalProcessing(MultiModalProcessing):
             'sonar_search_images': 'sonar_search',
             'rgb_search_anno': 'rgb_anno',
             'sonar_search_anno': 'sonar_anno',
+            'rgb_online_template_images': 'rgb_online_template',
+            'sonar_online_template_images': 'sonar_online_template',
         }
 
         for src_key, dst_key in key_mapping.items():
