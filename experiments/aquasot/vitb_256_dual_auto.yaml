@@ -65,8 +65,8 @@ DATA:
   SEARCH:
     SIZE: 256
     FACTOR: 4.0
-    CENTER_JITTER: 1.0  # Moderate jitter for training
-    SCALE_JITTER: 0.25
+    CENTER_JITTER: 0.15
+    SCALE_JITTER: 0.1
 
   TEMPLATE:
     SIZE: 128

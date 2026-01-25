@@ -36,8 +36,8 @@ DATA:
     SAMPLE_PER_EPOCH: 5
 
   SEARCH:
-    CENTER_JITTER: 1.0
-    SCALE_JITTER: 0.25
+    CENTER_JITTER: 0.15
+    SCALE_JITTER: 0.1
 
   TEMPLATE:
     ONLINE_NUMBER: 1  # Online template sampling during training
