@@ -4,7 +4,7 @@
 
 ```bash
 python tracking/test.py --tracker aquasot \
-    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/AquaSOT_ep0100.pth.tar
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth
 ```
 
 ## Command Line Options
@@ -29,14 +29,14 @@ python tracking/test.py --tracker aquasot \
 **Full evaluation with visualization:**
 ```bash
 python tracking/test.py --tracker aquasot \
-    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/AquaSOT_ep0100.pth.tar \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
     --visualize --plot_curves
 ```
 
 **Evaluate specific sequences only:**
 ```bash
 python tracking/test.py --tracker aquasot \
-    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/AquaSOT_ep0100.pth.tar \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
     --sequences uuv3 uuv6 uuv10
 ```
 
