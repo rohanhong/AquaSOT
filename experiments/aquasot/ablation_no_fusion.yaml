@@ -9,7 +9,6 @@ MODEL:
 
 TRAIN:
   EPOCH: 100
-  CONSISTENCY_WEIGHT: 0.0
 
 EXPERIMENT:
   NAME: ablation_no_fusion

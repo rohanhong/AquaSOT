@@ -70,7 +70,7 @@ def build_dataloaders(cfg, settings):
     from lib.train.data.processing import DualModalProcessing
     from lib.train.data.transforms import (
         Transform, ToTensorAndJitter, Normalize, ToGrayscale,
-        ColorJitter, GaussianBlur, RandomErasing, RandomHorizontalFlip,
+        ColorJitter, GaussianBlur, RandomErasing, RandomHorizontalFlipNorm,
         SonarToTensor, SonarNormalize, SonarSpeckleNoise, SonarRandomErasing
     )
 
@@ -84,7 +84,12 @@ def build_dataloaders(cfg, settings):
     brightness = aug_cfg.RGB.BRIGHTNESS if aug_enabled else 0.0
     rgb_transforms.append(ToTensorAndJitter(brightness_jitter=brightness))
 
+    # Grayscale (before ColorJitter to avoid wasting saturation/hue adjustments)
+    if aug_enabled and aug_cfg.RGB.GRAYSCALE:
+        rgb_transforms.append(ToGrayscale(probability=aug_cfg.RGB.GRAYSCALE_PROB))
+
     # Color jitter (contrast, saturation, hue)
+    # Note: saturation/hue have no effect on grayscale images, only contrast applies
     if aug_enabled and aug_cfg.RGB.COLOR_JITTER:
         rgb_transforms.append(ColorJitter(
             brightness=0.0,  # Already handled by ToTensorAndJitter
@@ -92,10 +97,6 @@ def build_dataloaders(cfg, settings):
             saturation=aug_cfg.RGB.SATURATION,
             hue=aug_cfg.RGB.HUE
         ))
-
-    # Grayscale
-    if aug_enabled and aug_cfg.RGB.GRAYSCALE:
-        rgb_transforms.append(ToGrayscale(probability=aug_cfg.RGB.GRAYSCALE_PROB))
 
     # Gaussian blur
     if aug_enabled and aug_cfg.RGB.BLUR:
@@ -136,9 +137,10 @@ def build_dataloaders(cfg, settings):
     sonar_transform = Transform(*sonar_transforms)
 
     # Synchronized horizontal flip (applied in processing)
+    # Use RandomHorizontalFlipNorm because bboxes are normalized to [0,1]
     joint_flip = None
     if aug_enabled and aug_cfg.HORIZONTAL_FLIP:
-        joint_flip = RandomHorizontalFlip(probability=aug_cfg.HORIZONTAL_FLIP_PROB)
+        joint_flip = RandomHorizontalFlipNorm(probability=aug_cfg.HORIZONTAL_FLIP_PROB)
 
     if is_main_process():
         print("Data augmentation enabled:", aug_enabled)

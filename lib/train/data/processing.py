@@ -86,23 +86,47 @@ class MultiModalProcessing(BaseProcessing):
         self.settings = settings
         self.stride = stride
 
-    def _get_jittered_box(self, box, mode):
+    def _roll_jitter_params(self, mode):
+        """Generate shared jitter random parameters for both modalities.
+
+        This ensures RGB and Sonar use identical spatial jitter to maintain
+        alignment between the two modalities.
+
+        Args:
+            mode: 'template' or 'search'
+
+        Returns:
+            Tuple of (scale_rand, center_rand) for use in _get_jittered_box
+        """
+        scale_rand = torch.randn(2) * self.scale_jitter_factor[mode]
+        center_rand = torch.rand(2) - 0.5
+        return (scale_rand, center_rand)
+
+    def _get_jittered_box(self, box, mode, rand_params=None):
         """Apply jitter to bounding box.
 
         Args:
             box: Input box [x, y, w, h]
             mode: 'template' or 'search'
+            rand_params: Optional pre-rolled (scale_rand, center_rand) tuple.
+                         If None, generates new random parameters.
 
         Returns:
             Jittered box
         """
-        jittered_size = box[2:4] * torch.exp(
-            torch.randn(2) * self.scale_jitter_factor[mode]
-        )
+        if rand_params is None:
+            # Generate new random parameters (backwards compatible)
+            scale_rand = torch.randn(2) * self.scale_jitter_factor[mode]
+            center_rand = torch.rand(2) - 0.5
+        else:
+            # Use pre-rolled parameters for cross-modality synchronization
+            scale_rand, center_rand = rand_params
+
+        jittered_size = box[2:4] * torch.exp(scale_rand)
         max_offset = jittered_size.prod().sqrt() * torch.tensor(
             self.center_jitter_factor[mode]
         ).float()
-        jittered_center = box[0:2] + 0.5 * box[2:4] + max_offset * (torch.rand(2) - 0.5)
+        jittered_center = box[0:2] + 0.5 * box[2:4] + max_offset * center_rand
 
         return torch.cat((jittered_center - 0.5 * jittered_size, jittered_size), dim=0)
 
@@ -127,8 +151,22 @@ class MultiModalProcessing(BaseProcessing):
         Returns:
             Processed data dict with cropped/normalized images and boxes
         """
-        # Phase 1: Crop images for both modalities
-        # This uses synchronized spatial jitter (same crop params for RGB and Sonar)
+        # Phase 1: Pre-roll shared jitter parameters for cross-modality synchronization
+        # This ensures RGB and Sonar crop the same spatial region
+        shared_jitter_params = {}
+        for role in ['template', 'search', 'online_template']:
+            # Use RGB data to determine frame count (both modalities have same count)
+            images_key = f'rgb_{role}_images'
+            if images_key not in data:
+                continue
+            n_frames = len(data[images_key])
+            param_role = 'template' if role == 'online_template' else role
+            # Pre-roll jitter params for each frame in this role
+            shared_jitter_params[role] = [
+                self._roll_jitter_params(param_role) for _ in range(n_frames)
+            ]
+
+        # Phase 2: Crop images for both modalities using shared jitter params
         cropped_data = {}
         for modality in ['rgb', 'sonar']:
             for role in ['template', 'search', 'online_template']:
@@ -157,8 +195,12 @@ class MultiModalProcessing(BaseProcessing):
                     data['valid'] = False
                     return data
 
-                # Apply jitter to get extraction boxes
-                jittered_anno = [self._get_jittered_box(a, param_role) for a in annos]
+                # Apply jitter using shared parameters (synchronized across modalities)
+                jitter_params = shared_jitter_params.get(role, [None] * len(annos))
+                jittered_anno = [
+                    self._get_jittered_box(a, param_role, jitter_params[i])
+                    for i, a in enumerate(annos)
+                ]
 
                 # Crop and resize
                 factor = self.search_area_factor[param_role]
@@ -176,7 +218,7 @@ class MultiModalProcessing(BaseProcessing):
                     'out_sz': out_sz
                 }
 
-        # Phase 2: Apply synchronized flip to matching RGB-Sonar pairs
+        # Phase 3: Apply synchronized flip to matching RGB-Sonar pairs
         if self.joint_flip is not None:
             for role in ['template', 'search', 'online_template']:
                 rgb_key = f'rgb_{role}'
@@ -213,7 +255,7 @@ class MultiModalProcessing(BaseProcessing):
                     sonar_data['boxes'][i] = sonar_out.get('bbox', sonar_data['boxes'][i])
                     sonar_data['att_mask'][i] = sonar_out.get('att', sonar_data['att_mask'][i])
 
-        # Phase 3: Apply modality-specific transforms and validate
+        # Phase 4: Apply modality-specific transforms and validate
         for modality in ['rgb', 'sonar']:
             for role in ['template', 'search', 'online_template']:
                 key = f'{modality}_{role}'
