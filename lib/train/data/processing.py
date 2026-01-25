@@ -55,6 +55,7 @@ class MultiModalProcessing(BaseProcessing):
         rgb_transform=None,
         sonar_transform=None,
         joint_transform=None,
+        joint_flip=None,
         settings=None,
         stride=16,
     ):
@@ -68,6 +69,7 @@ class MultiModalProcessing(BaseProcessing):
             rgb_transform: Transforms for RGB images
             sonar_transform: Transforms for sonar images
             joint_transform: Joint transforms for template/search
+            joint_flip: Synchronized horizontal flip for both modalities
             settings: Training settings
             stride: Feature map stride (default 16 for ViT)
         """
@@ -80,6 +82,7 @@ class MultiModalProcessing(BaseProcessing):
         self.mode = mode
         self.rgb_transform = rgb_transform
         self.sonar_transform = sonar_transform
+        self.joint_flip = joint_flip
         self.settings = settings
         self.stride = stride
 
@@ -124,7 +127,9 @@ class MultiModalProcessing(BaseProcessing):
         Returns:
             Processed data dict with cropped/normalized images and boxes
         """
-        # Process each modality and role (template/search/online_template)
+        # Phase 1: Crop images for both modalities
+        # This uses synchronized spatial jitter (same crop params for RGB and Sonar)
+        cropped_data = {}
         for modality in ['rgb', 'sonar']:
             for role in ['template', 'search', 'online_template']:
                 images_key = f'{modality}_{role}_images'
@@ -163,7 +168,65 @@ class MultiModalProcessing(BaseProcessing):
                     images, jittered_anno, annos, factor, out_sz
                 )
 
-                # Apply transforms
+                # Store cropped data (convert to lists for mutability)
+                cropped_data[f'{modality}_{role}'] = {
+                    'crops': list(crops),
+                    'boxes': list(boxes),
+                    'att_mask': list(att_mask),
+                    'out_sz': out_sz
+                }
+
+        # Phase 2: Apply synchronized flip to matching RGB-Sonar pairs
+        if self.joint_flip is not None:
+            for role in ['template', 'search', 'online_template']:
+                rgb_key = f'rgb_{role}'
+                sonar_key = f'sonar_{role}'
+
+                if rgb_key not in cropped_data or sonar_key not in cropped_data:
+                    continue
+
+                rgb_data = cropped_data[rgb_key]
+                sonar_data = cropped_data[sonar_key]
+
+                # Apply flip to each pair of images
+                for i in range(len(rgb_data['crops'])):
+                    # Roll once for RGB
+                    rgb_out = self.joint_flip(
+                        image=rgb_data['crops'][i],
+                        bbox=rgb_data['boxes'][i],
+                        att=rgb_data['att_mask'][i],
+                        new_roll=True
+                    )
+                    # Use same flip decision for Sonar
+                    sonar_out = self.joint_flip(
+                        image=sonar_data['crops'][i],
+                        bbox=sonar_data['boxes'][i],
+                        att=sonar_data['att_mask'][i],
+                        new_roll=False
+                    )
+
+                    rgb_data['crops'][i] = rgb_out.get('image', rgb_data['crops'][i])
+                    rgb_data['boxes'][i] = rgb_out.get('bbox', rgb_data['boxes'][i])
+                    rgb_data['att_mask'][i] = rgb_out.get('att', rgb_data['att_mask'][i])
+
+                    sonar_data['crops'][i] = sonar_out.get('image', sonar_data['crops'][i])
+                    sonar_data['boxes'][i] = sonar_out.get('bbox', sonar_data['boxes'][i])
+                    sonar_data['att_mask'][i] = sonar_out.get('att', sonar_data['att_mask'][i])
+
+        # Phase 3: Apply modality-specific transforms and validate
+        for modality in ['rgb', 'sonar']:
+            for role in ['template', 'search', 'online_template']:
+                key = f'{modality}_{role}'
+                if key not in cropped_data:
+                    continue
+
+                cd = cropped_data[key]
+                crops = cd['crops']
+                boxes = cd['boxes']
+                att_mask = cd['att_mask']
+                out_sz = cd['out_sz']
+
+                # Apply modality-specific transforms
                 if modality == 'rgb' and self.rgb_transform is not None:
                     crops = [self.rgb_transform(image=c) for c in crops]
                 elif modality == 'sonar' and self.sonar_transform is not None:
@@ -197,8 +260,8 @@ class MultiModalProcessing(BaseProcessing):
                         return data
 
                 # Store processed data
-                data[images_key] = crops
-                data[anno_key] = boxes
+                data[f'{modality}_{role}_images'] = crops
+                data[f'{modality}_{role}_anno'] = boxes
                 data[f'{modality}_{role}_att'] = [
                     torch.from_numpy(m) if isinstance(m, np.ndarray) else m
                     for m in att_mask

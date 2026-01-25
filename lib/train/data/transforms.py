@@ -286,6 +286,131 @@ class RandomHorizontalFlipNorm(RandomHorizontalFlip):
 
 
 # ============================================================================
+# Additional RGB transforms
+# ============================================================================
+
+class ColorJitter(TransformBase):
+    """Color jitter for RGB images (contrast, saturation, hue).
+
+    Applied after ToTensor, expects tensor in [0, 1] range.
+    """
+
+    def __init__(self, brightness=0.0, contrast=0.3, saturation=0.3, hue=0.2):
+        super().__init__()
+        self.brightness = brightness  # Not used here (handled by ToTensorAndJitter)
+        self.contrast = contrast
+        self.saturation = saturation
+        self.hue = hue
+
+    def roll(self):
+        contrast_factor = random.uniform(max(0, 1 - self.contrast), 1 + self.contrast)
+        saturation_factor = random.uniform(max(0, 1 - self.saturation), 1 + self.saturation)
+        hue_factor = random.uniform(-self.hue, self.hue)
+        return (contrast_factor, saturation_factor, hue_factor)
+
+    def transform_image(self, image, contrast_factor, saturation_factor, hue_factor):
+        if not torch.is_tensor(image):
+            return image
+
+        # Apply contrast
+        if self.contrast > 0:
+            image = tvisf.adjust_contrast(image, contrast_factor)
+
+        # Apply saturation
+        if self.saturation > 0:
+            image = tvisf.adjust_saturation(image, saturation_factor)
+
+        # Apply hue
+        if self.hue > 0:
+            image = tvisf.adjust_hue(image, hue_factor)
+
+        return image.clamp(0.0, 1.0)
+
+
+class GaussianBlur(TransformBase):
+    """Gaussian blur with random kernel size."""
+
+    def __init__(self, probability=0.3, kernel_range=(3, 7)):
+        super().__init__()
+        self.probability = probability
+        self.kernel_range = kernel_range
+
+    def roll(self):
+        do_blur = random.random() < self.probability
+        # Kernel size must be odd
+        k_min, k_max = self.kernel_range
+        kernel_size = random.randrange(k_min, k_max + 1, 2)
+        sigma = random.uniform(0.1, 2.0)
+        return (do_blur, kernel_size, sigma)
+
+    def transform_image(self, image, do_blur, kernel_size, sigma):
+        if not do_blur:
+            return image
+
+        if torch.is_tensor(image):
+            return tvisf.gaussian_blur(image, kernel_size, [sigma, sigma])
+
+        # NumPy array
+        return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
+
+
+class RandomErasing(TransformBase):
+    """Random erasing (occlusion) augmentation.
+
+    Randomly erases a rectangular region in the image.
+    """
+
+    def __init__(self, probability=0.2, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0):
+        super().__init__()
+        self.probability = probability
+        self.scale = scale
+        self.ratio = ratio
+        self.value = value
+
+    def roll(self):
+        do_erase = random.random() < self.probability
+        if not do_erase:
+            return (False, 0, 0, 0, 0)
+
+        # Generate random erase parameters
+        scale = random.uniform(self.scale[0], self.scale[1])
+        log_ratio = random.uniform(np.log(self.ratio[0]), np.log(self.ratio[1]))
+        aspect_ratio = np.exp(log_ratio)
+
+        return (True, scale, aspect_ratio, random.random(), random.random())
+
+    def transform_image(self, image, do_erase, scale, aspect_ratio, rand_x, rand_y):
+        if not do_erase:
+            return image
+
+        if torch.is_tensor(image):
+            c, h, w = image.shape
+        else:
+            h, w = image.shape[:2]
+
+        # Calculate erase region size
+        area = h * w * scale
+        erase_h = int(round(np.sqrt(area * aspect_ratio)))
+        erase_w = int(round(np.sqrt(area / aspect_ratio)))
+
+        if erase_h >= h or erase_w >= w:
+            return image
+
+        # Calculate erase position
+        top = int(rand_y * (h - erase_h))
+        left = int(rand_x * (w - erase_w))
+
+        if torch.is_tensor(image):
+            image = image.clone()
+            image[:, top:top + erase_h, left:left + erase_w] = self.value
+        else:
+            image = image.copy()
+            image[top:top + erase_h, left:left + erase_w] = self.value
+
+        return image
+
+
+# ============================================================================
 # Sonar-specific transforms
 # ============================================================================
 
@@ -341,3 +466,155 @@ class SonarNormalize(TransformBase):
 
     def transform_image(self, image):
         return (image - self.mean) / self.std
+
+
+class SonarRandomErasing(TransformBase):
+    """Random erasing for sonar images.
+
+    Simpler version that fills with random noise instead of constant value.
+    """
+
+    def __init__(self, probability=0.2, scale=(0.02, 0.15), ratio=(0.5, 2.0)):
+        super().__init__()
+        self.probability = probability
+        self.scale = scale
+        self.ratio = ratio
+
+    def roll(self):
+        do_erase = random.random() < self.probability
+        if not do_erase:
+            return (False, 0, 0, 0, 0)
+
+        scale = random.uniform(self.scale[0], self.scale[1])
+        log_ratio = random.uniform(np.log(self.ratio[0]), np.log(self.ratio[1]))
+        aspect_ratio = np.exp(log_ratio)
+
+        return (True, scale, aspect_ratio, random.random(), random.random())
+
+    def transform_image(self, image, do_erase, scale, aspect_ratio, rand_x, rand_y):
+        if not do_erase:
+            return image
+
+        if torch.is_tensor(image):
+            c, h, w = image.shape
+        else:
+            h, w = image.shape[:2]
+
+        area = h * w * scale
+        erase_h = int(round(np.sqrt(area * aspect_ratio)))
+        erase_w = int(round(np.sqrt(area / aspect_ratio)))
+
+        if erase_h >= h or erase_w >= w:
+            return image
+
+        top = int(rand_y * (h - erase_h))
+        left = int(rand_x * (w - erase_w))
+
+        if torch.is_tensor(image):
+            image = image.clone()
+            # Fill with random noise for sonar
+            noise = torch.rand(c, erase_h, erase_w, device=image.device)
+            image[:, top:top + erase_h, left:left + erase_w] = noise
+        else:
+            image = image.copy()
+            noise = np.random.rand(erase_h, erase_w) * 255
+            image[top:top + erase_h, left:left + erase_w] = noise.astype(image.dtype)
+
+        return image
+
+
+# ============================================================================
+# Joint multi-modal transforms
+# ============================================================================
+
+class JointTransform:
+    """Wrapper for synchronized transforms across RGB and Sonar modalities.
+
+    Ensures spatial transforms (horizontal flip) use the same random decision
+    for both modalities to maintain correspondence in uncalibrated data.
+
+    Usage:
+        joint_transform = JointTransform(
+            rgb_transform=Transform(ToTensorAndJitter(), ColorJitter(), ...),
+            sonar_transform=Transform(SonarToTensor(), SonarSpeckleNoise(), ...),
+            joint_flip=RandomHorizontalFlip(probability=0.5)
+        )
+        rgb_out, sonar_out = joint_transform(
+            rgb_image=rgb, rgb_bbox=rgb_box,
+            sonar_image=sonar, sonar_bbox=sonar_box
+        )
+    """
+
+    def __init__(self, rgb_transform, sonar_transform, joint_flip=None):
+        """Initialize joint transform.
+
+        Args:
+            rgb_transform: Transform pipeline for RGB images
+            sonar_transform: Transform pipeline for Sonar images
+            joint_flip: Optional RandomHorizontalFlip for synchronized flipping
+        """
+        self.rgb_transform = rgb_transform
+        self.sonar_transform = sonar_transform
+        self.joint_flip = joint_flip
+
+    def __call__(self, rgb_image, rgb_bbox, sonar_image, sonar_bbox,
+                 rgb_mask=None, sonar_mask=None, rgb_att=None, sonar_att=None):
+        """Apply transforms to RGB and Sonar data.
+
+        Args:
+            rgb_image: RGB image (numpy array or tensor)
+            rgb_bbox: RGB bounding box
+            sonar_image: Sonar image (numpy array or tensor)
+            sonar_bbox: Sonar bounding box
+            rgb_mask, sonar_mask: Optional masks
+            rgb_att, sonar_att: Optional attention maps
+
+        Returns:
+            Tuple of (rgb_outputs, sonar_outputs) where each is a dict
+        """
+        # Apply synchronized horizontal flip if enabled
+        if self.joint_flip is not None:
+            # Roll once for both modalities
+            rgb_out = self.joint_flip(
+                image=rgb_image, bbox=rgb_bbox, mask=rgb_mask, att=rgb_att,
+                new_roll=True
+            )
+            # Use same flip decision for sonar (new_roll=False)
+            sonar_out = self.joint_flip(
+                image=sonar_image, bbox=sonar_bbox, mask=sonar_mask, att=sonar_att,
+                new_roll=False
+            )
+
+            rgb_image = rgb_out.get('image', rgb_image)
+            rgb_bbox = rgb_out.get('bbox', rgb_bbox)
+            rgb_mask = rgb_out.get('mask', rgb_mask)
+            rgb_att = rgb_out.get('att', rgb_att)
+
+            sonar_image = sonar_out.get('image', sonar_image)
+            sonar_bbox = sonar_out.get('bbox', sonar_bbox)
+            sonar_mask = sonar_out.get('mask', sonar_mask)
+            sonar_att = sonar_out.get('att', sonar_att)
+
+        # Apply modality-specific transforms
+        rgb_inputs = {'image': rgb_image, 'bbox': rgb_bbox}
+        if rgb_mask is not None:
+            rgb_inputs['mask'] = rgb_mask
+        if rgb_att is not None:
+            rgb_inputs['att'] = rgb_att
+
+        sonar_inputs = {'image': sonar_image, 'bbox': sonar_bbox}
+        if sonar_mask is not None:
+            sonar_inputs['mask'] = sonar_mask
+        if sonar_att is not None:
+            sonar_inputs['att'] = sonar_att
+
+        rgb_outputs = self.rgb_transform(**rgb_inputs)
+        sonar_outputs = self.sonar_transform(**sonar_inputs)
+
+        # Ensure outputs are dicts
+        if not isinstance(rgb_outputs, dict):
+            rgb_outputs = {'image': rgb_outputs[0], 'bbox': rgb_outputs[1]}
+        if not isinstance(sonar_outputs, dict):
+            sonar_outputs = {'image': sonar_outputs[0], 'bbox': sonar_outputs[1]}
+
+        return rgb_outputs, sonar_outputs

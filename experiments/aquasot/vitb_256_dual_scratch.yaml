@@ -35,8 +35,35 @@ DATA:
     SEQUENCES: [uuv3]
     SAMPLE_PER_EPOCH: 5
 
+  SEARCH:
+    CENTER_JITTER: 1.0
+    SCALE_JITTER: 0.25
+
   TEMPLATE:
     ONLINE_NUMBER: 1  # Online template sampling during training
+
+  AUGMENTATION:
+    ENABLED: true
+    HORIZONTAL_FLIP: true
+    HORIZONTAL_FLIP_PROB: 0.5
+    RGB:
+      BRIGHTNESS: 0.2
+      COLOR_JITTER: true
+      CONTRAST: 0.3
+      SATURATION: 0.3
+      HUE: 0.2
+      GRAYSCALE: true
+      GRAYSCALE_PROB: 0.05
+      BLUR: true
+      BLUR_PROB: 0.3
+      OCCLUSION: true
+      OCCLUSION_PROB: 0.2
+    SONAR:
+      SPECKLE: true
+      SPECKLE_LEVEL: 0.1
+      SPECKLE_PROB: 0.5
+      OCCLUSION: true
+      OCCLUSION_PROB: 0.2
 
 SYSTEM:
   SEED: 42

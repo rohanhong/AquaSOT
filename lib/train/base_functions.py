@@ -69,28 +69,86 @@ def build_dataloaders(cfg, settings):
     from lib.train.data.sampler import MultiModalSampler
     from lib.train.data.processing import DualModalProcessing
     from lib.train.data.transforms import (
-        Transform, ToTensorAndJitter, Normalize,
-        SonarToTensor, SonarNormalize, SonarSpeckleNoise
+        Transform, ToTensorAndJitter, Normalize, ToGrayscale,
+        ColorJitter, GaussianBlur, RandomErasing, RandomHorizontalFlip,
+        SonarToTensor, SonarNormalize, SonarSpeckleNoise, SonarRandomErasing
     )
 
-    # Build transforms for RGB
-    rgb_transform = Transform(
-        ToTensorAndJitter(brightness_jitter=0.2),
-        Normalize(mean=cfg.DATA.RGB_MEAN, std=cfg.DATA.RGB_STD)
-    )
+    aug_cfg = cfg.DATA.AUGMENTATION
+    aug_enabled = aug_cfg.ENABLED
 
-    # Build transforms for Sonar
-    sonar_transforms = [SonarToTensor()]
-    if cfg.DATA.AUGMENTATION.ENABLED and cfg.DATA.AUGMENTATION.SONAR.SPECKLE:
-        sonar_transforms.insert(0, SonarSpeckleNoise(
-            probability=cfg.DATA.AUGMENTATION.SONAR.SPECKLE_PROB,
-            noise_level=cfg.DATA.AUGMENTATION.SONAR.SPECKLE_LEVEL
+    # Build RGB transforms
+    rgb_transforms = []
+
+    # Brightness jitter (via ToTensorAndJitter)
+    brightness = aug_cfg.RGB.BRIGHTNESS if aug_enabled else 0.0
+    rgb_transforms.append(ToTensorAndJitter(brightness_jitter=brightness))
+
+    # Color jitter (contrast, saturation, hue)
+    if aug_enabled and aug_cfg.RGB.COLOR_JITTER:
+        rgb_transforms.append(ColorJitter(
+            brightness=0.0,  # Already handled by ToTensorAndJitter
+            contrast=aug_cfg.RGB.CONTRAST,
+            saturation=aug_cfg.RGB.SATURATION,
+            hue=aug_cfg.RGB.HUE
         ))
+
+    # Grayscale
+    if aug_enabled and aug_cfg.RGB.GRAYSCALE:
+        rgb_transforms.append(ToGrayscale(probability=aug_cfg.RGB.GRAYSCALE_PROB))
+
+    # Gaussian blur
+    if aug_enabled and aug_cfg.RGB.BLUR:
+        rgb_transforms.append(GaussianBlur(probability=aug_cfg.RGB.BLUR_PROB))
+
+    # Random erasing (occlusion)
+    if aug_enabled and aug_cfg.RGB.OCCLUSION:
+        rgb_transforms.append(RandomErasing(probability=aug_cfg.RGB.OCCLUSION_PROB))
+
+    # Normalization (always applied)
+    rgb_transforms.append(Normalize(mean=cfg.DATA.RGB_MEAN, std=cfg.DATA.RGB_STD))
+    rgb_transform = Transform(*rgb_transforms)
+
+    # Build Sonar transforms
+    sonar_transforms = []
+
+    # Speckle noise (before ToTensor)
+    if aug_enabled and aug_cfg.SONAR.SPECKLE:
+        sonar_transforms.append(SonarSpeckleNoise(
+            probability=aug_cfg.SONAR.SPECKLE_PROB,
+            noise_level=aug_cfg.SONAR.SPECKLE_LEVEL
+        ))
+
+    # To tensor
+    sonar_transforms.append(SonarToTensor())
+
+    # Random erasing (occlusion)
+    if aug_enabled and aug_cfg.SONAR.OCCLUSION:
+        sonar_transforms.append(SonarRandomErasing(
+            probability=aug_cfg.SONAR.OCCLUSION_PROB
+        ))
+
+    # Normalization
     sonar_transforms.append(SonarNormalize(
         mean=cfg.DATA.SONAR_MEAN[0],
         std=cfg.DATA.SONAR_STD[0]
     ))
     sonar_transform = Transform(*sonar_transforms)
+
+    # Synchronized horizontal flip (applied in processing)
+    joint_flip = None
+    if aug_enabled and aug_cfg.HORIZONTAL_FLIP:
+        joint_flip = RandomHorizontalFlip(probability=aug_cfg.HORIZONTAL_FLIP_PROB)
+
+    if is_main_process():
+        print("Data augmentation enabled:", aug_enabled)
+        if aug_enabled:
+            print(f"  RGB: brightness={brightness}, color_jitter={aug_cfg.RGB.COLOR_JITTER}, "
+                  f"grayscale={aug_cfg.RGB.GRAYSCALE}, blur={aug_cfg.RGB.BLUR}, "
+                  f"occlusion={aug_cfg.RGB.OCCLUSION}")
+            print(f"  Sonar: speckle={aug_cfg.SONAR.SPECKLE}, "
+                  f"occlusion={aug_cfg.SONAR.OCCLUSION}")
+            print(f"  Joint: horizontal_flip={aug_cfg.HORIZONTAL_FLIP}")
 
     # Build processing
     search_area_factor = {
@@ -118,6 +176,7 @@ def build_dataloaders(cfg, settings):
         mode='sequence',
         rgb_transform=rgb_transform,
         sonar_transform=sonar_transform,
+        joint_flip=joint_flip,
         settings=settings,
         stride=cfg.MODEL.BACKBONE.RGB.STRIDE
     )

@@ -460,7 +460,11 @@ class TestCheckpoint:
         tracker.init(image, init_box)
         result = tracker.update(image)
 
-        assert len(result) == 4
+        # Result is now a dict with dual-modal predictions
+        assert isinstance(result, dict)
+        assert 'rgb_bbox' in result
+        assert 'sonar_bbox' in result
+        assert len(result['rgb_bbox']) == 4  # [x, y, w, h]
 
     def test_resume_training_from_checkpoint(self, clear_pretrained, tmp_path):
         """Test resuming training from checkpoint."""
