@@ -252,6 +252,7 @@ cfg.TEST.TEMPLATE_UPDATE.STRATEGY = "mixformer"  # mixformer/simple
 cfg.TEST.TEMPLATE_UPDATE.ONLINE_SIZE = 2  # Number of online templates
 cfg.TEST.TEMPLATE_UPDATE.UPDATE_INTERVAL = 200  # Frames between updates
 cfg.TEST.TEMPLATE_UPDATE.SCORE_THRESHOLD = 0.5  # Min confidence to update
+cfg.TEST.TEMPLATE_UPDATE.HIGH_CONFIDENCE_THRESHOLD = 0.7  # Higher threshold for selective update
 cfg.TEST.TEMPLATE_UPDATE.MAX_SCORE_DECAY = 1.0  # Decay rate per frame (1.0=no decay)
 
 # Validity gating
@@ -259,6 +260,28 @@ cfg.TEST.VALIDITY_GATING = edict()
 cfg.TEST.VALIDITY_GATING.ENABLED = False
 cfg.TEST.VALIDITY_GATING.RGB_THRESHOLD = 0.35
 cfg.TEST.VALIDITY_GATING.SONAR_THRESHOLD = 0.40
+
+# Target loss detection and recovery (dual-modal independent state machine)
+cfg.TEST.TARGET_LOSS = edict()
+cfg.TEST.TARGET_LOSS.ENABLED = True
+
+# Score-based detection thresholds (from NA-OSTrack)
+cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD = 0.25    # Below = target lost
+cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD = 0.40    # Below = uncertain
+cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD = 0.50       # Above = confident tracking
+
+# State transition hysteresis (avoid jitter between states)
+cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES = 3       # Consecutive frames to confirm lost
+cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES = 5      # Consecutive frames to confirm found
+cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES = 2     # Frames to recover from UNCERTAIN to STABLE
+
+# Search region validation
+cfg.TEST.TARGET_LOSS.SEARCH_REGION_K = 3.0         # Search region = K * target size
+cfg.TEST.TARGET_LOSS.USE_SEARCH_REGION = True
+
+# Primary output selection when both modalities are STABLE
+# Options: "rgb_first", "sonar_first", "higher_score"
+cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY = "higher_score"
 
 # Metrics
 cfg.TEST.METRICS = ["success_auc", "precision_20", "avg_center_error"]

@@ -111,13 +111,15 @@ AquaSOT follows a dual-stream architecture based on OSTrack [1]:
                                                     |                         |
                                                     v                         v
                                             +--------------+          +--------------+
-                                            | CenterHead   |          | CenterHead   |
-                                            |    (RGB)     |          |   (Sonar)    |
+                                            | rgb_box_head |          |sonar_box_head|
                                             +--------------+          +--------------+
                                                     |                         |
                                                     v                         v
                                             RGB Bbox [B, 4]           Sonar Bbox [B, 4]
                                             RGB Score [B, 1, 16, 16]  Sonar Score [B, 1, 16, 16]
+
+    Note: Separate prediction heads prevent prediction drift caused by asymmetric FOV
+          (RGB FOV ~60-70 deg, Sonar FOV ~120-160 deg)
 
     ============================================================================
 ```
@@ -251,7 +253,11 @@ F_sonar_out = F_sonar' + FFN(LN(F_sonar'))
 
 **Source**: `lib/models/layers/head.py:31-165`
 
-The prediction head uses three parallel convolutional branches.
+The prediction head uses three parallel convolutional branches. **Important**: AquaSOT uses **separate prediction heads** for each modality:
+- `rgb_box_head`: Trained on RGB features
+- `sonar_box_head`: Trained on Sonar features
+
+This separation addresses the prediction drift problem caused by asymmetric FOV between modalities (Sonar FOV > RGB FOV). Shared heads cause Sonar predictions to drift toward RGB motion patterns due to gradient averaging during training.
 
 #### 3.3.1 Branch Architecture
 
@@ -502,11 +508,56 @@ At each frame t:
 | `ONLINE_SIZE` | 2 | Number of online templates |
 | `MAX_SCORE_DECAY` | 1.0 | Decay rate (1.0 = no decay) |
 
-### 5.2 Evaluation Protocol
+### 5.2 Target Loss Detection and Recovery
+
+**Source**: `lib/test/tracker/target_loss_handler.py`
+
+AquaSOT implements a dual-modal independent state machine for each modality, enabling robust tracking when one modality temporarily loses the target.
+
+#### 5.2.1 Tracking States
+
+| State | Description | Template Update |
+|-------|-------------|-----------------|
+| STABLE | Confident tracking (score >= 0.50) | Yes (if score > 0.7) |
+| UNCERTAIN | Low confidence (0.25 <= score < 0.50) | No |
+| LOST | Target lost (score < 0.25 for 3+ frames) | No |
+
+#### 5.2.2 State Machine Logic
+
+**Score Classification**:
+- `score < 0.25`: "not_found" -> target_lost signal
+- `0.25 <= score < 0.50`: "uncertain" -> target_lost signal
+- `score >= 0.50`: "stable" -> target_found signal
+
+**State Transitions**:
+- STABLE -> UNCERTAIN: First lost frame
+- UNCERTAIN -> LOST: 3 consecutive lost frames (hysteresis)
+- LOST -> UNCERTAIN: First found frame
+- UNCERTAIN -> STABLE: 2 consecutive found frames (quick recovery)
+
+#### 5.2.3 Primary Output Selection
+
+When both modalities are STABLE:
+- `PRIMARY_PRIORITY = "higher_score"` (default): Use modality with higher confidence
+- `PRIMARY_PRIORITY = "rgb_first"`: Always prefer RGB
+- `PRIMARY_PRIORITY = "sonar_first"`: Always prefer Sonar
+
+When one modality is LOST:
+- Automatically use the STABLE modality (enables Sonar to track when target leaves RGB FOV)
+
+#### 5.2.4 Selective Template Update
+
+Templates are only updated when:
+1. Modality state is STABLE
+2. Confidence score exceeds `HIGH_CONFIDENCE_THRESHOLD` (0.7)
+
+This prevents template pollution from unreliable predictions.
+
+### 5.3 Evaluation Protocol
 
 **Source**: `lib/test/evaluation/metrics.py`
 
-#### 5.2.1 Success Rate (AUC)
+#### 5.3.1 Success Rate (AUC)
 
 Area under the success curve:
 
@@ -515,7 +566,7 @@ S(theta) = (1/N) * sum(1[IoU_t > theta])
 AUC = integral_0^1 S(theta) d_theta
 ```
 
-#### 5.2.2 Precision
+#### 5.3.2 Precision
 
 Center location error within threshold:
 
@@ -524,7 +575,7 @@ e_t = sqrt((cx_pred - cx_gt)^2 + (cy_pred - cy_gt)^2)
 Precision@20 = (1/N) * sum(1[e_t < 20])
 ```
 
-#### 5.2.3 Average Center Error
+#### 5.3.3 Average Center Error
 
 Mean Euclidean distance between predicted and ground truth centers:
 
@@ -532,7 +583,7 @@ Mean Euclidean distance between predicted and ground truth centers:
 ACE = (1/N) * sum(e_t)
 ```
 
-### 5.3 Evaluation Commands
+### 5.4 Evaluation Commands
 
 ```bash
 # Run evaluation on validation set
@@ -625,6 +676,17 @@ All default parameters are defined in `config.py`. YAML files only override thes
 | `TEST.TEMPLATE_UPDATE.STRATEGY` | mixformer | Update strategy |
 | `TEST.TEMPLATE_UPDATE.ONLINE_SIZE` | 2 | Online template queue size |
 | `TEST.TEMPLATE_UPDATE.UPDATE_INTERVAL` | 200 | Frames between updates |
+| `TEST.TEMPLATE_UPDATE.HIGH_CONFIDENCE_THRESHOLD` | 0.7 | Min score for template update |
+| **Target Loss Detection** | | |
+| `TEST.TARGET_LOSS.ENABLED` | True | Enable target loss detection |
+| `TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` | 0.25 | Score below = target lost |
+| `TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` | 0.40 | Score below = uncertain |
+| `TEST.TARGET_LOSS.STABLE_THRESHOLD` | 0.50 | Score above = confident |
+| `TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` | 3 | Frames to confirm LOST |
+| `TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` | 5 | Frames to confirm recovery |
+| `TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` | 2 | Quick recovery from UNCERTAIN |
+| `TEST.TARGET_LOSS.SEARCH_REGION_K` | 3.0 | Search region = K * target size |
+| `TEST.TARGET_LOSS.PRIMARY_PRIORITY` | higher_score | Primary output selection |
 
 ### 7.3 Configuration Files
 
@@ -643,11 +705,13 @@ All default parameters are defined in `config.py`. YAML files only override thes
 
 ### 8.1 Available Ablation Configurations
 
-| Configuration | Modification |
-|--------------|--------------|
-| `ablation_rgb_only.yaml` | Disable sonar branch, RGB-only tracking |
-| `ablation_sonar_only.yaml` | Disable RGB branch, Sonar-only tracking |
-| `ablation_no_fusion.yaml` | Replace DCMA with identity (no fusion) |
+| Configuration | Modification | TARGET_LOSS Behavior |
+|--------------|--------------|---------------------|
+| `ablation_rgb_only.yaml` | Sonar 100% dropout | Detects Sonar as LOST, uses RGB exclusively |
+| `ablation_sonar_only.yaml` | RGB 100% dropout | Detects RGB as LOST, uses Sonar exclusively |
+| `ablation_no_fusion.yaml` | Identity fusion | Both modalities track independently |
+
+All ablation configs have `TEST.TARGET_LOSS.ENABLED = True` to automatically detect dropped modalities and route output to the available modality.
 
 ### 8.2 Running Ablations
 
@@ -767,9 +831,16 @@ python tracking/train.py --script aquasot --config ablation_no_fusion
 |--------|------|-------|-------------|
 | Tracker | `lib/test/tracker/aquasot_tracker.py` | 18-543 | AquaSOTTracker class |
 | Template Update | `lib/test/tracker/aquasot_tracker.py` | 296-370 | Three-tier update strategy |
+| Target Loss Handler | `lib/test/tracker/target_loss_handler.py` | 1-385 | Dual-modal state machine |
 | Preprocessing | `lib/test/tracker/aquasot_tracker.py` | 459-500 | RGB/Sonar preprocessing |
 
-### 10.5 Configuration
+### 10.5 Training Utilities
+
+| Module | File | Lines | Description |
+|--------|------|-------|-------------|
+| Checkpoint Migration | `lib/train/trainers/base_trainer.py` | 125-148 | box_head to separate heads |
+
+### 10.6 Configuration
 
 | Module | File | Lines | Description |
 |--------|------|-------|-------------|

@@ -10,6 +10,10 @@ MODEL:
 TRAIN:
   EPOCH: 100
 
+TEST:
+  TARGET_LOSS:
+    ENABLED: true  # Both modalities active, handler operates normally
+
 EXPERIMENT:
   NAME: ablation_no_fusion
   GROUP: ablation

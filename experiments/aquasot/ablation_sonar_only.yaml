@@ -2,6 +2,9 @@
 #
 # Uses modality dropout to zero out RGB modality
 # This simulates single-modal operation while preserving dual architecture
+#
+# Target loss handler will detect RGB as perpetually LOST (score=0),
+# causing primary output to use Sonar predictions exclusively.
 
 MODEL:
   FUSION:
@@ -16,6 +19,10 @@ DATA:
     P_DROP_RGB: 1.0
     P_DROP_SONAR: 0.0
     P_DROP_BOTH: 0.0
+
+TEST:
+  TARGET_LOSS:
+    ENABLED: true  # Detects dropped RGB as LOST, uses Sonar exclusively
 
 EXPERIMENT:
   NAME: ablation_sonar_only

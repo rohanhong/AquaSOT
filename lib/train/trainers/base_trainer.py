@@ -125,6 +125,28 @@ class BaseTrainer:
 
         state = torch.load(checkpoint, map_location='cpu')
 
+        # Backward compatibility: migrate shared box_head to separate heads
+        # Old checkpoints have 'box_head.*', new model expects 'rgb_box_head.*' and 'sonar_box_head.*'
+        state_dict = state['net']
+        has_old_box_head = any(k.startswith('box_head.') or k.startswith('module.box_head.')
+                               for k in state_dict.keys())
+        has_new_box_heads = any(k.startswith('rgb_box_head.') or k.startswith('module.rgb_box_head.')
+                                for k in state_dict.keys())
+
+        if has_old_box_head and not has_new_box_heads:
+            print('[Trainer] Migrating old checkpoint: box_head -> rgb_box_head, sonar_box_head')
+            migrated_state_dict = {}
+            for key, value in state_dict.items():
+                # Handle both DDP and non-DDP prefixes
+                if 'box_head.' in key:
+                    rgb_key = key.replace('box_head.', 'rgb_box_head.')
+                    sonar_key = key.replace('box_head.', 'sonar_box_head.')
+                    migrated_state_dict[rgb_key] = value.clone()
+                    migrated_state_dict[sonar_key] = value.clone()
+                else:
+                    migrated_state_dict[key] = value
+            state['net'] = migrated_state_dict
+
         self.actor.net.load_state_dict(state['net'])
         self.optimizer.load_state_dict(state['optimizer'])
         self.epoch = state['epoch']

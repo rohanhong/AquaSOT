@@ -112,13 +112,17 @@ Sonar Template [B, 1, 128, 128] ---+                              v
                                    +--> ViT Sonar Backbone --> Sonar Features [B, L, 768]
 Sonar Search [B, 1, 256, 256]   ---+                              |
                                                                   v
-                                                        CenterPredictor Head
-                                                                  |
                                            +----------------------+----------------------+
+                                           |                                             |
+                                           v                                             v
+                                     rgb_box_head                                 sonar_box_head
+                                           |                                             |
                                            v                                             v
                                    RGB Bbox [B, 4]                               Sonar Bbox [B, 4]
                                    RGB Score Map [B, 1, 16, 16]                  Sonar Score Map [B, 1, 16, 16]
 ```
+
+**Note**: AquaSOT uses **separate prediction heads** (`rgb_box_head`, `sonar_box_head`) to prevent prediction drift caused by modality FOV asymmetry (RGB FOV ~60-70 deg, Sonar FOV ~120-160 deg).
 
 **Source**: `lib/models/aquasot/aquasot.py:16-177`
 
@@ -261,7 +265,11 @@ where $\text{Linear}_1: D \rightarrow 4D$ and $\text{Linear}_2: 4D \rightarrow D
 
 **Source**: `lib/models/layers/head.py:31-165`
 
-The prediction head uses three parallel convolutional branches.
+The prediction head uses three parallel convolutional branches. AquaSOT uses **separate prediction heads** for each modality:
+- `rgb_box_head`: Learns RGB-specific prediction patterns (faster motion, larger variance)
+- `sonar_box_head`: Learns Sonar-specific prediction patterns (slower motion, stable variance)
+
+This separation is critical because shared heads cause Sonar predictions to drift toward RGB motion patterns due to gradient averaging during training.
 
 #### 2.4.1 Branch Architecture
 
@@ -567,6 +575,112 @@ At each frame $t$:
 | $|Q_{online}|$ | 2 | `cfg.TEST.TEMPLATE_UPDATE.ONLINE_SIZE` |
 | $\gamma_{decay}$ | 1.0 | `cfg.TEST.TEMPLATE_UPDATE.MAX_SCORE_DECAY` |
 
+### 5.2 Target Loss Detection and Recovery
+
+**Source**: `lib/test/tracker/target_loss_handler.py`
+
+AquaSOT implements dual-modal independent state machines for robust target tracking. Each modality (RGB and Sonar) maintains its own tracking state, enabling Sonar to continue tracking when the target leaves the RGB field of view.
+
+#### 5.2.1 Tracking States
+
+| State | Description | Output Behavior |
+|-------|-------------|-----------------|
+| STABLE | Target confidently tracked | Use prediction, allow template update |
+| UNCERTAIN | Low confidence | Use prediction cautiously, no template update |
+| LOST | Target lost | Hold last stable position, no template update |
+
+#### 5.2.2 Score Classification
+
+The confidence score $s$ is classified into tracking flags:
+
+$$
+f(s) = \begin{cases}
+\texttt{NOT FOUND} & \text{if } s < \tau_{nf} \\
+\texttt{UNCERTAIN} & \text{if } \tau_{nf} \leq s < \tau_{s} \\
+\texttt{STABLE} & \text{if } s \geq \tau_{s}
+\end{cases}
+$$
+
+where:
+- $\tau_{nf} = 0.25$: Not-found threshold (`NOT_FOUND_THRESHOLD`)
+- $\tau_{s} = 0.50$: Stable threshold (`STABLE_THRESHOLD`)
+
+#### 5.2.3 State Machine Transitions
+
+**Lost Detection** (with hysteresis to prevent oscillation):
+
+$$
+\text{state} = \begin{cases}
+\text{UNCERTAIN} & \text{if } c_{lost} \geq 1 \text{ (from STABLE)} \\
+\text{LOST} & \text{if } c_{lost} \geq N_{lost}
+\end{cases}
+$$
+
+**Recovery Detection**:
+
+$$
+\text{state} = \begin{cases}
+\text{STABLE} & \text{if } c_{found} \geq N_{quick} \text{ (from UNCERTAIN)} \\
+\text{STABLE} & \text{if } c_{found} \geq N_{found} \text{ (from LOST)}
+\end{cases}
+$$
+
+where:
+- $c_{lost}$: Consecutive frames with `target_lost = True`
+- $c_{found}$: Consecutive frames with `target_lost = False`
+- $N_{lost} = 3$: Frames to confirm LOST (`LOST_CONFIRM_FRAMES`)
+- $N_{found} = 5$: Frames to confirm recovery from LOST (`FOUND_CONFIRM_FRAMES`)
+- $N_{quick} = 2$: Frames for quick recovery from UNCERTAIN (`QUICK_RECOVERY_FRAMES`)
+
+#### 5.2.4 Search Region Validation
+
+Predictions are validated against a search region centered on the previous position:
+
+$$
+\mathit{valid} = \begin{cases}
+\texttt{True} & \text{if } |c_x^{pred} - c_x^{prev}| \leq \frac{w \cdot K}{2} \land |c_y^{pred} - c_y^{prev}| \leq \frac{h \cdot K}{2} \\
+\texttt{False} & \text{otherwise}
+\end{cases}
+$$
+
+where $K = 3.0$ is the search region multiplier (`SEARCH_REGION_K`).
+
+#### 5.2.5 Primary Output Selection
+
+When both modalities are STABLE:
+
+$$
+B_{primary} = \begin{cases}
+B_{rgb} & \text{if } \mathit{priority} = \texttt{rgb-first} \\
+B_{sonar} & \text{if } \mathit{priority} = \texttt{sonar-first} \\
+\arg\max_{m \in \{rgb, sonar\}}(s_m) & \text{if } \mathit{priority} = \texttt{higher-score}
+\end{cases}
+$$
+
+When one modality is LOST, the STABLE modality is used exclusively. When both are LOST, the last stable RGB position is used as fallback.
+
+#### 5.2.6 Selective Template Update
+
+Templates are only updated when:
+1. Modality state is STABLE
+2. Confidence score exceeds `HIGH_CONFIDENCE_THRESHOLD` (0.7)
+
+This prevents template pollution from unreliable predictions during occlusion or target loss.
+
+#### 5.2.7 Configuration
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| `ENABLED` | True | `cfg.TEST.TARGET_LOSS.ENABLED` |
+| $\tau_{nf}$ | 0.25 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
+| $\tau_{unc}$ | 0.40 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
+| $\tau_{s}$ | 0.50 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
+| $N_{lost}$ | 3 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
+| $N_{found}$ | 5 | `cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` |
+| $N_{quick}$ | 2 | `cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` |
+| $K$ | 3.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
+| priority | higher_score | `cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY` |
+
 ---
 
 ## 6. Training Configuration
@@ -731,5 +845,7 @@ $$
 | Heatmap Generation | `lib/utils/heatmap_utils.py` | 30-76 |
 | Loss Computation | `lib/train/actors/aquasot.py` | 116-227 |
 | Template Update | `lib/test/tracker/aquasot_tracker.py` | 296-370 |
+| Target Loss Handler | `lib/test/tracker/target_loss_handler.py` | 1-385 |
+| Checkpoint Migration | `lib/train/trainers/base_trainer.py` | 125-148 |
 | Data Processing | `lib/train/data/processing.py` | 38-378 |
 | Configuration | `lib/config/aquasot/config.py` | 1-386 |

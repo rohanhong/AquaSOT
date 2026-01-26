@@ -89,7 +89,16 @@ class AquaSOTTracker(Tracker):
         self.online_size = cfg.TEST.TEMPLATE_UPDATE.ONLINE_SIZE
         self.update_interval = cfg.TEST.TEMPLATE_UPDATE.UPDATE_INTERVAL
         self.score_threshold = cfg.TEST.TEMPLATE_UPDATE.SCORE_THRESHOLD
+        self.high_confidence_threshold = cfg.TEST.TEMPLATE_UPDATE.HIGH_CONFIDENCE_THRESHOLD
         self.max_score_decay = cfg.TEST.TEMPLATE_UPDATE.MAX_SCORE_DECAY
+
+        # Target loss detection and recovery (dual-modal independent state machine)
+        self.target_loss_enabled = cfg.TEST.TARGET_LOSS.ENABLED
+        if self.target_loss_enabled:
+            from .target_loss_handler import DualModalTargetLossHandler
+            self.loss_handler = DualModalTargetLossHandler(cfg)
+        else:
+            self.loss_handler = None
 
     def _load_checkpoint(self, checkpoint_path):
         """Load model checkpoint.
@@ -107,6 +116,25 @@ class AquaSOTTracker(Tracker):
 
         # Remove 'module.' prefix if present (from DDP training)
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+        # Backward compatibility: migrate shared box_head to separate heads
+        # Old checkpoints have 'box_head.*', new model expects 'rgb_box_head.*' and 'sonar_box_head.*'
+        migrated_state_dict = {}
+        has_old_box_head = any(k.startswith('box_head.') for k in state_dict.keys())
+        has_new_box_heads = any(k.startswith('rgb_box_head.') for k in state_dict.keys())
+
+        if has_old_box_head and not has_new_box_heads:
+            print('[AquaSOTTracker] Migrating old checkpoint: box_head -> rgb_box_head, sonar_box_head')
+            for key, value in state_dict.items():
+                if key.startswith('box_head.'):
+                    # Copy to both RGB and Sonar heads
+                    rgb_key = key.replace('box_head.', 'rgb_box_head.')
+                    sonar_key = key.replace('box_head.', 'sonar_box_head.')
+                    migrated_state_dict[rgb_key] = value.clone()
+                    migrated_state_dict[sonar_key] = value.clone()
+                else:
+                    migrated_state_dict[key] = value
+            state_dict = migrated_state_dict
 
         missing, unexpected = self.network.load_state_dict(state_dict, strict=False)
         if missing:
@@ -129,10 +157,19 @@ class AquaSOTTracker(Tracker):
             rgb_image = image
             sonar_image = None
 
-        # Handle box format
+        # Handle box format (dict for dual-modal, array for single-modal)
         if isinstance(box, dict):
-            rgb_box = np.array(box.get('rgb', box.get('bbox', [0, 0, 1, 1])))
-            sonar_box = np.array(box.get('sonar', rgb_box))
+            rgb_box = box.get('rgb') if 'rgb' in box else box.get('bbox')
+            sonar_box = box.get('sonar') if 'sonar' in box else rgb_box
+            if rgb_box is None and sonar_box is None:
+                raise ValueError("init_box dict must contain 'rgb', 'sonar', or 'bbox' key")
+            # Use available box as fallback for the other modality
+            if rgb_box is None:
+                rgb_box = sonar_box
+            elif sonar_box is None:
+                sonar_box = rgb_box
+            rgb_box = np.array(rgb_box)
+            sonar_box = np.array(sonar_box)
         else:
             rgb_box = np.array(box)
             sonar_box = rgb_box.copy()
@@ -197,6 +234,19 @@ class AquaSOTTracker(Tracker):
         }
         self.frame_id = 0
 
+        # Initialize target loss handler with first frame info
+        if self.target_loss_enabled and self.loss_handler is not None:
+            rgb_shape = rgb_image.shape[:2] if rgb_image is not None else (1080, 1920)
+            # IMPORTANT: Use Sonar-specific default resolution, not RGB
+            # Sonar has unified resolution 682x376 after preprocessing
+            sonar_shape = sonar_image.shape[:2] if sonar_image is not None else (376, 682)
+            self.loss_handler.initialize(
+                rgb_init_box=rgb_box_cxcywh,
+                sonar_init_box=sonar_box_cxcywh,
+                rgb_image_shape=rgb_shape,
+                sonar_image_shape=sonar_shape
+            )
+
     def update(self, image):
         """Track target in current frame.
 
@@ -252,7 +302,7 @@ class AquaSOTTracker(Tracker):
         rgb_response = self.output_window * out['rgb_score_map']
 
         # Recalculate RGB bbox using windowed response
-        rgb_pred_box = self.network.box_head.cal_bbox(
+        rgb_pred_box = self.network.rgb_box_head.cal_bbox(
             rgb_response, out['rgb_size_map'], out['rgb_offset_map']
         )
         rgb_pred_box = rgb_pred_box.cpu().numpy()[0]  # [cx, cy, w, h] normalized
@@ -266,7 +316,7 @@ class AquaSOTTracker(Tracker):
         if sonar_image is not None:
             # Apply Hann window to Sonar score map
             sonar_response = self.output_window * out['sonar_score_map']
-            sonar_pred_box = self.network.box_head.cal_bbox(
+            sonar_pred_box = self.network.sonar_box_head.cal_bbox(
                 sonar_response, out['sonar_size_map'], out['sonar_offset_map']
             )
             sonar_pred_box = sonar_pred_box.cpu().numpy()[0]
@@ -276,21 +326,67 @@ class AquaSOTTracker(Tracker):
         else:
             sonar_pred_box = rgb_pred_box.copy()
 
-        # Update state
-        self.state['rgb_box'] = rgb_pred_box.copy()
-        self.state['sonar_box'] = sonar_pred_box.copy()
+        # Target loss detection and recovery (dual-modal independent state machine)
+        if self.target_loss_enabled and self.loss_handler is not None:
+            from .target_loss_handler import TrackingState
+            loss_result = self.loss_handler.check(
+                rgb_pred_box=rgb_pred_box,
+                sonar_pred_box=sonar_pred_box,
+                rgb_score=rgb_score,
+                sonar_score=sonar_score,
+                rgb_prev_box=self.state['rgb_box'],
+                sonar_prev_box=self.state['sonar_box']
+            )
 
-        # Template update logic (MixFormer three-tier strategy)
-        if self.template_update_enabled:
-            self._update_template(image, rgb_pred_box, sonar_pred_box, rgb_score, sonar_score)
+            # Update RGB state only if RGB modality approves
+            if loss_result['rgb_should_update']:
+                self.state['rgb_box'] = rgb_pred_box.copy()
+            else:
+                rgb_pred_box = loss_result['rgb_box']
 
-        # Return dual-modal results
+            # Update Sonar state only if Sonar modality approves
+            if loss_result['sonar_should_update']:
+                self.state['sonar_box'] = sonar_pred_box.copy()
+            else:
+                sonar_pred_box = loss_result['sonar_box']
+
+            # Select primary output based on modality states and scores
+            primary_pred_box = loss_result['primary_box']
+
+            # Template update: only update each modality when its state is STABLE
+            if self.template_update_enabled:
+                rgb_stable = loss_result['rgb_state'] == TrackingState.STABLE
+                sonar_stable = loss_result['sonar_state'] == TrackingState.STABLE
+                self._update_template_selective(
+                    image, rgb_pred_box, sonar_pred_box,
+                    rgb_score, sonar_score,
+                    update_rgb=rgb_stable, update_sonar=sonar_stable
+                )
+
+            # Store tracking states for return
+            rgb_state_name = loss_result['rgb_state'].name
+            sonar_state_name = loss_result['sonar_state'].name
+        else:
+            # Original behavior (no target loss detection)
+            self.state['rgb_box'] = rgb_pred_box.copy()
+            self.state['sonar_box'] = sonar_pred_box.copy()
+            primary_pred_box = rgb_pred_box
+
+            if self.template_update_enabled:
+                self._update_template(image, rgb_pred_box, sonar_pred_box, rgb_score, sonar_score)
+
+            rgb_state_name = 'STABLE'
+            sonar_state_name = 'STABLE'
+
+        # Return dual-modal results with tracking states
         return {
-            'target_bbox': self._cxcywh_to_xywh(rgb_pred_box),
+            'target_bbox': self._cxcywh_to_xywh(primary_pred_box),
             'rgb_bbox': self._cxcywh_to_xywh(rgb_pred_box),
             'sonar_bbox': self._cxcywh_to_xywh(sonar_pred_box),
             'rgb_score': rgb_score,
             'sonar_score': sonar_score,
+            'rgb_state': rgb_state_name,
+            'sonar_state': sonar_state_name,
         }
 
     def _update_template(self, image, rgb_box, sonar_box, rgb_score, sonar_score):
@@ -326,6 +422,60 @@ class AquaSOTTracker(Tracker):
         # Update Sonar best-frame cache if current score is better
         if sonar_image is not None:
             if sonar_score > self.score_threshold and sonar_score > self.sonar_max_pred_score:
+                sonar_template_new, _ = self._sample_target(
+                    sonar_image, sonar_box, self.template_factor, self.template_size
+                )
+                self.sonar_online_max_template = self._preprocess_sonar(sonar_template_new).to(self.device)
+                self.sonar_max_pred_score = sonar_score
+
+        # Push best-frame to online queue at update interval
+        if self.frame_id % self.update_interval == 0 and self.frame_id > 0:
+            self._push_to_online_queue()
+
+    def _update_template_selective(self, image, rgb_box, sonar_box,
+                                    rgb_score, sonar_score,
+                                    update_rgb=True, update_sonar=True):
+        """Selectively update templates based on modality tracking states.
+
+        Only updates templates for modalities that are in STABLE state,
+        preventing template pollution when target is lost.
+
+        Args:
+            image: Current frame (dict or image)
+            rgb_box: RGB prediction [cx, cy, w, h]
+            sonar_box: Sonar prediction [cx, cy, w, h]
+            rgb_score: RGB confidence score
+            sonar_score: Sonar confidence score
+            update_rgb: Whether to update RGB template (True if RGB is STABLE)
+            update_sonar: Whether to update Sonar template (True if Sonar is STABLE)
+        """
+        # Get images
+        if isinstance(image, dict):
+            rgb_image = image.get('rgb')
+            sonar_image = image.get('sonar')
+        else:
+            rgb_image = image
+            sonar_image = None
+
+        # Decay max scores (MixFormer uses decay to gradually lower threshold)
+        self.rgb_max_pred_score *= self.max_score_decay
+        self.sonar_max_pred_score *= self.max_score_decay
+
+        # Use higher confidence threshold for selective template updates
+        # This prevents template pollution during uncertain tracking
+        update_threshold = self.high_confidence_threshold
+
+        # Update RGB best-frame cache only if RGB is STABLE and score is high
+        if update_rgb and rgb_score > update_threshold and rgb_score > self.rgb_max_pred_score:
+            rgb_template_new, _ = self._sample_target(
+                rgb_image, rgb_box, self.template_factor, self.template_size
+            )
+            self.rgb_online_max_template = self._preprocess_rgb(rgb_template_new).to(self.device)
+            self.rgb_max_pred_score = rgb_score
+
+        # Update Sonar best-frame cache only if Sonar is STABLE and score is high
+        if update_sonar and sonar_image is not None:
+            if sonar_score > update_threshold and sonar_score > self.sonar_max_pred_score:
                 sonar_template_new, _ = self._sample_target(
                     sonar_image, sonar_box, self.template_factor, self.template_size
                 )

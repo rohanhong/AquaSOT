@@ -102,14 +102,30 @@ class ExperimentAquaSOT:
                     'sonar': sonar_files[i] if i < len(sonar_files) else None,
                 })
 
-            # Initial box (use RGB ground truth if available, else sonar)
+            # Initial box (use dict format for dual-modal tracking)
+            # Each modality uses its own ground truth for initialization
             if rgb_gt is not None and len(rgb_gt) > 0:
-                init_box = rgb_gt[0]
-            elif sonar_gt is not None and len(sonar_gt) > 0:
-                init_box = sonar_gt[0]
+                rgb_init = rgb_gt[0]
             else:
+                rgb_init = None
+
+            if sonar_gt is not None and len(sonar_gt) > 0:
+                sonar_init = sonar_gt[0]
+            else:
+                sonar_init = None
+
+            if rgb_init is None and sonar_init is None:
                 print(f'    No ground truth available, skipping')
                 continue
+
+            # Pass as dict for dual-modal initialization (always dict for consistency)
+            # Tracker will use each modality's GT to initialize its template
+            if rgb_init is not None and sonar_init is not None:
+                init_box = {'rgb': rgb_init, 'sonar': sonar_init}
+            elif rgb_init is not None:
+                init_box = {'rgb': rgb_init}
+            else:
+                init_box = {'sonar': sonar_init}
 
             # Run tracker
             try:

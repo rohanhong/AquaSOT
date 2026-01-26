@@ -20,21 +20,29 @@ class AquaSOT(nn.Module):
         RGB Template + Search -> ViT RGB -> RGB Features
         Sonar Template + Search -> ViT Sonar -> Sonar Features
         RGB Features + Sonar Features -> DCMA Fusion
-        Fused RGB -> CenterHead -> RGB Bbox
-        Fused Sonar -> CenterHead -> Sonar Bbox
+        Fused RGB -> RGB CenterHead -> RGB Bbox
+        Fused Sonar -> Sonar CenterHead -> Sonar Bbox
+
+    Note:
+        RGB and Sonar use separate box heads to learn modality-specific
+        prediction patterns. This is critical because:
+        1. Sonar FOV > RGB FOV, so same target moves slower in Sonar
+        2. Shared head causes Sonar predictions to drift toward RGB patterns
     """
 
-    def __init__(self, rgb_backbone, sonar_backbone, fusion, box_head, head_type="CENTER"):
+    def __init__(self, rgb_backbone, sonar_backbone, fusion,
+                 rgb_box_head, sonar_box_head, head_type="CENTER"):
         super().__init__()
         self.rgb_backbone = rgb_backbone
         self.sonar_backbone = sonar_backbone
         self.fusion = fusion
-        self.box_head = box_head
+        self.rgb_box_head = rgb_box_head
+        self.sonar_box_head = sonar_box_head
         self.head_type = head_type
 
         # Feature dimensions
         self.embed_dim = rgb_backbone.embed_dim
-        self.feat_sz = box_head.feat_sz
+        self.feat_sz = rgb_box_head.feat_sz
         self.feat_len_s = self.feat_sz ** 2  # Search region feature length
 
     def forward(self, rgb_template, rgb_search, sonar_template, sonar_search,
@@ -66,9 +74,9 @@ class AquaSOT(nn.Module):
         # Cross-modal fusion
         fused_rgb, fused_sonar = self.fusion(rgb_feat, sonar_feat)
 
-        # Get search region features and predict boxes
-        rgb_out = self.forward_head(fused_rgb, gt_score_map_rgb)
-        sonar_out = self.forward_head(fused_sonar, gt_score_map_sonar)
+        # Get search region features and predict boxes (separate heads)
+        rgb_out = self.forward_head(fused_rgb, self.rgb_box_head, gt_score_map_rgb)
+        sonar_out = self.forward_head(fused_sonar, self.sonar_box_head, gt_score_map_sonar)
 
         return {
             'rgb_boxes': rgb_out['pred_boxes'],
@@ -81,11 +89,12 @@ class AquaSOT(nn.Module):
             'sonar_offset_map': sonar_out['offset_map'],
         }
 
-    def forward_head(self, cat_feature, gt_score_map=None):
+    def forward_head(self, cat_feature, box_head, gt_score_map=None):
         """Extract search features and run prediction head.
 
         Args:
             cat_feature: [B, L_z + L_s, C] - Combined template+search features
+            box_head: CenterPredictor head to use (rgb_box_head or sonar_box_head)
             gt_score_map: Optional GT score map
 
         Returns:
@@ -99,8 +108,8 @@ class AquaSOT(nn.Module):
             -1, self.embed_dim, self.feat_sz, self.feat_sz
         )
 
-        # Run head
-        score_map, bbox, size_map, offset_map = self.box_head(opt_feat, gt_score_map)
+        # Run modality-specific head
+        score_map, bbox, size_map, offset_map = box_head(opt_feat, gt_score_map)
 
         return {
             'pred_boxes': bbox,
@@ -161,16 +170,20 @@ def build_aquasot(cfg, training=True):
     # Build fusion
     fusion = build_fusion(cfg)
 
-    # Build head
+    # Build separate heads for RGB and Sonar
+    # This is critical because Sonar FOV > RGB FOV, causing different
+    # motion patterns. Shared head causes Sonar to drift toward RGB patterns.
     hidden_dim = cfg.MODEL.BACKBONE.RGB.EMBED_DIM
-    box_head = build_box_head(cfg, hidden_dim)
+    rgb_box_head = build_box_head(cfg, hidden_dim)
+    sonar_box_head = build_box_head(cfg, hidden_dim)
 
     # Create model
     model = AquaSOT(
         rgb_backbone=rgb_backbone,
         sonar_backbone=sonar_backbone,
         fusion=fusion,
-        box_head=box_head,
+        rgb_box_head=rgb_box_head,
+        sonar_box_head=sonar_box_head,
         head_type=cfg.MODEL.HEAD.TYPE
     )
 

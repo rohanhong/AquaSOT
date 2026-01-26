@@ -88,12 +88,15 @@ Sonar模板 [B, 1, 128, 128] + Sonar搜索 [B, 1, 256, 256]
    --> ViT Sonar骨干网络 --> Sonar特征 [B, L, 768]
                                     |
                                     v
-                          CenterPredictor头部
-                                    |
                     +---------------+---------------+
+                    v                               v
+              rgb_box_head                   sonar_box_head
+                    |                               |
                     v                               v
             RGB边界框 [B, 4]                 Sonar边界框 [B, 4]
 ```
+
+注意: AquaSOT 使用**独立预测头** (`rgb_box_head`, `sonar_box_head`) 以防止因模态视场不对称 (RGB视场~60-70度, Sonar视场~120-160度) 导致的预测漂移。
 
 **特征长度**: $L = N_z + N_s = (128/16)^2 + (256/16)^2 = 64 + 256 = 320$ patches
 
@@ -188,7 +191,11 @@ $$
 
 ### 2.4 CenterPredictor 预测头
 
-预测头遵循CenterNet设计，包含三个并行分支。
+预测头遵循CenterNet设计，包含三个并行分支。AquaSOT使用**独立预测头**:
+- `rgb_box_head`: 学习RGB特有的预测模式 (运动更快，方差更大)
+- `sonar_box_head`: 学习Sonar特有的预测模式 (运动更慢，方差更稳定)
+
+这种分离至关重要，因为共享头会导致Sonar预测向RGB运动模式漂移（训练时梯度平均效应）。
 
 **架构**:
 $$
@@ -440,6 +447,112 @@ $$
 
 **代码参考**: `lib/test/tracker/aquasot_tracker.py:296-370`
 
+### 5.3 目标丢失检测与恢复
+
+**代码参考**: `lib/test/tracker/target_loss_handler.py`
+
+AquaSOT实现双模态独立状态机以实现鲁棒的目标跟踪。每个模态（RGB和Sonar）维护独立的跟踪状态，允许Sonar在目标离开RGB视场时继续跟踪。
+
+#### 5.3.1 跟踪状态
+
+| 状态 | 描述 | 输出行为 |
+|------|------|---------|
+| STABLE | 目标被可靠跟踪 | 使用预测，允许模板更新 |
+| UNCERTAIN | 置信度较低 | 谨慎使用预测，禁止模板更新 |
+| LOST | 目标丢失 | 保持最后稳定位置，禁止模板更新 |
+
+#### 5.3.2 分数分类
+
+置信度分数 $s$ 被分类为跟踪标志:
+
+$$
+f(s) = \begin{cases}
+\texttt{NOT FOUND} & \text{if } s < \tau_{nf} \\
+\texttt{UNCERTAIN} & \text{if } \tau_{nf} \leq s < \tau_{s} \\
+\texttt{STABLE} & \text{if } s \geq \tau_{s}
+\end{cases}
+$$
+
+其中:
+- $\tau_{nf} = 0.25$: 未找到阈值 (`NOT_FOUND_THRESHOLD`)
+- $\tau_{s} = 0.50$: 稳定阈值 (`STABLE_THRESHOLD`)
+
+#### 5.3.3 状态机转换
+
+**丢失检测** (带滞后防止振荡):
+
+$$
+\text{state} = \begin{cases}
+\text{UNCERTAIN} & \text{if } c_{lost} \geq 1 \text{ (从STABLE)} \\
+\text{LOST} & \text{if } c_{lost} \geq N_{lost}
+\end{cases}
+$$
+
+**恢复检测**:
+
+$$
+\text{state} = \begin{cases}
+\text{STABLE} & \text{if } c_{found} \geq N_{quick} \text{ (从UNCERTAIN)} \\
+\text{STABLE} & \text{if } c_{found} \geq N_{found} \text{ (从LOST)}
+\end{cases}
+$$
+
+其中:
+- $c_{lost}$: 连续`target_lost = True`的帧数
+- $c_{found}$: 连续`target_lost = False`的帧数
+- $N_{lost} = 3$: 确认LOST所需帧数 (`LOST_CONFIRM_FRAMES`)
+- $N_{found} = 5$: 从LOST恢复所需帧数 (`FOUND_CONFIRM_FRAMES`)
+- $N_{quick} = 2$: 从UNCERTAIN快速恢复所需帧数 (`QUICK_RECOVERY_FRAMES`)
+
+#### 5.3.4 搜索区域验证
+
+预测结果需在以前一位置为中心的搜索区域内验证:
+
+$$
+\mathit{valid} = \begin{cases}
+\texttt{True} & \text{if } |c_x^{pred} - c_x^{prev}| \leq \frac{w \cdot K}{2} \land |c_y^{pred} - c_y^{prev}| \leq \frac{h \cdot K}{2} \\
+\texttt{False} & \text{otherwise}
+\end{cases}
+$$
+
+其中 $K = 3.0$ 为搜索区域倍率 (`SEARCH_REGION_K`)。
+
+#### 5.3.5 主输出选择
+
+当两个模态都处于STABLE状态时:
+
+$$
+B_{primary} = \begin{cases}
+B_{rgb} & \text{if } \mathit{priority} = \texttt{rgb-first} \\
+B_{sonar} & \text{if } \mathit{priority} = \texttt{sonar-first} \\
+\arg\max_{m \in \{rgb, sonar\}}(s_m) & \text{if } \mathit{priority} = \texttt{higher-score}
+\end{cases}
+$$
+
+当一个模态为LOST时，使用STABLE模态的输出。当两个模态都为LOST时，使用RGB最后稳定位置作为回退。
+
+#### 5.3.6 选择性模板更新
+
+模板仅在以下条件满足时更新:
+1. 模态状态为STABLE
+2. 置信度分数超过 `HIGH_CONFIDENCE_THRESHOLD` (0.7)
+
+这可防止遮挡或目标丢失期间不可靠预测污染模板。
+
+#### 5.3.7 配置参数
+
+| 参数 | 值 | 代码来源 |
+|------|-----|---------|
+| `ENABLED` | True | `cfg.TEST.TARGET_LOSS.ENABLED` |
+| $\tau_{nf}$ | 0.25 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
+| $\tau_{unc}$ | 0.40 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
+| $\tau_{s}$ | 0.50 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
+| $N_{lost}$ | 3 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
+| $N_{found}$ | 5 | `cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` |
+| $N_{quick}$ | 2 | `cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` |
+| $K$ | 3.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
+| priority | higher_score | `cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY` |
+
 ---
 
 ## 6. 训练配置
@@ -592,5 +705,7 @@ $$
 | 热力图生成 | `lib/utils/heatmap_utils.py` | 30-76 |
 | 损失计算 | `lib/train/actors/aquasot.py` | 116-227 |
 | 模板更新 | `lib/test/tracker/aquasot_tracker.py` | 296-370 |
+| 目标丢失处理器 | `lib/test/tracker/target_loss_handler.py` | 1-385 |
+| 检查点迁移 | `lib/train/trainers/base_trainer.py` | 125-148 |
 | 数据处理 | `lib/train/data/processing.py` | 38-378 |
 | 配置 | `lib/config/aquasot/config.py` | 1-386 |
