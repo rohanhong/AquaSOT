@@ -1,8 +1,8 @@
-# AquaSOT-3D Dataset Specification
+# AquaSOT Dataset Specification
 
 ## Overview
 
-The AquaSOT-3D dataset is a multi-modal underwater object tracking benchmark featuring synchronized RGB camera and forward-looking sonar (FLS) imagery. The dataset captures underwater unmanned vehicles (UUVs) in challenging aquatic environments for multi-object tracking research.
+The AquaSOT dataset is a multi-modal underwater object tracking benchmark featuring synchronized RGB camera and forward-looking sonar (FLS) imagery. The dataset captures underwater unmanned vehicles (UUVs) in challenging aquatic environments for single object tracking research.
 
 **Dataset Split:**
 - **Training set**: `uuv1`, `uuv2`, `uuv4`, `uuv5`, `uuv7`, `uuv8`, `uuv9`, `uuv11`, `uuv12` (9 sequences, 9,588 frames)
@@ -149,7 +149,7 @@ x,y,w,h
 
 ### Representative Bounding Box Statistics
 
-The following statistics are from `uuv2` (largest training set) and `uuv3` (representative validation set). Bounding box statistics for other sequences can be generated using the `tests/test_dataset_statistics.py` script.
+The following statistics are from `uuv2` (largest training set) and `uuv3` (representative validation set).
 
 #### UUV2 (Training Set - 2,740 frames)
 
@@ -250,18 +250,18 @@ All sequences have been validated for:
 - ✓ Bounding box coordinates within image boundaries (excluding occlusion cases)
 - ✓ No trailing frame discrepancies between modalities
 
-### Statistics Generation
+### Statistics Verification
 
-To regenerate dataset statistics:
+To verify dataset integrity, run the integration tests:
 
 ```bash
-python3 tests/test_dataset_statistics.py
+pytest tests/test_dataloader_ostrack_style.py -v
 ```
 
-This script generates:
-- Console report with per-sequence frame counts and resolutions
-- Detection of frame count mismatches or inconsistencies
-- JSON output file: `dataset_statistics.json`
+This validates:
+- Frame loading and synchronization between RGB and Sonar modalities
+- Groundtruth annotation format and alignment
+- Data processing pipeline functionality
 
 ## Update History
 
