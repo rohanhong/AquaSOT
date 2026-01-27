@@ -145,13 +145,13 @@ cfg.DATA.SONAR_STD = [0.5]
 
 # DATA.TRAIN
 cfg.DATA.TRAIN = edict()
-cfg.DATA.TRAIN.SEQUENCES = ["uuv1", "uuv2", "uuv4", "uuv5", "uuv7", "uuv8", "uuv9", "uuv11", "uuv12"]
+cfg.DATA.TRAIN.SEQUENCES = ["uuv1", "uuv2", "uuv6", "uuv7", "uuv8", "uuv9", "uuv10", "uuv11", "uuv12"]
 cfg.DATA.TRAIN.SAMPLE_PER_EPOCH = 8000  # ~1x training frames to avoid over-sampling
 cfg.DATA.TRAIN.VISIBILITY_POLICY = "all"  # all/any/both
 
 # DATA.VAL
 cfg.DATA.VAL = edict()
-cfg.DATA.VAL.SEQUENCES = ["uuv3", "uuv6", "uuv10"]
+cfg.DATA.VAL.SEQUENCES = ["uuv3", "uuv4", "uuv5"]
 cfg.DATA.VAL.SAMPLE_PER_EPOCH = 2000  # ~1x validation frames
 
 # DATA.SEARCH (shared defaults)
@@ -265,18 +265,19 @@ cfg.TEST.VALIDITY_GATING.SONAR_THRESHOLD = 0.40
 cfg.TEST.TARGET_LOSS = edict()
 cfg.TEST.TARGET_LOSS.ENABLED = True
 
-# Score-based detection thresholds (from NA-OSTrack)
-cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD = 0.25    # Below = target lost
-cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD = 0.40    # Below = uncertain
-cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD = 0.50       # Above = confident tracking
+# Score-based detection thresholds
+# Strategy: higher thresholds to detect RGB target leaving FASTER (before box shrinks)
+cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD = 0.30    # Below = definitely lost
+cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD = 0.50    # Below = uncertain
+cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD = 0.70       # Higher: detect issues earlier
 
 # State transition hysteresis (avoid jitter between states)
-cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES = 3       # Consecutive frames to confirm lost
-cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES = 5      # Consecutive frames to confirm found
-cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES = 2     # Frames to recover from UNCERTAIN to STABLE
+cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES = 2       # Very quick to enter LOST (before box shrinks)
+cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES = 5      # Moderate recovery requirement
+cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES = 2     # Quick recovery from UNCERTAIN
 
 # Search region validation
-cfg.TEST.TARGET_LOSS.SEARCH_REGION_K = 3.0         # Search region = K * target size
+cfg.TEST.TARGET_LOSS.SEARCH_REGION_K = 5.0         # Larger search region for recovery
 cfg.TEST.TARGET_LOSS.USE_SEARCH_REGION = True
 
 # Primary output selection when both modalities are STABLE

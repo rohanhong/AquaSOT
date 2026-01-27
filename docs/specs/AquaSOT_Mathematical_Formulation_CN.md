@@ -474,8 +474,8 @@ f(s) = \begin{cases}
 $$
 
 其中:
-- $\tau_{nf} = 0.25$: 未找到阈值 (`NOT_FOUND_THRESHOLD`)
-- $\tau_{s} = 0.50$: 稳定阈值 (`STABLE_THRESHOLD`)
+- $\tau_{nf} = 0.30$: 未找到阈值 (`NOT_FOUND_THRESHOLD`)
+- $\tau_{s} = 0.70$: 稳定阈值 (`STABLE_THRESHOLD`)
 
 #### 5.3.3 状态机转换
 
@@ -500,7 +500,7 @@ $$
 其中:
 - $c_{lost}$: 连续`target_lost = True`的帧数
 - $c_{found}$: 连续`target_lost = False`的帧数
-- $N_{lost} = 3$: 确认LOST所需帧数 (`LOST_CONFIRM_FRAMES`)
+- $N_{lost} = 2$: 确认LOST所需帧数 (`LOST_CONFIRM_FRAMES`)
 - $N_{found} = 5$: 从LOST恢复所需帧数 (`FOUND_CONFIRM_FRAMES`)
 - $N_{quick} = 2$: 从UNCERTAIN快速恢复所需帧数 (`QUICK_RECOVERY_FRAMES`)
 
@@ -515,7 +515,7 @@ $$
 \end{cases}
 $$
 
-其中 $K = 3.0$ 为搜索区域倍率 (`SEARCH_REGION_K`)。
+其中 $K = 5.0$ 为搜索区域倍率 (`SEARCH_REGION_K`)。
 
 #### 5.3.5 主输出选择
 
@@ -544,13 +544,13 @@ $$
 | 参数 | 值 | 代码来源 |
 |------|-----|---------|
 | `ENABLED` | True | `cfg.TEST.TARGET_LOSS.ENABLED` |
-| $\tau_{nf}$ | 0.25 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
-| $\tau_{unc}$ | 0.40 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
-| $\tau_{s}$ | 0.50 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
-| $N_{lost}$ | 3 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
+| $\tau_{nf}$ | 0.30 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
+| $\tau_{unc}$ | 0.50 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
+| $\tau_{s}$ | 0.70 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
+| $N_{lost}$ | 2 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
 | $N_{found}$ | 5 | `cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` |
 | $N_{quick}$ | 2 | `cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` |
-| $K$ | 3.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
+| $K$ | 5.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
 | priority | higher_score | `cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY` |
 
 ---

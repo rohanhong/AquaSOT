@@ -241,12 +241,12 @@ class TestConfigIntegrity:
 
     def test_all_train_sequences_defined(self):
         """All training sequences should be defined."""
-        expected_train = ["uuv1", "uuv2", "uuv4", "uuv5", "uuv7", "uuv8", "uuv9", "uuv11", "uuv12"]
+        expected_train = ["uuv1", "uuv2", "uuv6", "uuv7", "uuv8", "uuv9", "uuv10", "uuv11", "uuv12"]
         assert set(cfg.DATA.TRAIN.SEQUENCES) == set(expected_train)
 
     def test_all_val_sequences_defined(self):
         """All validation sequences should be defined."""
-        expected_val = ["uuv3", "uuv6", "uuv10"]
+        expected_val = ["uuv3", "uuv4", "uuv5"]
         assert set(cfg.DATA.VAL.SEQUENCES) == set(expected_val)
 
     def test_no_sequence_overlap(self):

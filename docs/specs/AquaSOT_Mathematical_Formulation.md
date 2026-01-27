@@ -602,8 +602,8 @@ f(s) = \begin{cases}
 $$
 
 where:
-- $\tau_{nf} = 0.25$: Not-found threshold (`NOT_FOUND_THRESHOLD`)
-- $\tau_{s} = 0.50$: Stable threshold (`STABLE_THRESHOLD`)
+- $\tau_{nf} = 0.30$: Not-found threshold (`NOT_FOUND_THRESHOLD`)
+- $\tau_{s} = 0.70$: Stable threshold (`STABLE_THRESHOLD`)
 
 #### 5.2.3 State Machine Transitions
 
@@ -628,7 +628,7 @@ $$
 where:
 - $c_{lost}$: Consecutive frames with `target_lost = True`
 - $c_{found}$: Consecutive frames with `target_lost = False`
-- $N_{lost} = 3$: Frames to confirm LOST (`LOST_CONFIRM_FRAMES`)
+- $N_{lost} = 2$: Frames to confirm LOST (`LOST_CONFIRM_FRAMES`)
 - $N_{found} = 5$: Frames to confirm recovery from LOST (`FOUND_CONFIRM_FRAMES`)
 - $N_{quick} = 2$: Frames for quick recovery from UNCERTAIN (`QUICK_RECOVERY_FRAMES`)
 
@@ -643,7 +643,7 @@ $$
 \end{cases}
 $$
 
-where $K = 3.0$ is the search region multiplier (`SEARCH_REGION_K`).
+where $K = 5.0$ is the search region multiplier (`SEARCH_REGION_K`).
 
 #### 5.2.5 Primary Output Selection
 
@@ -672,13 +672,13 @@ This prevents template pollution from unreliable predictions during occlusion or
 | Parameter | Value | Source |
 |-----------|-------|--------|
 | `ENABLED` | True | `cfg.TEST.TARGET_LOSS.ENABLED` |
-| $\tau_{nf}$ | 0.25 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
-| $\tau_{unc}$ | 0.40 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
-| $\tau_{s}$ | 0.50 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
-| $N_{lost}$ | 3 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
+| $\tau_{nf}$ | 0.30 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
+| $\tau_{unc}$ | 0.50 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
+| $\tau_{s}$ | 0.70 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
+| $N_{lost}$ | 2 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
 | $N_{found}$ | 5 | `cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` |
 | $N_{quick}$ | 2 | `cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` |
-| $K$ | 3.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
+| $K$ | 5.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
 | priority | higher_score | `cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY` |
 
 ---

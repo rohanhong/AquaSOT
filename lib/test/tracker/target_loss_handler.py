@@ -248,10 +248,10 @@ class DualModalTargetLossHandler:
         """Classify score into flag string.
 
         Score classification with three-tier thresholds:
-        - not_found: score < not_found_threshold (0.25)
-        - uncertain: not_found_threshold <= score < uncertain_threshold (0.40)
-        - marginal: uncertain_threshold <= score < stable_threshold (0.50)
-        - stable: score >= stable_threshold (0.50)
+        - not_found: score < 0.30
+        - uncertain: 0.30 <= score < 0.60
+        - marginal:  0.60 <= score < 0.85
+        - stable:    score >= 0.85
 
         Note: Both 'uncertain' and 'marginal' are treated as uncertain states
         in the state machine, but marginal scores are closer to stable.

@@ -37,7 +37,7 @@ python tracking/test.py --tracker aquasot \
 ```bash
 python tracking/test.py --tracker aquasot \
     --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
-    --sequences uuv3 uuv6 uuv10
+    --sequences uuv3 uuv4 uuv5
 ```
 
 ## Output Structure
@@ -95,7 +95,7 @@ python scripts/visualize_results.py \
     --result_dir outputs/test/results/AquaSOT \
     --data_root data \
     --format images \
-    --sequences uuv3 uuv6
+    --sequences uuv3 uuv4
 ```
 
 | Option | Description | Default |

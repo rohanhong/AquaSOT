@@ -16,7 +16,7 @@ Usage:
         --data_root data \
         --output_dir outputs/visualization \
         --format images \
-        --sequences uuv3 uuv6
+        --sequences uuv3 uuv4
 """
 
 import argparse

@@ -184,9 +184,9 @@ TRAIN:
 DATA:
   ROOT: data              # Dataset root
   TRAIN:
-    SEQUENCES: [uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12]
+    SEQUENCES: [uuv1, uuv2, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12]
   VAL:
-    SEQUENCES: [uuv3, uuv6, uuv10]
+    SEQUENCES: [uuv3, uuv4, uuv5]
   TEMPLATE:
     ONLINE_NUMBER: 1      # Online template sampling (MixFormer style)
 ```
@@ -208,5 +208,5 @@ DATA:
 
 ## Train/Val Split
 
-- **Training**: uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12 (9 sequences)
-- **Validation**: uuv3, uuv6, uuv10 (3 sequences)
+- **Training**: uuv1, uuv2, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12 (9 sequences)
+- **Validation**: uuv3, uuv4, uuv5 (3 sequences)

@@ -518,20 +518,20 @@ AquaSOT implements a dual-modal independent state machine for each modality, ena
 
 | State | Description | Template Update |
 |-------|-------------|-----------------|
-| STABLE | Confident tracking (score >= 0.50) | Yes (if score > 0.7) |
-| UNCERTAIN | Low confidence (0.25 <= score < 0.50) | No |
-| LOST | Target lost (score < 0.25 for 3+ frames) | No |
+| STABLE | Confident tracking (score >= 0.70) | Yes (if score > 0.7) |
+| UNCERTAIN | Low confidence (0.30 <= score < 0.70) | No |
+| LOST | Target lost (score < 0.30 for 2+ frames) | No |
 
 #### 5.2.2 State Machine Logic
 
 **Score Classification**:
-- `score < 0.25`: "not_found" -> target_lost signal
-- `0.25 <= score < 0.50`: "uncertain" -> target_lost signal
-- `score >= 0.50`: "stable" -> target_found signal
+- `score < 0.30`: "not_found" -> target_lost signal
+- `0.30 <= score < 0.70`: "uncertain" -> target_lost signal
+- `score >= 0.70`: "stable" -> target_found signal
 
 **State Transitions**:
 - STABLE -> UNCERTAIN: First lost frame
-- UNCERTAIN -> LOST: 3 consecutive lost frames (hysteresis)
+- UNCERTAIN -> LOST: 2 consecutive lost frames (hysteresis)
 - LOST -> UNCERTAIN: First found frame
 - UNCERTAIN -> STABLE: 2 consecutive found frames (quick recovery)
 
@@ -593,7 +593,7 @@ python tracking/test.py --tracker aquasot \
 # Evaluate specific sequences
 python tracking/test.py --tracker aquasot \
     --checkpoint outputs/train/checkpoints/aquasot_ep100.pth.tar \
-    --sequences uuv3 uuv6 uuv10
+    --sequences uuv3 uuv4 uuv5
 
 # With visualization
 python tracking/test.py --tracker aquasot \
@@ -611,8 +611,8 @@ See `docs/specs/Dataset_Specification.md` for detailed dataset documentation.
 
 The AquaSOT dataset contains 12 sequences of synchronized RGB-Sonar underwater imagery:
 
-- **Training**: uuv1, uuv2, uuv4, uuv5, uuv7, uuv8, uuv9, uuv11, uuv12 (9 sequences, 9,588 frames)
-- **Validation**: uuv3, uuv6, uuv10 (3 sequences, 2,103 frames)
+- **Training**: uuv1, uuv2, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12 (9 sequences, 9,368 frames)
+- **Validation**: uuv3, uuv4, uuv5 (3 sequences, 2,323 frames)
 
 ### 6.2 Directory Structure
 
@@ -679,13 +679,13 @@ All default parameters are defined in `config.py`. YAML files only override thes
 | `TEST.TEMPLATE_UPDATE.HIGH_CONFIDENCE_THRESHOLD` | 0.7 | Min score for template update |
 | **Target Loss Detection** | | |
 | `TEST.TARGET_LOSS.ENABLED` | True | Enable target loss detection |
-| `TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` | 0.25 | Score below = target lost |
-| `TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` | 0.40 | Score below = uncertain |
-| `TEST.TARGET_LOSS.STABLE_THRESHOLD` | 0.50 | Score above = confident |
-| `TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` | 3 | Frames to confirm LOST |
+| `TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` | 0.30 | Score below = target lost |
+| `TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` | 0.50 | Score below = uncertain |
+| `TEST.TARGET_LOSS.STABLE_THRESHOLD` | 0.70 | Score above = confident |
+| `TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` | 2 | Frames to confirm LOST |
 | `TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` | 5 | Frames to confirm recovery |
 | `TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` | 2 | Quick recovery from UNCERTAIN |
-| `TEST.TARGET_LOSS.SEARCH_REGION_K` | 3.0 | Search region = K * target size |
+| `TEST.TARGET_LOSS.SEARCH_REGION_K` | 5.0 | Search region = K * target size |
 | `TEST.TARGET_LOSS.PRIMARY_PRIORITY` | higher_score | Primary output selection |
 
 ### 7.3 Configuration Files
