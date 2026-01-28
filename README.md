@@ -47,7 +47,7 @@ data/
 ├── uuv2/ ... uuv12/
 ```
 
-**Split:** Training (uuv1,2,6,7,8,9,10,11,12) | Validation (uuv3,4,5)
+**Split:** Training (uuv1,2,4,5,6,7,8,9,10,11,12) | Validation (uuv3)
 
 **Preprocessing:** Convert sonar from polar to Cartesian coordinates:
 ```bash

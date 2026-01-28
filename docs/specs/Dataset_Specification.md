@@ -5,8 +5,8 @@
 The AquaSOT dataset is a multi-modal underwater object tracking benchmark featuring synchronized RGB camera and forward-looking sonar (FLS) imagery. The dataset captures underwater unmanned vehicles (UUVs) in challenging aquatic environments for single object tracking research.
 
 **Dataset Split:**
-- **Training set**: `uuv1`, `uuv2`, `uuv6`, `uuv7`, `uuv8`, `uuv9`, `uuv10`, `uuv11`, `uuv12` (9 sequences, 9,368 frames)
-- **Validation/Evaluation set**: `uuv3`, `uuv4`, `uuv5` (3 sequences, 2,323 frames)
+- **Training set**: `uuv1`, `uuv2`, `uuv4`, `uuv5`, `uuv6`, `uuv7`, `uuv8`, `uuv9`, `uuv10`, `uuv11`, `uuv12` (11 sequences, 10,940 frames)
+- **Validation/Evaluation set**: `uuv3` (1 sequence, 751 frames)
 - **Total**: 12 sequences, 11,691 frames
 
 ## Directory Structure
@@ -24,9 +24,9 @@ data/
 │   └── ...
 ├── uuv3/                    # Validation/Evaluation set (751 frames)
 │   └── ...
-├── uuv4/                    # Validation/Evaluation set (691 frames)
+├── uuv4/                    # Training set (691 frames)
 │   └── ...
-├── uuv5/                    # Validation/Evaluation set (881 frames)
+├── uuv5/                    # Training set (881 frames)
 │   └── ...
 ├── uuv6/                    # Training set (751 frames)
 │   └── ...
@@ -132,8 +132,8 @@ x,y,w,h
 | uuv1     | Train        | 1,757        | 1,757        | 1920×1080        | 912×503          | ✓          |
 | uuv2     | Train        | 2,740        | 2,740        | 1920×1080        | 682×376          | ✓          |
 | uuv3     | Val/Eval     | 751          | 751          | 1920×1080        | 682×376          | ✓          |
-| uuv4     | Val/Eval     | 691          | 691          | 1920×1080        | 682×376          | ✓          |
-| uuv5     | Val/Eval     | 881          | 881          | 1920×1080        | 684×377          | ✓          |
+| uuv4     | Train        | 691          | 691          | 1920×1080        | 682×376          | ✓          |
+| uuv5     | Train        | 881          | 881          | 1920×1080        | 684×377          | ✓          |
 | uuv6     | Train        | 751          | 751          | 1920×1080        | 682×376          | ✓          |
 | uuv7     | Train        | 601          | 601          | 1920×1080        | 682×376          | ✓          |
 | uuv8     | Train        | 455          | 455          | 1920×1080        | 682×376          | ✓          |
@@ -144,8 +144,8 @@ x,y,w,h
 | **Total**| **-**        | **11,691**   | **11,691**   | **-**            | **-**            | **✓**      |
 
 **Split Summary:**
-- **Training**: 9 sequences, 9,368 frames total
-- **Validation/Evaluation**: 3 sequences, 2,323 frames total
+- **Training**: 11 sequences, 10,940 frames total
+- **Validation/Evaluation**: 1 sequence, 751 frames total
 
 ### Representative Bounding Box Statistics
 
@@ -218,6 +218,8 @@ dataset:
   train_sequences:
     - "uuv1"
     - "uuv2"
+    - "uuv4"
+    - "uuv5"
     - "uuv6"
     - "uuv7"
     - "uuv8"
@@ -228,8 +230,6 @@ dataset:
 
   val_sequences:
     - "uuv3"
-    - "uuv4"
-    - "uuv5"
 ```
 
 ### General Usage Notes
@@ -265,5 +265,6 @@ This validates:
 
 ## Update History
 
+- **2026-01-28**: Modified train/val split: validation set changed from uuv3/4/5 to uuv3 only (training: 10,940 frames, validation: 751 frames)
 - **2026-01-27**: Modified train/val split: validation set changed from uuv3/6/10 to uuv3/4/5 (training: 9,368 frames, validation: 2,323 frames)
 - **2025-11-13**: Dataset expanded from 2 to 12 sequences; defined train/val/eval splits (uuv3/6/10 as validation); documented sonar resolution variations; verified complete frame synchronization across all sequences

@@ -590,10 +590,10 @@ ACE = (1/N) * sum(e_t)
 python tracking/test.py --tracker aquasot \
     --checkpoint outputs/train/checkpoints/aquasot_ep100.pth.tar
 
-# Evaluate specific sequences
+# Evaluate validation set
 python tracking/test.py --tracker aquasot \
     --checkpoint outputs/train/checkpoints/aquasot_ep100.pth.tar \
-    --sequences uuv3 uuv4 uuv5
+    --sequences uuv3
 
 # With visualization
 python tracking/test.py --tracker aquasot \
@@ -611,8 +611,8 @@ See `docs/specs/Dataset_Specification.md` for detailed dataset documentation.
 
 The AquaSOT dataset contains 12 sequences of synchronized RGB-Sonar underwater imagery:
 
-- **Training**: uuv1, uuv2, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12 (9 sequences, 9,368 frames)
-- **Validation**: uuv3, uuv4, uuv5 (3 sequences, 2,323 frames)
+- **Training**: uuv1, uuv2, uuv4, uuv5, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12 (11 sequences, 10,940 frames)
+- **Validation**: uuv3 (1 sequence, 751 frames)
 
 ### 6.2 Directory Structure
 

@@ -10,13 +10,13 @@ Usage:
         --data_root data \
         --output_dir outputs/visualization
 
-    # Generate images for specific sequences
+    # Generate images for validation sequence
     python scripts/visualize_results.py \
         --result_dir outputs/test/results/AquaSOT \
         --data_root data \
         --output_dir outputs/visualization \
         --format images \
-        --sequences uuv3 uuv4
+        --sequences uuv3
 """
 
 import argparse

@@ -65,8 +65,8 @@ class TestConfigDefaults:
     def test_data_defaults(self):
         """Test data default configuration."""
         assert cfg.DATA.ROOT == "data"
-        assert len(cfg.DATA.TRAIN.SEQUENCES) == 9
-        assert len(cfg.DATA.VAL.SEQUENCES) == 3
+        assert len(cfg.DATA.TRAIN.SEQUENCES) == 11
+        assert len(cfg.DATA.VAL.SEQUENCES) == 1
         assert cfg.DATA.SEARCH.SIZE == 256
         assert cfg.DATA.TEMPLATE.SIZE == 128
 
@@ -241,12 +241,12 @@ class TestConfigIntegrity:
 
     def test_all_train_sequences_defined(self):
         """All training sequences should be defined."""
-        expected_train = ["uuv1", "uuv2", "uuv6", "uuv7", "uuv8", "uuv9", "uuv10", "uuv11", "uuv12"]
+        expected_train = ["uuv1", "uuv2", "uuv4", "uuv5", "uuv6", "uuv7", "uuv8", "uuv9", "uuv10", "uuv11", "uuv12"]
         assert set(cfg.DATA.TRAIN.SEQUENCES) == set(expected_train)
 
     def test_all_val_sequences_defined(self):
         """All validation sequences should be defined."""
-        expected_val = ["uuv3", "uuv4", "uuv5"]
+        expected_val = ["uuv3"]
         assert set(cfg.DATA.VAL.SEQUENCES) == set(expected_val)
 
     def test_no_sequence_overlap(self):

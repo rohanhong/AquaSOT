@@ -55,11 +55,11 @@ DATA:
   ROOT: data
 
   TRAIN:
-    SEQUENCES: [uuv1, uuv2, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12]
+    SEQUENCES: [uuv1, uuv2, uuv4, uuv5, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12]
     VISIBILITY_POLICY: all
 
   VAL:
-    SEQUENCES: [uuv3, uuv4, uuv5]
+    SEQUENCES: [uuv3]
 
   SEARCH:
     SIZE: 256

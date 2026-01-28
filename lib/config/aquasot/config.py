@@ -145,14 +145,14 @@ cfg.DATA.SONAR_STD = [0.5]
 
 # DATA.TRAIN
 cfg.DATA.TRAIN = edict()
-cfg.DATA.TRAIN.SEQUENCES = ["uuv1", "uuv2", "uuv6", "uuv7", "uuv8", "uuv9", "uuv10", "uuv11", "uuv12"]
-cfg.DATA.TRAIN.SAMPLE_PER_EPOCH = 8000  # ~1x training frames to avoid over-sampling
+cfg.DATA.TRAIN.SEQUENCES = ["uuv1", "uuv2", "uuv4", "uuv5", "uuv6", "uuv7", "uuv8", "uuv9", "uuv10", "uuv11", "uuv12"]
+cfg.DATA.TRAIN.SAMPLE_PER_EPOCH = 10000  # ~1x training frames (10940 total)
 cfg.DATA.TRAIN.VISIBILITY_POLICY = "all"  # all/any/both
 
 # DATA.VAL
 cfg.DATA.VAL = edict()
-cfg.DATA.VAL.SEQUENCES = ["uuv3", "uuv4", "uuv5"]
-cfg.DATA.VAL.SAMPLE_PER_EPOCH = 2000  # ~1x validation frames
+cfg.DATA.VAL.SEQUENCES = ["uuv3"]
+cfg.DATA.VAL.SAMPLE_PER_EPOCH = 750  # ~1x validation frames (751 total)
 
 # DATA.SEARCH (shared defaults)
 cfg.DATA.SEARCH = edict()

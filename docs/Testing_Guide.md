@@ -33,11 +33,11 @@ python tracking/test.py --tracker aquasot \
     --visualize --plot_curves
 ```
 
-**Evaluate specific sequences only:**
+**Evaluate validation set (uuv3):**
 ```bash
 python tracking/test.py --tracker aquasot \
     --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
-    --sequences uuv3 uuv4 uuv5
+    --sequences uuv3
 ```
 
 ## Output Structure
@@ -90,12 +90,12 @@ python scripts/visualize_results.py \
     --data_root data \
     --output_dir outputs/visualization
 
-# Generate images for specific sequences
+# Generate images for validation sequence
 python scripts/visualize_results.py \
     --result_dir outputs/test/results/AquaSOT \
     --data_root data \
     --format images \
-    --sequences uuv3 uuv4
+    --sequences uuv3
 ```
 
 | Option | Description | Default |
