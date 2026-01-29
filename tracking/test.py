@@ -36,20 +36,24 @@ def parse_args():
                         help='Specific sequences to evaluate')
 
     # Output settings
-    parser.add_argument('--result_dir', type=str, default='outputs/test/results',
+    parser.add_argument('--result_dir', type=str, default='outputs/test/baseline/results',
                         help='Directory to save results')
-    parser.add_argument('--report_dir', type=str, default='outputs/test/reports',
+    parser.add_argument('--report_dir', type=str, default='outputs/test/baseline/reports',
                         help='Directory to save reports')
 
     # Evaluation settings
-    parser.add_argument('--visualize', action='store_true',
-                        help='Visualize tracking results')
+    parser.add_argument('--visualize', action='store_true', default=True,
+                        help='Visualize tracking results (default: True)')
+    parser.add_argument('--no_visualize', action='store_true',
+                        help='Disable visualization')
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing results')
     parser.add_argument('--report_only', action='store_true',
                         help='Only generate report from existing results')
-    parser.add_argument('--plot_curves', action='store_true',
-                        help='Plot success/precision curves')
+    parser.add_argument('--plot_curves', action='store_true', default=True,
+                        help='Plot success/precision curves (default: True)')
+    parser.add_argument('--no_plot_curves', action='store_true',
+                        help='Disable curve plotting')
 
     # Evaluation mode and visibility filtering
     parser.add_argument('--eval_mode', type=str, default='dual',
@@ -115,6 +119,18 @@ def main():
     dataset_path = get_dataset_path(args.dataset, args.dataset_path)
     print(f'[Evaluation] Dataset: {args.dataset}')
     print(f'[Evaluation] Dataset path: {dataset_path}')
+
+    # Use default test sequences from config if not specified
+    if args.sequences is None:
+        from lib.config.aquasot.config import cfg
+        args.sequences = cfg.DATA.TEST.SEQUENCES
+        print(f'[Evaluation] Using default test sequences: {args.sequences}')
+
+    # Handle --no_visualize and --no_plot_curves flags
+    if args.no_visualize:
+        args.visualize = False
+    if args.no_plot_curves:
+        args.plot_curves = False
 
     # Create experiment
     from lib.test.evaluation import ExperimentAquaSOT

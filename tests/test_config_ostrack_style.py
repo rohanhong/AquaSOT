@@ -249,6 +249,17 @@ class TestConfigIntegrity:
         expected_val = ["uuv3"]
         assert set(cfg.DATA.VAL.SEQUENCES) == set(expected_val)
 
+    def test_all_test_sequences_defined(self):
+        """Test sequences should be defined for evaluation."""
+        expected_test = ["uuv3"]
+        assert set(cfg.DATA.TEST.SEQUENCES) == set(expected_test)
+
+    def test_test_not_in_train(self):
+        """Test sequences should not be in training set."""
+        train_set = set(cfg.DATA.TRAIN.SEQUENCES)
+        test_set = set(cfg.DATA.TEST.SEQUENCES)
+        assert len(train_set & test_set) == 0, "Test and train sequences should not overlap"
+
     def test_no_sequence_overlap(self):
         """Train and val sequences should not overlap."""
         train_set = set(cfg.DATA.TRAIN.SEQUENCES)

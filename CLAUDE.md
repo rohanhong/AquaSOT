@@ -17,10 +17,10 @@ pip install -e .
 ### Training
 ```bash
 # Standard dual-modal training
-python tracking/train.py --script aquasot --config vitb_256_dual
+python tracking/train.py --script aquasot --config vitb_256_dual_auto
 
 # With W&B logging
-python tracking/train.py --script aquasot --config vitb_256_dual --wandb
+python tracking/train.py --script aquasot --config vitb_256_dual_auto --wandb
 
 # Ablation studies
 python tracking/train.py --script aquasot --config ablation_rgb_only
@@ -79,7 +79,9 @@ Sonar [B, 1, H, W] ---> ViT-Base (Sonar) --+
 
 12 RGB-Sonar sequences (UUV1-12):
 - Training: UUV1,2,4,5,6,7,8,9,10,11,12 (9,588 frames)
-- Validation: UUV3 (751 frames)
+- Test/Validation: UUV3 (751 frames)
+
+Default test set is configured in `cfg.DATA.TEST.SEQUENCES`.
 
 Bounding box formats:
 - Dataset/Evaluation: `(x, y, w, h)` top-left + size

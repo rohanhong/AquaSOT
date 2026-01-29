@@ -157,6 +157,10 @@ cfg.DATA.VAL = edict()
 cfg.DATA.VAL.SEQUENCES = ["uuv3"]
 cfg.DATA.VAL.SAMPLE_PER_EPOCH = 750  # ~1x validation frames (751 total)
 
+# DATA.TEST (evaluation sequences)
+cfg.DATA.TEST = edict()
+cfg.DATA.TEST.SEQUENCES = ["uuv3"]  # Test set for ablation and evaluation
+
 # DATA.SEARCH (shared defaults)
 cfg.DATA.SEARCH = edict()
 cfg.DATA.SEARCH.SIZE = 256

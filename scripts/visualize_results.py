@@ -4,16 +4,20 @@ Visualize tracking results.
 Generate side-by-side RGB and Sonar visualization with bounding boxes.
 
 Usage:
-    # Generate videos for all sequences
+    # Generate both videos and images (default)
     python scripts/visualize_results.py \
-        --result_dir outputs/test/results/AquaSOT \
-        --data_root data \
+        --result_dir outputs/test/baseline/results/AquaSOT \
         --output_dir outputs/visualization
 
-    # Generate images for validation sequence
+    # Generate only videos
     python scripts/visualize_results.py \
-        --result_dir outputs/test/results/AquaSOT \
-        --data_root data \
+        --result_dir outputs/test/baseline/results/AquaSOT \
+        --output_dir outputs/visualization \
+        --format video
+
+    # Generate only images for specific sequence
+    python scripts/visualize_results.py \
+        --result_dir outputs/test/baseline/results/AquaSOT \
         --output_dir outputs/visualization \
         --format images \
         --sequences uuv3
@@ -45,8 +49,8 @@ def parse_args():
                         help='Output directory for visualization')
     parser.add_argument('--sequences', type=str, nargs='+', default=None,
                         help='Specific sequences to visualize (default: all)')
-    parser.add_argument('--format', type=str, choices=['video', 'images'], default='video',
-                        help='Output format: video or images')
+    parser.add_argument('--format', type=str, choices=['video', 'images', 'both'], default='both',
+                        help='Output format: video, images, or both (default: both)')
     parser.add_argument('--fps', type=int, default=10,
                         help='Video frame rate')
     parser.add_argument('--height', type=int, default=480,
@@ -333,6 +337,12 @@ def main():
     else:
         sequences = all_sequences
 
+    # Determine output formats
+    if args.format == 'both':
+        formats = ['video', 'images']
+    else:
+        formats = [args.format]
+
     print(f'[Visualize] Output format: {args.format}')
     print(f'[Visualize] Sequences: {len(sequences)}')
     print(f'[Visualize] Output directory: {args.output_dir}')
@@ -342,15 +352,16 @@ def main():
 
     # Process each sequence
     for seq_name in sorted(sequences):
-        visualize_sequence(
-            seq_name=seq_name,
-            result_dir=args.result_dir,
-            data_root=args.data_root,
-            output_dir=args.output_dir,
-            output_format=args.format,
-            fps=args.fps,
-            target_height=args.height,
-        )
+        for fmt in formats:
+            visualize_sequence(
+                seq_name=seq_name,
+                result_dir=args.result_dir,
+                data_root=args.data_root,
+                output_dir=args.output_dir,
+                output_format=fmt,
+                fps=args.fps,
+                target_height=args.height,
+            )
 
     print(f'[Visualize] Done!')
 
