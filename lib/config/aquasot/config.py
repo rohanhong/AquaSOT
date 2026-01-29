@@ -228,12 +228,13 @@ cfg.DATA.AUGMENTATION.SONAR.SPECKLE_PROB = 0.5
 cfg.DATA.AUGMENTATION.SONAR.OCCLUSION = True
 cfg.DATA.AUGMENTATION.SONAR.OCCLUSION_PROB = 0.2
 
-# Modality dropout (for robustness training)
+# Modality dropout (for testing-time ablation only)
+# Applied in AquaSOTTracker during inference to evaluate single-modal performance.
+# Training always uses both modalities to learn robust dual-modal representations.
 cfg.DATA.MODALITY_DROPOUT = edict()
-cfg.DATA.MODALITY_DROPOUT.ENABLED = False
-cfg.DATA.MODALITY_DROPOUT.P_DROP_RGB = 0.1
-cfg.DATA.MODALITY_DROPOUT.P_DROP_SONAR = 0.1
-cfg.DATA.MODALITY_DROPOUT.P_DROP_BOTH = 0.02
+cfg.DATA.MODALITY_DROPOUT.ENABLED = False       # Default: disabled for normal operation
+cfg.DATA.MODALITY_DROPOUT.P_DROP_RGB = 0.0      # Set to 1.0 for Sonar-only ablation
+cfg.DATA.MODALITY_DROPOUT.P_DROP_SONAR = 0.0    # Set to 1.0 for RGB-only ablation
 
 # ==============================================================================
 # TEST

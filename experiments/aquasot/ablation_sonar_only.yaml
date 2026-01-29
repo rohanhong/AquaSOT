@@ -18,7 +18,6 @@ DATA:
     ENABLED: true
     P_DROP_RGB: 1.0
     P_DROP_SONAR: 0.0
-    P_DROP_BOTH: 0.0
 
 TEST:
   TARGET_LOSS:

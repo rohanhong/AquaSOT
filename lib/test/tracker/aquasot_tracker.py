@@ -13,6 +13,7 @@ from .base_tracker import Tracker
 from lib.models.aquasot import build_aquasot
 from lib.config.aquasot.config import cfg, update_config_from_file
 from lib.test.utils.hann import hann2d
+from lib.utils.modality_dropout import apply_modality_dropout
 
 
 class AquaSOTTracker(Tracker):
@@ -197,6 +198,12 @@ class AquaSOTTracker(Tracker):
         rgb_template = rgb_template.to(self.device)
         sonar_template = sonar_template.to(self.device)
 
+        # Apply modality dropout for ablation testing
+        # When ENABLED=False (default), this is a no-op for backward compatibility
+        rgb_template, sonar_template, _ = apply_modality_dropout(
+            rgb_template, sonar_template, cfg
+        )
+
         # Initialize three-tier template structure (MixFormer style)
         # Tier 1: First-frame template (fixed, never updated)
         self.rgb_template = rgb_template.clone()
@@ -289,6 +296,12 @@ class AquaSOTTracker(Tracker):
         # Move to device
         rgb_search = rgb_search.to(self.device)
         sonar_search = sonar_search.to(self.device)
+
+        # Apply modality dropout for ablation testing
+        # When ENABLED=False (default), this is a no-op for backward compatibility
+        rgb_search, sonar_search, _ = apply_modality_dropout(
+            rgb_search, sonar_search, cfg
+        )
 
         # Run tracking
         with torch.no_grad():
