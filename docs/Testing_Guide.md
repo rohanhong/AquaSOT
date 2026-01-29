@@ -138,6 +138,64 @@ TEST:
     ENABLED: false
 ```
 
+## Checkpoint Formats
+
+### Training Checkpoint (Full)
+
+Training produces full checkpoints containing:
+
+| Key | Content | Purpose |
+|-----|---------|---------|
+| `net` | Model weights | Required for inference |
+| `optimizer` | Optimizer state (momentum, Adam buffers) | Resume training |
+| `lr_scheduler` | Learning rate scheduler state | Resume training |
+| `epoch` | Training epoch number | Resume training |
+| `stats` | Training statistics | Logging |
+
+File naming: `checkpoint_ep{epoch:04d}.pth`, `checkpoint_latest.pth`
+
+### Inference Checkpoint (Lightweight)
+
+For deployment and evaluation, export inference-only checkpoint to `models/`:
+
+```bash
+# Export to models/ directory
+python scripts/export_checkpoint.py \
+    --input outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
+    --output models/aquasot_vitb_256.pth
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--input` | Input training checkpoint path | - |
+| `--output` | Output inference checkpoint path | - |
+| `--input_dir` | Input directory for batch export | - |
+| `--output_dir` | Output directory for batch export | - |
+| `--format` | Output format: `dict` or `raw` | `dict` |
+| `--latest_only` | Only export checkpoint_latest.pth | Off |
+| `--strip_ddp` | Remove DDP "module." prefix | On |
+
+**Size comparison** (estimated):
+- Training checkpoint: ~200-250MB (includes optimizer state)
+- Inference checkpoint: ~100MB (model weights only)
+
+### Supported Loading Formats
+
+The tracker automatically detects and loads these formats:
+
+```python
+# Format 1: dict with 'net' key (recommended)
+{'net': state_dict}
+
+# Format 2: dict with 'state_dict' key
+{'state_dict': state_dict}
+
+# Format 3: raw state_dict
+state_dict
+```
+
+Both training checkpoints and exported inference checkpoints work with `tracking/test.py`.
+
 ## Dataset Structure
 
 Evaluation uses rect-converted sonar data:

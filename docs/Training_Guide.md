@@ -41,7 +41,6 @@ Output: `sonar/img_rect/` and `sonar/groundtruth_rect.txt`
 
 Download MAE pretrained ViT-Base weights:
 ```bash
-mkdir -p pretrained
 wget -O pretrained/mae_pretrain_vit_base.pth \
     https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
 ```
@@ -147,9 +146,10 @@ wandb login
 ```
 outputs/train/aquasot/vitb_256_dual/
     checkpoints/
-        AquaSOT_ep0001.pth.tar
-        AquaSOT_ep0005.pth.tar
+        checkpoint_ep0005.pth     # Saved at checkpoint_interval
+        checkpoint_ep0010.pth
         ...
+        checkpoint_latest.pth     # Updated every epoch
     logs/
         events.out.tfevents.*
 ```

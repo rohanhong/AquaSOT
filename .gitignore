@@ -57,6 +57,7 @@ htmlcov/
 /checkpoints/
 /outputs/
 /pretrained/
+/models/
 runs/
 *.pth
 *.ckpt
