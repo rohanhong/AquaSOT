@@ -1,8 +1,8 @@
 # AquaSOT: RGB-Sonar 双模态跟踪数学公式与算法框架
 
-**版本**: 2.0 (与当前实现完全同步)
-**最后更新**: 2026-01-26
-**基于代码**: `lib/models/aquasot/`, `lib/train/`, `lib/utils/`
+**版本**: 2.1 (与当前实现完全同步)
+**最后更新**: 2026-01-30
+**基于代码**: `lib/models/aquasot/`, `lib/train/`, `lib/utils/`, `lib/test/evaluation/`
 
 ---
 
@@ -186,8 +186,31 @@ $$
 | 注意力头数 | 8 | `cfg.MODEL.FUSION.NUM_HEADS` |
 | 嵌入维度 | 768 | `cfg.MODEL.FUSION.EMBED_DIM` |
 | Dropout率 | 0.1 | `cfg.MODEL.FUSION.DROPOUT` |
+| RGB融合权重 | 0.3 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT` |
+| Sonar融合权重 | 0.3 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT` |
 
-**代码参考**: `lib/models/aquasot/fusion.py:19-156`
+**代码参考**: `lib/models/aquasot/fusion.py:19-167`
+
+#### 2.3.3 可配置融合权重
+
+**代码参考**: `lib/models/aquasot/fusion.py:101-125`
+
+交叉注意力残差连接使用可配置权重控制融合强度:
+
+$$
+\begin{aligned}
+\mathbf{F}_{rgb}' &= \mathbf{F}_{rgb} + \alpha_{rgb} \cdot \text{CrossAttn}(\text{LN}(\mathbf{F}_{rgb}), \mathbf{F}_{sonar}) \\
+\mathbf{F}_{sonar}' &= \mathbf{F}_{sonar} + \alpha_{sonar} \cdot \text{CrossAttn}(\text{LN}(\mathbf{F}_{sonar}), \mathbf{F}_{rgb})
+\end{aligned}
+$$
+
+其中:
+- $\alpha_{rgb} = 0.3$: RGB接收Sonar信息的融合权重
+- $\alpha_{sonar} = 0.3$: Sonar接收RGB信息的融合权重
+- $\alpha = 0$: 无跨模态影响（独立处理）
+- $\alpha = 1$: 完全融合（原始行为）
+
+弱融合 ($\alpha = 0.3$) 在实现互补信息交换的同时减少跨模态干扰。
 
 ### 2.4 CenterPredictor 预测头
 
@@ -402,6 +425,35 @@ $$
 | RGB | [0.485, 0.456, 0.406] | [0.229, 0.224, 0.225] | ImageNet |
 | Sonar | [0.5] | [0.5] | `cfg.DATA.SONAR_*` |
 
+### 4.6 模态丢弃（测试时消融）
+
+**代码参考**: `lib/utils/modality_dropout.py:28-77`
+
+消融实验可在测试时应用模态丢弃，以使用双模态训练的模型评估单模态性能:
+
+$$
+I_{dropped} = \begin{cases}
+\mathbf{0} & \text{if } p_{drop} = 1.0 \\
+I & \text{otherwise}
+\end{cases}
+$$
+
+当模态被丢弃时:
+1. 输入张量被替换为零张量
+2. 模型对该模态产生低置信度分数 ($\approx 0$)
+3. 目标丢失处理器检测到被丢弃的模态为LOST状态
+4. 主输出完全使用活跃模态
+
+**配置参数**:
+
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `ENABLED` | False | 启用模态丢弃 |
+| `P_DROP_RGB` | 0.0 | 丢弃RGB的概率 (1.0 = 仅Sonar) |
+| `P_DROP_SONAR` | 0.0 | 丢弃Sonar的概率 (1.0 = 仅RGB) |
+
+**注意**: 训练始终使用双模态以学习鲁棒的双模态表示。丢弃仅在测试时用于消融研究。
+
 ---
 
 ## 5. 模板更新策略
@@ -474,8 +526,11 @@ f(s) = \begin{cases}
 $$
 
 其中:
-- $\tau_{nf} = 0.30$: 未找到阈值 (`NOT_FOUND_THRESHOLD`)
-- $\tau_{s} = 0.70$: 稳定阈值 (`STABLE_THRESHOLD`)
+- $\tau_{nf} = 0.01$: 未找到阈值 (`NOT_FOUND_THRESHOLD`)
+- $\tau_{unc} = 0.05$: 不确定阈值 (`UNCERTAIN_THRESHOLD`)
+- $\tau_{s} = 0.10$: 稳定阈值 (`STABLE_THRESHOLD`)
+
+**注意**: 极低阈值 ($\tau_{nf}=0.01$, $\tau_{s}=0.10$) 意味着跟踪器除非置信度接近零，否则保持STABLE状态。此设计优先考虑持续跟踪而非过早的丢失检测。
 
 #### 5.3.3 状态机转换
 
@@ -544,14 +599,39 @@ $$
 | 参数 | 值 | 代码来源 |
 |------|-----|---------|
 | `ENABLED` | True | `cfg.TEST.TARGET_LOSS.ENABLED` |
-| $\tau_{nf}$ | 0.30 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
-| $\tau_{unc}$ | 0.50 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
-| $\tau_{s}$ | 0.70 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
+| $\tau_{nf}$ | 0.01 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
+| $\tau_{unc}$ | 0.05 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
+| $\tau_{s}$ | 0.10 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
 | $N_{lost}$ | 2 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
 | $N_{found}$ | 5 | `cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` |
 | $N_{quick}$ | 2 | `cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` |
 | $K$ | 5.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
 | priority | higher_score | `cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY` |
+
+#### 5.3.8 动态搜索因子
+
+**代码参考**: `lib/config/aquasot/config.py:291-312`
+
+搜索区域因子根据跟踪状态动态调整以改善目标恢复:
+
+$$
+f_{search}(state) = \begin{cases}
+f_{stable} = 4.0 & \text{if } state = \text{STABLE} \\
+f_{uncertain} = 5.0 & \text{if } state = \text{UNCERTAIN} \\
+f_{lost} = 7.0 & \text{if } state = \text{LOST}
+\end{cases}
+$$
+
+**配置参数**:
+
+| 参数 | 值 | 代码来源 |
+|------|-----|---------|
+| `ENABLED` | True | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.ENABLED` |
+| `STABLE` | 4.0 | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.STABLE` |
+| `UNCERTAIN` | 5.0 | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.UNCERTAIN` |
+| `LOST` | 7.0 | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.LOST` |
+
+RGB和Sonar模态可通过 `RGB_STABLE`, `RGB_UNCERTAIN`, `RGB_LOST`, `SONAR_STABLE`, `SONAR_UNCERTAIN`, `SONAR_LOST` 设置独立的搜索因子。
 
 ---
 
@@ -622,6 +702,43 @@ $$
 ---
 
 ## 7. 评估指标
+
+### 7.0 评估设置
+
+**代码参考**: `lib/config/aquasot/config.py:314-318`, `lib/test/evaluation/experiment.py:23-57`
+
+AquaSOT采用GOT-10k风格评估，支持可见性过滤和多模态评估。
+
+#### 7.0.1 配置参数
+
+| 参数 | 值 | 描述 |
+|------|-----|------|
+| `FILTER_VISIBILITY` | True | 过滤缺失帧 (GT=0,0,0,0) |
+| `SKIP_INIT_FRAME` | True | 跳过第0帧（初始化帧） |
+| `EVAL_MODE` | 'dual' | 评估模式: 'dual', 'rgb_only', 'sonar_only' |
+
+#### 7.0.2 可见性过滤
+
+遵循GOT-10k评估模式，真值框为 $(0, 0, 0, 0)$（目标缺失/遮挡）的帧被排除在指标计算之外:
+
+$$
+\mathcal{F}_{eval} = \{t \mid B_t^{gt} \neq (0, 0, 0, 0) \land t > 0\}
+$$
+
+确保指标反映实际跟踪性能而非缺失检测能力。
+
+**可见性掩码计算** (`lib/test/evaluation/experiment.py:249-273`):
+
+$$
+\text{visible}(t) = \neg(\text{all}(B_t^{gt} = 0)) \land (w_t > 0) \land (h_t > 0)
+$$
+
+#### 7.0.3 多模态评估
+
+指标分别为RGB和Sonar模态计算:
+- **RGB指标**: RGB预测与RGB真值的IoU、精确度、中心误差
+- **Sonar指标**: Sonar预测与Sonar真值的IoU、精确度、中心误差
+- **综合指标**: 按各模态可见帧数加权平均
 
 ### 7.1 成功率曲线 AUC
 
@@ -696,16 +813,20 @@ $$
 | ViT骨干网络 | `lib/models/aquasot/vit.py` | 89-165 |
 | 注意力模块 | `lib/models/aquasot/vit.py` | 30-59 |
 | Transformer块 | `lib/models/aquasot/vit.py` | 62-86 |
-| DCMA融合 | `lib/models/aquasot/fusion.py` | 125-156 |
+| DCMA融合 | `lib/models/aquasot/fusion.py` | 128-167 |
 | 交叉模态注意力 | `lib/models/aquasot/fusion.py` | 19-62 |
-| DCMA层 | `lib/models/aquasot/fusion.py` | 65-122 |
+| DCMA层 | `lib/models/aquasot/fusion.py` | 65-125 |
+| 融合权重 | `lib/models/aquasot/fusion.py` | 101-119 |
 | CenterPredictor | `lib/models/layers/head.py` | 31-165 |
 | Focal Loss | `lib/utils/focal_loss.py` | 10-59 |
 | GIoU Loss | `lib/utils/box_ops.py` | 93-136 |
 | 热力图生成 | `lib/utils/heatmap_utils.py` | 30-76 |
 | 损失计算 | `lib/train/actors/aquasot.py` | 116-227 |
 | 模板更新 | `lib/test/tracker/aquasot_tracker.py` | 296-370 |
-| 目标丢失处理器 | `lib/test/tracker/target_loss_handler.py` | 1-385 |
+| 目标丢失处理器 | `lib/test/tracker/target_loss_handler.py` | 1-403 |
+| 模态丢弃 | `lib/utils/modality_dropout.py` | 28-77 |
+| 评估实验 | `lib/test/evaluation/experiment.py` | 1-766 |
+| 可见性过滤 | `lib/test/evaluation/experiment.py` | 249-273 |
 | 检查点迁移 | `lib/train/trainers/base_trainer.py` | 125-148 |
 | 数据处理 | `lib/train/data/processing.py` | 38-378 |
-| 配置 | `lib/config/aquasot/config.py` | 1-386 |
+| 配置 | `lib/config/aquasot/config.py` | 1-443 |

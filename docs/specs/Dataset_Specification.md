@@ -116,6 +116,8 @@ x,y,w,h
 - `0,0,0,0`: Indicates target is not visible or occluded in the current frame
 - Used when target temporarily leaves field of view or is obscured
 
+**Evaluation Note:** Following GOT-10k evaluation protocol, frames with `0,0,0,0` annotations are filtered out during metrics computation. This prevents penalizing the tracker for absent targets. See `lib/test/evaluation/experiment.py:249-273` for visibility mask computation.
+
 **Example:**
 ```
 122,359,1356,254    # Frame 1: Target at (122,359) with size 1356×254
@@ -265,6 +267,7 @@ This validates:
 
 ## Update History
 
+- **2026-01-30**: Added documentation for GOT-10k style visibility filtering; absent frames (GT=0,0,0,0) are excluded from evaluation metrics
 - **2026-01-28**: Modified train/val split: validation set changed from uuv3/4/5 to uuv3 only (training: 10,940 frames, validation: 751 frames)
 - **2026-01-27**: Modified train/val split: validation set changed from uuv3/6/10 to uuv3/4/5 (training: 9,368 frames, validation: 2,323 frames)
 - **2025-11-13**: Dataset expanded from 2 to 12 sequences; defined train/val/eval splits (uuv3/6/10 as validation); documented sonar resolution variations; verified complete frame synchronization across all sequences

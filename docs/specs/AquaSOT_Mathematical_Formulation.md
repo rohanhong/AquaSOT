@@ -2,9 +2,9 @@
 
 **End-to-End Dual-Modal RGB-Sonar Single Object Tracking**
 
-**Version**: 2.0 (Synchronized with current implementation)
-**Last Updated**: 2026-01-26
-**Based on**: `lib/models/aquasot/`, `lib/train/`, `lib/utils/`
+**Version**: 2.1 (Synchronized with current implementation)
+**Last Updated**: 2026-01-30
+**Based on**: `lib/models/aquasot/`, `lib/train/`, `lib/utils/`, `lib/test/evaluation/`
 
 ---
 
@@ -260,6 +260,29 @@ where $\text{Linear}_1: D \rightarrow 4D$ and $\text{Linear}_2: 4D \rightarrow D
 | `NUM_HEADS` | 8 | `cfg.MODEL.FUSION.NUM_HEADS` |
 | `EMBED_DIM` | 768 | `cfg.MODEL.FUSION.EMBED_DIM` |
 | `DROPOUT` | 0.1 | `cfg.MODEL.FUSION.DROPOUT` |
+| `RGB_FUSION_WEIGHT` | 0.3 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT` |
+| `SONAR_FUSION_WEIGHT` | 0.3 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT` |
+
+#### 2.3.3 Configurable Fusion Weights
+
+**Source**: `lib/models/aquasot/fusion.py:101-125`
+
+The cross-attention residual connections use configurable weights to control fusion strength:
+
+$$
+\begin{aligned}
+\mathbf{F}_{rgb}' &= \mathbf{F}_{rgb} + \alpha_{rgb} \cdot \text{CrossAttn}(\text{LN}(\mathbf{F}_{rgb}), \mathbf{F}_{sonar}) \\
+\mathbf{F}_{sonar}' &= \mathbf{F}_{sonar} + \alpha_{sonar} \cdot \text{CrossAttn}(\text{LN}(\mathbf{F}_{sonar}), \mathbf{F}_{rgb})
+\end{aligned}
+$$
+
+where:
+- $\alpha_{rgb} = 0.3$: Fusion weight for RGB receiving Sonar information
+- $\alpha_{sonar} = 0.3$: Fusion weight for Sonar receiving RGB information
+- $\alpha = 0$: No cross-modal influence (independent processing)
+- $\alpha = 1$: Full fusion (original behavior)
+
+The weak fusion ($\alpha = 0.3$) reduces cross-modal interference while still enabling complementary information exchange.
 
 ### 2.4 CenterPredictor Head
 
@@ -521,6 +544,35 @@ where $(c_x, c_y)$ are target center coordinates in feature map space.
 | RGB | [0.485, 0.456, 0.406] | [0.229, 0.224, 0.225] | ImageNet |
 | Sonar | [0.5] | [0.5] | `cfg.DATA.SONAR_*` |
 
+### 4.6 Modality Dropout (Testing-Time Ablation)
+
+**Source**: `lib/utils/modality_dropout.py:28-77`
+
+For ablation experiments, modality dropout can be applied at test time to evaluate single-modal performance using a dual-modal trained model:
+
+$$
+I_{dropped} = \begin{cases}
+\mathbf{0} & \text{if } p_{drop} = 1.0 \\
+I & \text{otherwise}
+\end{cases}
+$$
+
+When a modality is dropped:
+1. Input tensor is replaced with zeros
+2. Model produces low confidence score ($\approx 0$) for that modality
+3. Target Loss Handler detects dropped modality as LOST
+4. Primary output uses the active modality exclusively
+
+**Configuration**:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ENABLED` | False | Enable modality dropout |
+| `P_DROP_RGB` | 0.0 | Probability of dropping RGB (1.0 = Sonar-only) |
+| `P_DROP_SONAR` | 0.0 | Probability of dropping Sonar (1.0 = RGB-only) |
+
+**Note**: Training always uses both modalities to learn robust dual-modal representations. Dropout is testing-time only for ablation studies.
+
 ---
 
 ## 5. Template Update Strategy
@@ -602,8 +654,11 @@ f(s) = \begin{cases}
 $$
 
 where:
-- $\tau_{nf} = 0.30$: Not-found threshold (`NOT_FOUND_THRESHOLD`)
-- $\tau_{s} = 0.70$: Stable threshold (`STABLE_THRESHOLD`)
+- $\tau_{nf} = 0.01$: Not-found threshold (`NOT_FOUND_THRESHOLD`)
+- $\tau_{unc} = 0.05$: Uncertain threshold (`UNCERTAIN_THRESHOLD`)
+- $\tau_{s} = 0.10$: Stable threshold (`STABLE_THRESHOLD`)
+
+**Note**: The extremely low thresholds ($\tau_{nf}=0.01$, $\tau_{s}=0.10$) mean the tracker remains in STABLE state unless confidence drops near zero. This design prioritizes continuous tracking over premature loss detection.
 
 #### 5.2.3 State Machine Transitions
 
@@ -672,14 +727,39 @@ This prevents template pollution from unreliable predictions during occlusion or
 | Parameter | Value | Source |
 |-----------|-------|--------|
 | `ENABLED` | True | `cfg.TEST.TARGET_LOSS.ENABLED` |
-| $\tau_{nf}$ | 0.30 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
-| $\tau_{unc}$ | 0.50 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
-| $\tau_{s}$ | 0.70 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
+| $\tau_{nf}$ | 0.01 | `cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` |
+| $\tau_{unc}$ | 0.05 | `cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD` |
+| $\tau_{s}$ | 0.10 | `cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD` |
 | $N_{lost}$ | 2 | `cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES` |
 | $N_{found}$ | 5 | `cfg.TEST.TARGET_LOSS.FOUND_CONFIRM_FRAMES` |
 | $N_{quick}$ | 2 | `cfg.TEST.TARGET_LOSS.QUICK_RECOVERY_FRAMES` |
 | $K$ | 5.0 | `cfg.TEST.TARGET_LOSS.SEARCH_REGION_K` |
 | priority | higher_score | `cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY` |
+
+#### 5.2.8 Dynamic Search Factor
+
+**Source**: `lib/config/aquasot/config.py:291-312`
+
+The search region factor is dynamically adjusted based on tracking state to improve target recovery:
+
+$$
+f_{search}(state) = \begin{cases}
+f_{stable} = 4.0 & \text{if } state = \text{STABLE} \\
+f_{uncertain} = 5.0 & \text{if } state = \text{UNCERTAIN} \\
+f_{lost} = 7.0 & \text{if } state = \text{LOST}
+\end{cases}
+$$
+
+**Configuration**:
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| `ENABLED` | True | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.ENABLED` |
+| `STABLE` | 4.0 | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.STABLE` |
+| `UNCERTAIN` | 5.0 | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.UNCERTAIN` |
+| `LOST` | 7.0 | `cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.LOST` |
+
+RGB and Sonar modalities can have independent search factors via `RGB_STABLE`, `RGB_UNCERTAIN`, `RGB_LOST`, `SONAR_STABLE`, `SONAR_UNCERTAIN`, `SONAR_LOST` parameters.
 
 ---
 
@@ -745,6 +825,43 @@ $$
 ---
 
 ## 7. Evaluation Metrics
+
+### 7.0 Evaluation Settings
+
+**Source**: `lib/config/aquasot/config.py:314-318`, `lib/test/evaluation/experiment.py:23-57`
+
+AquaSOT follows GOT-10k style evaluation with visibility filtering and multi-modal support.
+
+#### 7.0.1 Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `FILTER_VISIBILITY` | True | Filter out absent frames (GT=0,0,0,0) |
+| `SKIP_INIT_FRAME` | True | Skip frame 0 (initialization frame) |
+| `EVAL_MODE` | 'dual' | Evaluation mode: 'dual', 'rgb_only', 'sonar_only' |
+
+#### 7.0.2 Visibility Filtering
+
+Following GOT-10k evaluation pattern, frames where the ground truth box is $(0, 0, 0, 0)$ (target absent/occluded) are excluded from metric computation:
+
+$$
+\mathcal{F}_{eval} = \{t \mid B_t^{gt} \neq (0, 0, 0, 0) \land t > 0\}
+$$
+
+This ensures metrics reflect actual tracking performance rather than absence detection capability.
+
+**Visibility Mask Computation** (`lib/test/evaluation/experiment.py:249-273`):
+
+$$
+\text{visible}(t) = \neg(\text{all}(B_t^{gt} = 0)) \land (w_t > 0) \land (h_t > 0)
+$$
+
+#### 7.0.3 Multi-Modal Evaluation
+
+Metrics are computed separately for RGB and Sonar modalities:
+- **RGB metrics**: IoU, precision, center error for RGB predictions vs RGB ground truth
+- **Sonar metrics**: IoU, precision, center error for Sonar predictions vs Sonar ground truth
+- **Overall metrics**: Weighted average by number of visible frames per modality
 
 ### 7.1 Success Rate (AUC)
 
@@ -836,16 +953,20 @@ $$
 | ViT Backbone | `lib/models/aquasot/vit.py` | 89-165 |
 | Attention Module | `lib/models/aquasot/vit.py` | 30-59 |
 | Transformer Block | `lib/models/aquasot/vit.py` | 62-86 |
-| DCMA Fusion | `lib/models/aquasot/fusion.py` | 125-156 |
+| DCMA Fusion | `lib/models/aquasot/fusion.py` | 128-167 |
 | Cross-Modal Attention | `lib/models/aquasot/fusion.py` | 19-62 |
-| DCMA Layer | `lib/models/aquasot/fusion.py` | 65-122 |
+| DCMA Layer | `lib/models/aquasot/fusion.py` | 65-125 |
+| Fusion Weights | `lib/models/aquasot/fusion.py` | 101-119 |
 | CenterPredictor | `lib/models/layers/head.py` | 31-165 |
 | Focal Loss | `lib/utils/focal_loss.py` | 10-59 |
 | GIoU Loss | `lib/utils/box_ops.py` | 93-136 |
 | Heatmap Generation | `lib/utils/heatmap_utils.py` | 30-76 |
 | Loss Computation | `lib/train/actors/aquasot.py` | 116-227 |
 | Template Update | `lib/test/tracker/aquasot_tracker.py` | 296-370 |
-| Target Loss Handler | `lib/test/tracker/target_loss_handler.py` | 1-385 |
+| Target Loss Handler | `lib/test/tracker/target_loss_handler.py` | 1-403 |
+| Modality Dropout | `lib/utils/modality_dropout.py` | 28-77 |
+| Evaluation Experiment | `lib/test/evaluation/experiment.py` | 1-766 |
+| Visibility Filtering | `lib/test/evaluation/experiment.py` | 249-273 |
 | Checkpoint Migration | `lib/train/trainers/base_trainer.py` | 125-148 |
 | Data Processing | `lib/train/data/processing.py` | 38-378 |
-| Configuration | `lib/config/aquasot/config.py` | 1-386 |
+| Configuration | `lib/config/aquasot/config.py` | 1-443 |
