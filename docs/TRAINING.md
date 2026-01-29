@@ -1,4 +1,4 @@
-# AquaSOT Training Guide
+# AquaSOT Training
 
 ## Prerequisites
 

@@ -1,4 +1,4 @@
-# AquaSOT Ablation Guide
+# AquaSOT Ablation
 
 ## Running Ablation Experiments
 

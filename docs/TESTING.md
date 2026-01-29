@@ -1,4 +1,4 @@
-# AquaSOT Testing Guide
+# AquaSOT Testing
 
 ## Evaluation
 
