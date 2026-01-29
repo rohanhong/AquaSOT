@@ -441,7 +441,7 @@ def _resolve_pretrained_path(cfg, pretrained=None):
         return checkpoint
 
     # Try with PRETRAINED_DIR
-    pretrained_dir = getattr(cfg.PATHS, 'PRETRAINED_DIR', 'pretrained')
+    pretrained_dir = getattr(cfg.PATHS, 'PRETRAINED_DIR', 'models/pretrained')
     full_path = os.path.join(pretrained_dir, checkpoint)
     if os.path.exists(full_path):
         return full_path

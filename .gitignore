@@ -56,8 +56,10 @@ htmlcov/
 /data/
 /checkpoints/
 /outputs/
-/pretrained/
-/models/
+/models/*
+!/models/pretrained/
+/models/pretrained/*
+!/models/pretrained/.gitkeep
 runs/
 *.pth
 *.ckpt

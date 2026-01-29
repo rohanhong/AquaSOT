@@ -306,7 +306,7 @@ cfg.PATHS = edict()
 cfg.PATHS.WORK_DIR = "outputs"
 cfg.PATHS.CHECKPOINT_DIR = "outputs/checkpoints"
 cfg.PATHS.LOG_DIR = "outputs/logs"
-cfg.PATHS.PRETRAINED_DIR = "pretrained"
+cfg.PATHS.PRETRAINED_DIR = "models/pretrained"
 
 # ==============================================================================
 # EXPERIMENT

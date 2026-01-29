@@ -41,7 +41,7 @@ Output: `sonar/img_rect/` and `sonar/groundtruth_rect.txt`
 
 Download MAE pretrained ViT-Base weights:
 ```bash
-wget -O pretrained/mae_pretrain_vit_base.pth \
+wget -O models/pretrained/mae_pretrain_vit_base.pth \
     https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
 ```
 

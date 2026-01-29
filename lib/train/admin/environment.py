@@ -19,7 +19,7 @@ class EnvSettings:
         self.aquasot_dir = os.path.join(self.data_dir, 'AquaSOT')
 
         # Pretrained model paths
-        self.pretrained_dir = os.path.join(self.workspace_dir, 'pretrained')
+        self.pretrained_dir = os.path.join(self.workspace_dir, 'models', 'pretrained')
 
         # Output paths
         self.output_dir = os.path.join(self.workspace_dir, 'output')
