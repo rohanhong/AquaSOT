@@ -101,6 +101,31 @@ class AquaSOTTracker(Tracker):
         else:
             self.loss_handler = None
 
+        # Dynamic search factor based on tracking state
+        # Reference: DiMP uses search_area_scale=4.5-5.0, NA-OSTrack uses fixed K=3
+        self.dynamic_search_enabled = (
+            self.target_loss_enabled and
+            cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.ENABLED
+        )
+        if self.dynamic_search_enabled:
+            dsf = cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR
+            # RGB-specific search factors
+            self.rgb_search_factors = {
+                'STABLE': dsf.RGB_STABLE,
+                'UNCERTAIN': dsf.RGB_UNCERTAIN,
+                'LOST': dsf.RGB_LOST,
+            }
+            # Sonar-specific search factors
+            self.sonar_search_factors = {
+                'STABLE': dsf.SONAR_STABLE,
+                'UNCERTAIN': dsf.SONAR_UNCERTAIN,
+                'LOST': dsf.SONAR_LOST,
+            }
+
+        # Previous frame tracking states (for dynamic search factor)
+        self.prev_rgb_state = 'STABLE'
+        self.prev_sonar_state = 'STABLE'
+
     def _load_checkpoint(self, checkpoint_path):
         """Load model checkpoint.
 
@@ -254,6 +279,33 @@ class AquaSOTTracker(Tracker):
                 sonar_image_shape=sonar_shape
             )
 
+        # Reset tracking states for dynamic search factor
+        self.prev_rgb_state = 'STABLE'
+        self.prev_sonar_state = 'STABLE'
+
+    def _get_dynamic_search_factor(self, modality, state_name):
+        """Get search factor based on tracking state.
+
+        When tracking is UNCERTAIN or LOST, expand search region to increase
+        chances of re-acquiring the target.
+
+        Reference: DiMP uses search_area_scale=4.5-5.0, NA-OSTrack uses fixed K=3
+
+        Args:
+            modality: 'rgb' or 'sonar'
+            state_name: Tracking state name ('STABLE', 'UNCERTAIN', 'LOST')
+
+        Returns:
+            float: Search factor for the given modality and state
+        """
+        if not self.dynamic_search_enabled:
+            return self.search_factor
+
+        if modality == 'rgb':
+            return self.rgb_search_factors.get(state_name, self.search_factor)
+        else:  # sonar
+            return self.sonar_search_factors.get(state_name, self.search_factor)
+
     def update(self, image):
         """Track target in current frame.
 
@@ -278,15 +330,20 @@ class AquaSOTTracker(Tracker):
             rgb_image = image
             sonar_image = None
 
-        # Crop and preprocess search region
+        # Get dynamic search factors based on previous frame tracking state
+        # This allows expanding search region when tracking is uncertain or lost
+        rgb_search_factor = self._get_dynamic_search_factor('rgb', self.prev_rgb_state)
+        sonar_search_factor = self._get_dynamic_search_factor('sonar', self.prev_sonar_state)
+
+        # Crop and preprocess search region with dynamic factors
         rgb_search, rgb_resize_factor = self._sample_target(
-            rgb_image, self.state['rgb_box'], self.search_factor, self.search_size
+            rgb_image, self.state['rgb_box'], rgb_search_factor, self.search_size
         )
         rgb_search = self._preprocess_rgb(rgb_search)
 
         if sonar_image is not None:
             sonar_search, sonar_resize_factor = self._sample_target(
-                sonar_image, self.state['sonar_box'], self.search_factor, self.search_size
+                sonar_image, self.state['sonar_box'], sonar_search_factor, self.search_size
             )
             sonar_search = self._preprocess_sonar(sonar_search)
         else:
@@ -390,6 +447,10 @@ class AquaSOTTracker(Tracker):
 
             rgb_state_name = 'STABLE'
             sonar_state_name = 'STABLE'
+
+        # Update previous tracking states for next frame's dynamic search factor
+        self.prev_rgb_state = rgb_state_name
+        self.prev_sonar_state = sonar_state_name
 
         # Return dual-modal results with tracking states
         return {

@@ -20,6 +20,8 @@ MODEL:
     TYPE: dcma
     NUM_LAYERS: 2
     NUM_HEADS: 8
+    RGB_FUSION_WEIGHT: 0.3      # Weak fusion (reduces cross-modal interference)
+    SONAR_FUSION_WEIGHT: 0.3    # Weak fusion (reduces cross-modal interference)
 
   HEAD:
     TYPE: CENTER

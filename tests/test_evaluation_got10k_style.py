@@ -390,7 +390,11 @@ class TestExperimentAquaSOT:
                 self.init_box = None
 
             def init(self, image, box):
-                self.init_box = np.array(box)
+                # Handle dict format (dual-modal) or array format (legacy)
+                if isinstance(box, dict):
+                    self.init_box = np.array(box.get('rgb', box.get('sonar')))
+                else:
+                    self.init_box = np.array(box)
 
             def update(self, image):
                 # Add small noise to box
@@ -446,6 +450,202 @@ class TestExperimentAquaSOT:
 
 
 # ==============================================================================
+# Visibility Filtering Tests
+# ==============================================================================
+
+class TestVisibilityFiltering:
+    """Test visibility filtering in evaluation."""
+
+    def test_compute_visibility_mask_zero_boxes(self):
+        """Test visibility mask detection for (0,0,0,0) boxes."""
+        from lib.test.evaluation import ExperimentAquaSOT
+
+        exp = ExperimentAquaSOT(root_dir='/tmp', result_dir='/tmp/r', report_dir='/tmp/p')
+
+        gt = np.array([[0, 0, 0, 0], [10, 20, 30, 40], [0, 0, 0, 0], [50, 60, 70, 80]])
+        vis = exp._compute_visibility_mask(gt)
+
+        assert vis.tolist() == [False, True, False, True]
+
+    def test_compute_visibility_mask_invalid_size(self):
+        """Test visibility mask detection for invalid size boxes."""
+        from lib.test.evaluation import ExperimentAquaSOT
+
+        exp = ExperimentAquaSOT(root_dir='/tmp', result_dir='/tmp/r', report_dir='/tmp/p')
+
+        # Invalid: w <= 0 or h <= 0
+        gt = np.array([
+            [10, 20, -5, 40],    # Invalid: negative width
+            [10, 20, 30, 0],     # Invalid: zero height
+            [10, 20, 0, 40],     # Invalid: zero width
+            [10, 20, 30, 40],    # Valid
+        ])
+        vis = exp._compute_visibility_mask(gt)
+
+        assert vis.tolist() == [False, False, False, True]
+
+    def test_compute_visibility_mask_empty(self):
+        """Test visibility mask with empty array."""
+        from lib.test.evaluation import ExperimentAquaSOT
+
+        exp = ExperimentAquaSOT(root_dir='/tmp', result_dir='/tmp/r', report_dir='/tmp/p')
+
+        gt = np.array([]).reshape(0, 4)
+        vis = exp._compute_visibility_mask(gt)
+
+        assert len(vis) == 0
+
+    def test_compute_visibility_mask_none(self):
+        """Test visibility mask with None input."""
+        from lib.test.evaluation import ExperimentAquaSOT
+
+        exp = ExperimentAquaSOT(root_dir='/tmp', result_dir='/tmp/r', report_dir='/tmp/p')
+
+        vis = exp._compute_visibility_mask(None)
+
+        assert len(vis) == 0
+
+    def test_filter_visibility_enabled(self, tmp_path):
+        """Test that visibility filtering excludes absent frames."""
+        import cv2
+        from lib.test.evaluation import ExperimentAquaSOT
+        from lib.test.tracker import Tracker
+
+        # Create mock sequence with some absent frames
+        seq_path = tmp_path / 'dataset' / 'test_seq'
+        rgb_path = seq_path / 'light' / 'img'
+        sonar_path = seq_path / 'sonar' / 'img_rect'
+        rgb_path.mkdir(parents=True)
+        sonar_path.mkdir(parents=True)
+
+        # Create 5 frames
+        for i in range(5):
+            rgb_img = np.random.randint(0, 255, (240, 320, 3), dtype=np.uint8)
+            cv2.imwrite(str(rgb_path / f'{i:06d}.jpg'), rgb_img)
+            sonar_img = np.random.randint(0, 255, (240, 320), dtype=np.uint8)
+            cv2.imwrite(str(sonar_path / f'{i:06d}.jpg'), sonar_img)
+
+        # Create GT with 2 absent frames (0,0,0,0)
+        with open(seq_path / 'light' / 'groundtruth.txt', 'w') as f:
+            f.write('100,100,40,40\n')  # Frame 0: visible (but skipped as init)
+            f.write('0,0,0,0\n')        # Frame 1: absent
+            f.write('100,100,40,40\n')  # Frame 2: visible
+            f.write('0,0,0,0\n')        # Frame 3: absent
+            f.write('100,100,40,40\n')  # Frame 4: visible
+
+        with open(seq_path / 'sonar' / 'groundtruth_rect.txt', 'w') as f:
+            for i in range(5):
+                f.write('100,100,40,40\n')  # All visible in sonar
+
+        # Simple tracker
+        class SimpleTracker(Tracker):
+            def __init__(self):
+                super().__init__('SimpleTracker', is_deterministic=True)
+                self.box = None
+
+            def init(self, image, box):
+                if isinstance(box, dict):
+                    self.box = np.array(box.get('rgb', box.get('sonar')))
+                else:
+                    self.box = np.array(box)
+
+            def update(self, image):
+                return self.box.copy()
+
+        # Run with filter_visibility=True (default)
+        exp = ExperimentAquaSOT(
+            root_dir=str(tmp_path / 'dataset'),
+            result_dir=str(tmp_path / 'results'),
+            report_dir=str(tmp_path / 'reports'),
+            filter_visibility=True,
+            skip_init_frame=True,
+        )
+
+        tracker = SimpleTracker()
+        exp.run(tracker)
+        performance = exp.report(['SimpleTracker'])
+
+        # With visibility filtering:
+        # - Frame 0: skipped (init)
+        # - Frame 1: absent in RGB, excluded from RGB metrics
+        # - Frame 2: visible
+        # - Frame 3: absent in RGB, excluded from RGB metrics
+        # - Frame 4: visible
+        # RGB visible frames = 2 (frames 2, 4)
+        # Sonar visible frames = 4 (frames 1, 2, 3, 4)
+
+        rgb_vis = performance['SimpleTracker']['rgb']['visible_frames']
+        sonar_vis = performance['SimpleTracker']['sonar']['visible_frames']
+
+        assert rgb_vis == 2, f'Expected 2 RGB visible frames, got {rgb_vis}'
+        assert sonar_vis == 4, f'Expected 4 Sonar visible frames, got {sonar_vis}'
+
+    def test_filter_visibility_disabled(self, tmp_path):
+        """Test that visibility filtering can be disabled."""
+        import cv2
+        from lib.test.evaluation import ExperimentAquaSOT
+        from lib.test.tracker import Tracker
+
+        # Create mock sequence
+        seq_path = tmp_path / 'dataset' / 'test_seq'
+        rgb_path = seq_path / 'light' / 'img'
+        sonar_path = seq_path / 'sonar' / 'img_rect'
+        rgb_path.mkdir(parents=True)
+        sonar_path.mkdir(parents=True)
+
+        for i in range(5):
+            rgb_img = np.random.randint(0, 255, (240, 320, 3), dtype=np.uint8)
+            cv2.imwrite(str(rgb_path / f'{i:06d}.jpg'), rgb_img)
+            sonar_img = np.random.randint(0, 255, (240, 320), dtype=np.uint8)
+            cv2.imwrite(str(sonar_path / f'{i:06d}.jpg'), sonar_img)
+
+        # GT with 2 absent frames
+        with open(seq_path / 'light' / 'groundtruth.txt', 'w') as f:
+            f.write('100,100,40,40\n')
+            f.write('0,0,0,0\n')
+            f.write('100,100,40,40\n')
+            f.write('0,0,0,0\n')
+            f.write('100,100,40,40\n')
+
+        with open(seq_path / 'sonar' / 'groundtruth_rect.txt', 'w') as f:
+            for i in range(5):
+                f.write('100,100,40,40\n')
+
+        class SimpleTracker(Tracker):
+            def __init__(self):
+                super().__init__('SimpleTracker', is_deterministic=True)
+                self.box = None
+
+            def init(self, image, box):
+                if isinstance(box, dict):
+                    self.box = np.array(box.get('rgb', box.get('sonar')))
+                else:
+                    self.box = np.array(box)
+
+            def update(self, image):
+                return self.box.copy()
+
+        # Run with filter_visibility=False
+        exp = ExperimentAquaSOT(
+            root_dir=str(tmp_path / 'dataset'),
+            result_dir=str(tmp_path / 'results2'),
+            report_dir=str(tmp_path / 'reports2'),
+            filter_visibility=False,
+            skip_init_frame=True,
+        )
+
+        tracker = SimpleTracker()
+        exp.run(tracker)
+        performance = exp.report(['SimpleTracker'])
+
+        # Without visibility filtering:
+        # All 4 frames after init should be counted
+        rgb_vis = performance['SimpleTracker']['rgb']['visible_frames']
+
+        assert rgb_vis == 4, f'Expected 4 RGB visible frames (filter disabled), got {rgb_vis}'
+
+
+# ==============================================================================
 # Integration Tests
 # ==============================================================================
 
@@ -489,7 +689,12 @@ class TestEvaluationIntegration:
                 self.frame = 0
 
             def init(self, image, box):
-                self.box = np.array(box, dtype=np.float32)
+                # Handle dict format (dual-modal) or array format (legacy)
+                if isinstance(box, dict):
+                    init_box = box.get('rgb', box.get('sonar'))
+                else:
+                    init_box = box
+                self.box = np.array(init_box, dtype=np.float32)
                 self.frame = 0
 
             def update(self, image):

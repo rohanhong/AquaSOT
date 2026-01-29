@@ -1,7 +1,15 @@
 """
 Experiment class for AquaSOT evaluation.
 
-Based on got10k-toolkit ExperimentOTB.
+Based on got10k-toolkit ExperimentOTB with visibility filtering support.
+
+Key features:
+- Visibility filtering: excludes frames where GT is (0,0,0,0) or invalid
+- Multi-modal evaluation: separate RGB and Sonar metrics
+- Skip frame 0: initialization frame not evaluated (GOT-10k standard)
+
+Reference: GOT-10k (got10k/experiments/got10k.py:181)
+    seq_ious = [t[covers[seq_name] > 0] for t in seq_ious]
 """
 
 import os
@@ -18,6 +26,7 @@ class ExperimentAquaSOT:
     Supports:
         - Running trackers on sequences
         - Computing Success/Precision metrics for RGB and Sonar modalities
+        - Visibility filtering (excludes absent frames)
         - Generating evaluation reports
 
     Args:
@@ -25,6 +34,9 @@ class ExperimentAquaSOT:
         result_dir: Directory to save tracking results
         report_dir: Directory to save reports
         sequence_names: List of sequence names to evaluate (None = all)
+        filter_visibility: Whether to filter out absent frames (default: True)
+        skip_init_frame: Whether to skip frame 0 in evaluation (default: True)
+        eval_mode: Evaluation mode - 'dual', 'rgb_only', or 'sonar_only' (default: 'dual')
     """
 
     def __init__(
@@ -33,10 +45,16 @@ class ExperimentAquaSOT:
         result_dir='results',
         report_dir='reports',
         sequence_names=None,
+        filter_visibility=True,
+        skip_init_frame=True,
+        eval_mode='dual',
     ):
         self.root_dir = root_dir
         self.result_dir = result_dir
         self.report_dir = report_dir
+        self.filter_visibility = filter_visibility
+        self.skip_init_frame = skip_init_frame
+        self.eval_mode = eval_mode  # 'dual', 'rgb_only', 'sonar_only'
 
         # Discover sequences
         self.sequence_names = sequence_names
@@ -228,6 +246,32 @@ class ExperimentAquaSOT:
 
         return np.array(gt) if gt else None
 
+    def _compute_visibility_mask(self, gt_boxes):
+        """Compute visibility mask from ground truth boxes.
+
+        AquaSOT encodes target absence as (0,0,0,0) boxes.
+        Following GOT-10k pattern: filter frames where targets are invisible.
+
+        Args:
+            gt_boxes: Array of boxes (N, 4) in [x, y, w, h] format
+
+        Returns:
+            visibility: Boolean array (N,), True = visible, False = absent
+        """
+        if gt_boxes is None or len(gt_boxes) == 0:
+            return np.array([], dtype=bool)
+
+        # Method 1: Exact (0,0,0,0) match
+        is_zero = np.all(gt_boxes == 0, axis=1)
+
+        # Method 2: Invalid box detection (w <= 0 or h <= 0)
+        has_invalid_size = (gt_boxes[:, 2] <= 0) | (gt_boxes[:, 3] <= 0)
+
+        # Combine: visible = not zero AND has valid size
+        visibility = ~is_zero & ~has_invalid_size
+
+        return visibility
+
     def _save_results(self, tracker_name, seq_name, results):
         """Save tracking results.
 
@@ -304,113 +348,341 @@ class ExperimentAquaSOT:
         return performance
 
     def _compute_metrics(self, tracker_name):
-        """Compute metrics for a tracker.
+        """Compute metrics for a tracker with visibility filtering and multi-modal support.
+
+        Following GOT-10k pattern (line 181):
+            seq_ious = [t[covers[seq_name] > 0] for t in seq_ious]
 
         Args:
             tracker_name: Tracker name
 
         Returns:
-            dict with metrics
+            dict with keys:
+                - rgb: RGB-specific metrics
+                - sonar: Sonar-specific metrics
+                - overall: Combined metrics (weighted by visible frames)
+                - sequences: Per-sequence breakdown
         """
         tracker_dir = os.path.join(self.result_dir, tracker_name)
         if not os.path.exists(tracker_dir):
             print(f'[Warning] Results not found for {tracker_name}')
             return {}
 
-        all_ious = []
-        all_errors = []
+        # Accumulators for each modality
+        rgb_ious_all = []
+        rgb_errors_all = []
+        sonar_ious_all = []
+        sonar_errors_all = []
+
+        # Frame counters for visibility stats
+        rgb_visible_frames = 0
+        rgb_total_frames = 0
+        sonar_visible_frames = 0
+        sonar_total_frames = 0
+
         seq_metrics = {}
 
         for seq_name in self.sequence_names:
-            # Load predicted boxes (RGB)
-            result_file = os.path.join(tracker_dir, f'{seq_name}_rgb.txt')
-            if not os.path.exists(result_file):
+            # Load predictions for both modalities
+            rgb_result_file = os.path.join(tracker_dir, f'{seq_name}_rgb.txt')
+            sonar_result_file = os.path.join(tracker_dir, f'{seq_name}_sonar.txt')
+
+            if not os.path.exists(rgb_result_file):
                 continue
 
-            pred_boxes = np.loadtxt(result_file, delimiter=',')
-            if pred_boxes.ndim == 1:
-                pred_boxes = pred_boxes[np.newaxis, :]
+            rgb_pred = np.loadtxt(rgb_result_file, delimiter=',')
+            if rgb_pred.ndim == 1:
+                rgb_pred = rgb_pred[np.newaxis, :]
+
+            sonar_pred = None
+            if os.path.exists(sonar_result_file):
+                sonar_pred = np.loadtxt(sonar_result_file, delimiter=',')
+                if sonar_pred.ndim == 1:
+                    sonar_pred = sonar_pred[np.newaxis, :]
 
             # Load ground truth
             seq_data = self._load_sequence(seq_name)
             if seq_data is None:
                 continue
 
-            gt_boxes = seq_data['rgb_gt']
-            if gt_boxes is None:
-                gt_boxes = seq_data['sonar_gt']
-            if gt_boxes is None:
-                continue
+            rgb_gt = seq_data['rgb_gt']
+            sonar_gt = seq_data['sonar_gt']
 
-            # Ensure same length
-            n_frames = min(len(pred_boxes), len(gt_boxes))
-            pred_boxes = pred_boxes[:n_frames]
-            gt_boxes = gt_boxes[:n_frames]
+            # Compute visibility masks
+            rgb_vis = self._compute_visibility_mask(rgb_gt) if rgb_gt is not None else None
+            sonar_vis = self._compute_visibility_mask(sonar_gt) if sonar_gt is not None else None
 
-            # Compute IoU and center error
-            ious = rect_iou(pred_boxes, gt_boxes)
-            errors = center_error(pred_boxes, gt_boxes)
+            # Initialize per-sequence metrics
+            seq_metrics[seq_name] = {}
 
-            all_ious.append(ious)
-            all_errors.append(errors)
+            # === RGB Evaluation ===
+            if rgb_gt is not None and len(rgb_gt) > 0 and self.eval_mode != 'sonar_only':
+                n_frames = min(len(rgb_pred), len(rgb_gt))
 
-            # Per-sequence metrics
-            seq_metrics[seq_name] = {
-                'success_score': np.mean(ious),
-                'precision_score': np.mean(errors <= 20),  # 20 pixel threshold
-                'avg_iou': float(np.mean(ious)),
-                'avg_center_error': float(np.mean(errors)),
+                # Determine start index (skip frame 0 if configured)
+                start_idx = 1 if self.skip_init_frame and n_frames > 1 else 0
+
+                if n_frames > start_idx:
+                    pred_eval = rgb_pred[start_idx:n_frames]
+                    gt_eval = rgb_gt[start_idx:n_frames]
+                    vis_eval = rgb_vis[start_idx:n_frames] if rgb_vis is not None else np.ones(n_frames - start_idx, dtype=bool)
+
+                    # Apply visibility filter if enabled
+                    if not self.filter_visibility:
+                        vis_eval = np.ones(len(vis_eval), dtype=bool)
+
+                    # Compute raw metrics
+                    ious = rect_iou(pred_eval, gt_eval)
+                    errors = center_error(pred_eval, gt_eval)
+
+                    # Filter by visibility (GOT-10k pattern)
+                    n_visible = vis_eval.sum()
+                    if n_visible > 0:
+                        ious_filtered = ious[vis_eval]
+                        errors_filtered = errors[vis_eval]
+                        rgb_ious_all.append(ious_filtered)
+                        rgb_errors_all.append(errors_filtered)
+
+                    # Update counters
+                    rgb_total_frames += len(vis_eval)
+                    rgb_visible_frames += n_visible
+
+                    # Per-sequence RGB metrics
+                    if n_visible > 0:
+                        seq_metrics[seq_name]['rgb'] = {
+                            'avg_iou': float(np.mean(ious_filtered)),
+                            'precision_20': float(np.mean(errors_filtered <= 20)),
+                            'avg_center_error': float(np.mean(errors_filtered)),
+                            'visible_frames': int(n_visible),
+                            'total_frames': int(len(vis_eval)),
+                        }
+
+            # === Sonar Evaluation ===
+            if sonar_gt is not None and sonar_pred is not None and len(sonar_gt) > 0 and self.eval_mode != 'rgb_only':
+                n_frames = min(len(sonar_pred), len(sonar_gt))
+
+                # Determine start index
+                start_idx = 1 if self.skip_init_frame and n_frames > 1 else 0
+
+                if n_frames > start_idx:
+                    pred_eval = sonar_pred[start_idx:n_frames]
+                    gt_eval = sonar_gt[start_idx:n_frames]
+                    vis_eval = sonar_vis[start_idx:n_frames] if sonar_vis is not None else np.ones(n_frames - start_idx, dtype=bool)
+
+                    # Apply visibility filter if enabled
+                    if not self.filter_visibility:
+                        vis_eval = np.ones(len(vis_eval), dtype=bool)
+
+                    # Compute raw metrics
+                    ious = rect_iou(pred_eval, gt_eval)
+                    errors = center_error(pred_eval, gt_eval)
+
+                    # Filter by visibility
+                    n_visible = vis_eval.sum()
+                    if n_visible > 0:
+                        ious_filtered = ious[vis_eval]
+                        errors_filtered = errors[vis_eval]
+                        sonar_ious_all.append(ious_filtered)
+                        sonar_errors_all.append(errors_filtered)
+
+                    # Update counters
+                    sonar_total_frames += len(vis_eval)
+                    sonar_visible_frames += n_visible
+
+                    # Per-sequence Sonar metrics
+                    if n_visible > 0:
+                        seq_metrics[seq_name]['sonar'] = {
+                            'avg_iou': float(np.mean(ious_filtered)),
+                            'precision_20': float(np.mean(errors_filtered <= 20)),
+                            'avg_center_error': float(np.mean(errors_filtered)),
+                            'visible_frames': int(n_visible),
+                            'total_frames': int(len(vis_eval)),
+                        }
+
+        # Aggregate results
+        result = {
+            'rgb': self._aggregate_modality_metrics(
+                rgb_ious_all, rgb_errors_all, rgb_visible_frames, rgb_total_frames
+            ),
+            'sonar': self._aggregate_modality_metrics(
+                sonar_ious_all, sonar_errors_all, sonar_visible_frames, sonar_total_frames
+            ),
+            'sequences': seq_metrics,
+        }
+
+        # Compute overall metrics (weighted by visible frames)
+        result['overall'] = self._compute_overall_metrics(result['rgb'], result['sonar'])
+
+        # Backward compatibility: add legacy 'overall' fields
+        # Use RGB curves by default, fall back to Sonar in sonar_only mode
+        result['overall']['success_score'] = result['overall']['success_auc']
+        if result['rgb'].get('success_auc') is not None:
+            result['success_curve'] = result['rgb'].get('success_curve', [])
+            result['precision_curve'] = result['rgb'].get('precision_curve', [])
+        elif result['sonar'].get('success_auc') is not None:
+            result['success_curve'] = result['sonar'].get('success_curve', [])
+            result['precision_curve'] = result['sonar'].get('precision_curve', [])
+        else:
+            result['success_curve'] = []
+            result['precision_curve'] = []
+
+        return result
+
+    def _aggregate_modality_metrics(self, ious_list, errors_list, visible_frames, total_frames):
+        """Aggregate metrics for a single modality.
+
+        Args:
+            ious_list: List of IoU arrays (one per sequence)
+            errors_list: List of center error arrays (one per sequence)
+            visible_frames: Total visible frames across all sequences
+            total_frames: Total frames across all sequences
+
+        Returns:
+            dict with aggregated metrics
+        """
+        if not ious_list:
+            return {
+                'success_auc': None,
+                'precision_score': None,
+                'avg_iou': None,
+                'avg_center_error': None,
+                'visible_frames': 0,
+                'total_frames': total_frames,
+                'visibility_ratio': 0.0,
             }
 
-        if not all_ious:
-            return {}
-
-        # Compute overall curves
-        all_ious = np.concatenate(all_ious)
-        all_errors = np.concatenate(all_errors)
+        all_ious = np.concatenate(ious_list)
+        all_errors = np.concatenate(errors_list)
 
         success = success_curve(all_ious)
         precision = precision_curve(all_errors)
-
-        # Compute AUC
         success_auc = calculate_auc(success)
-        precision_auc = calculate_auc(precision, start=0.0, end=50.0)
 
         return {
-            'overall': {
-                'success_score': float(success_auc),
-                'precision_score': float(precision[20]),  # 20 pixel threshold
-                'success_auc': float(success_auc),
-                'avg_iou': float(np.mean(all_ious)),
-                'avg_center_error': float(np.mean(all_errors)),
-            },
-            'sequences': seq_metrics,
+            'success_auc': float(success_auc),
+            'precision_score': float(precision[20]) if len(precision) > 20 else 0.0,
+            'avg_iou': float(np.mean(all_ious)),
+            'avg_center_error': float(np.mean(all_errors)),
+            'visible_frames': int(visible_frames),
+            'total_frames': int(total_frames),
+            'visibility_ratio': float(visible_frames / total_frames) if total_frames > 0 else 0.0,
             'success_curve': success.tolist(),
             'precision_curve': precision.tolist(),
         }
 
+    def _compute_overall_metrics(self, rgb_metrics, sonar_metrics):
+        """Compute overall metrics from RGB and Sonar metrics.
+
+        Uses weighted average by number of visible frames (GOT-10k style).
+
+        Args:
+            rgb_metrics: dict with RGB metrics
+            sonar_metrics: dict with Sonar metrics
+
+        Returns:
+            dict with overall metrics
+        """
+        rgb_vis = rgb_metrics.get('visible_frames', 0) or 0
+        sonar_vis = sonar_metrics.get('visible_frames', 0) or 0
+        total_vis = rgb_vis + sonar_vis
+
+        if total_vis == 0:
+            return {
+                'success_auc': 0.0,
+                'precision_score': 0.0,
+                'avg_iou': 0.0,
+                'avg_center_error': float('inf'),
+                'visible_frames': 0,
+                'rgb_weight': 0.0,
+                'sonar_weight': 0.0,
+            }
+
+        # Weighted average by visible frames
+        w_rgb = rgb_vis / total_vis
+        w_sonar = sonar_vis / total_vis
+
+        def weighted_avg(rgb_val, sonar_val):
+            rgb_v = rgb_val if rgb_val is not None else 0.0
+            sonar_v = sonar_val if sonar_val is not None else 0.0
+            return w_rgb * rgb_v + w_sonar * sonar_v
+
+        return {
+            'success_auc': weighted_avg(
+                rgb_metrics.get('success_auc'),
+                sonar_metrics.get('success_auc')
+            ),
+            'precision_score': weighted_avg(
+                rgb_metrics.get('precision_score'),
+                sonar_metrics.get('precision_score')
+            ),
+            'avg_iou': weighted_avg(
+                rgb_metrics.get('avg_iou'),
+                sonar_metrics.get('avg_iou')
+            ),
+            'avg_center_error': weighted_avg(
+                rgb_metrics.get('avg_center_error', float('inf')),
+                sonar_metrics.get('avg_center_error', float('inf'))
+            ),
+            'visible_frames': total_vis,
+            'rgb_weight': w_rgb,
+            'sonar_weight': w_sonar,
+        }
+
     def _print_summary(self, performance):
-        """Print evaluation summary.
+        """Print evaluation summary with multi-modal breakdown.
 
         Args:
             performance: dict with metrics for each tracker
         """
-        print('\n' + '=' * 70)
-        print('Evaluation Summary')
-        print('=' * 70)
-        print(f'{"Tracker":<20} {"Success AUC":>15} {"Precision@20":>15} {"Avg IoU":>12}')
-        print('-' * 70)
+        print('\n' + '=' * 90)
+        print('AquaSOT Evaluation Summary (Visibility-Filtered)')
+        print('=' * 90)
+        print(f'{"Tracker":<20} {"Modality":<10} {"Success AUC":>12} {"Precision@20":>13} '
+              f'{"Avg IoU":>10} {"Vis Frames":>12}')
+        print('-' * 90)
 
         for name, metrics in performance.items():
-            if 'overall' not in metrics:
-                print(f'{name:<20} {"N/A":>15} {"N/A":>15} {"N/A":>12}')
+            if 'rgb' not in metrics:
+                print(f'{name:<20} {"N/A":<10}')
                 continue
 
-            overall = metrics['overall']
-            print(f'{name:<20} {overall["success_auc"]:>15.3f} '
-                  f'{overall["precision_score"]:>15.3f} {overall["avg_iou"]:>12.3f}')
+            # RGB metrics
+            rgb = metrics.get('rgb', {})
+            rgb_auc = rgb.get('success_auc')
+            if rgb_auc is not None:
+                print(f'{name:<20} {"RGB":<10} {rgb_auc:>12.3f} '
+                      f'{rgb.get("precision_score", 0):>13.3f} {rgb.get("avg_iou", 0):>10.3f} '
+                      f'{rgb.get("visible_frames", 0):>12d}')
+            else:
+                print(f'{name:<20} {"RGB":<10} {"N/A":>12} {"N/A":>13} {"N/A":>10} '
+                      f'{rgb.get("total_frames", 0):>12d}')
 
-        print('=' * 70)
+            # Sonar metrics
+            sonar = metrics.get('sonar', {})
+            sonar_auc = sonar.get('success_auc')
+            if sonar_auc is not None:
+                print(f'{"":<20} {"Sonar":<10} {sonar_auc:>12.3f} '
+                      f'{sonar.get("precision_score", 0):>13.3f} {sonar.get("avg_iou", 0):>10.3f} '
+                      f'{sonar.get("visible_frames", 0):>12d}')
+            else:
+                print(f'{"":<20} {"Sonar":<10} {"N/A":>12} {"N/A":>13} {"N/A":>10} '
+                      f'{sonar.get("total_frames", 0):>12d}')
+
+            # Overall metrics
+            overall = metrics.get('overall', {})
+            print(f'{"":<20} {"Overall":<10} {overall.get("success_auc", 0):>12.3f} '
+                  f'{overall.get("precision_score", 0):>13.3f} {overall.get("avg_iou", 0):>10.3f} '
+                  f'{overall.get("visible_frames", 0):>12d}')
+            print('-' * 90)
+
+        print('=' * 90)
+        vis_note = "Metrics computed only on visible frames (GT != [0,0,0,0])"
+        if not self.filter_visibility:
+            vis_note = "Visibility filtering DISABLED (all frames included)"
+        init_note = ", frame 0 skipped" if self.skip_init_frame else ""
+        mode_note = f", eval_mode={self.eval_mode}" if self.eval_mode != 'dual' else ""
+        print(f'Note: {vis_note}{init_note}{mode_note}')
+        print('=' * 90)
 
     def _plot_curves(self, performance):
         """Plot success and precision curves.
@@ -424,45 +696,65 @@ class ExperimentAquaSOT:
             print('[Warning] matplotlib not available, skipping curve plots')
             return
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
         colors = plt.cm.tab10(np.linspace(0, 1, len(performance)))
 
         for (name, metrics), color in zip(performance.items(), colors):
-            if 'success_curve' not in metrics:
-                continue
+            # RGB curves
+            rgb = metrics.get('rgb', {})
+            if rgb.get('success_curve'):
+                success = np.array(rgb['success_curve'])
+                precision = np.array(rgb['precision_curve'])
+                auc = rgb.get('success_auc', 0)
 
-            success = np.array(metrics['success_curve'])
-            precision = np.array(metrics['precision_curve'])
-            auc = metrics['overall']['success_auc']
+                axes[0, 0].plot(
+                    np.linspace(0, 1, len(success)),
+                    success,
+                    color=color,
+                    label=f'{name} RGB [{auc:.3f}]'
+                )
+                axes[0, 1].plot(
+                    np.linspace(0, 50, len(precision)),
+                    precision,
+                    color=color,
+                    label=f'{name} RGB'
+                )
 
-            # Success plot
-            ax1.plot(
-                np.linspace(0, 1, len(success)),
-                success,
-                color=color,
-                label=f'{name} [{auc:.3f}]'
-            )
+            # Sonar curves
+            sonar = metrics.get('sonar', {})
+            if sonar.get('success_curve'):
+                success = np.array(sonar['success_curve'])
+                precision = np.array(sonar['precision_curve'])
+                auc = sonar.get('success_auc', 0)
 
-            # Precision plot
-            ax2.plot(
-                np.linspace(0, 50, len(precision)),
-                precision,
-                color=color,
-                label=f'{name}'
-            )
+                axes[1, 0].plot(
+                    np.linspace(0, 1, len(success)),
+                    success,
+                    color=color,
+                    linestyle='--',
+                    label=f'{name} Sonar [{auc:.3f}]'
+                )
+                axes[1, 1].plot(
+                    np.linspace(0, 50, len(precision)),
+                    precision,
+                    color=color,
+                    linestyle='--',
+                    label=f'{name} Sonar'
+                )
 
-        ax1.set_xlabel('Overlap Threshold')
-        ax1.set_ylabel('Success Rate')
-        ax1.set_title('Success Plot')
-        ax1.legend()
-        ax1.grid(True)
-
-        ax2.set_xlabel('Center Error Threshold (pixels)')
-        ax2.set_ylabel('Precision Rate')
-        ax2.set_title('Precision Plot')
-        ax2.legend()
-        ax2.grid(True)
+        # Configure axes
+        for i, title in enumerate(['RGB Success', 'RGB Precision', 'Sonar Success', 'Sonar Precision']):
+            ax = axes[i // 2, i % 2]
+            ax.set_title(title)
+            ax.legend()
+            ax.grid(True)
+            if 'Success' in title:
+                ax.set_xlabel('Overlap Threshold')
+                ax.set_ylabel('Success Rate')
+            else:
+                ax.set_xlabel('Center Error Threshold (pixels)')
+                ax.set_ylabel('Precision Rate')
 
         plt.tight_layout()
 

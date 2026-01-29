@@ -51,6 +51,15 @@ def parse_args():
     parser.add_argument('--plot_curves', action='store_true',
                         help='Plot success/precision curves')
 
+    # Evaluation mode and visibility filtering
+    parser.add_argument('--eval_mode', type=str, default='dual',
+                        choices=['dual', 'rgb_only', 'sonar_only'],
+                        help='Evaluation mode: dual (both), rgb_only, sonar_only')
+    parser.add_argument('--no_filter_visibility', action='store_true',
+                        help='Include all frames (legacy behavior, ignores GT absence)')
+    parser.add_argument('--no_skip_init_frame', action='store_true',
+                        help='Include frame 0 in evaluation (non-standard)')
+
     # Model settings
     parser.add_argument('--search_size', type=int, default=256,
                         help='Search region size')
@@ -115,6 +124,9 @@ def main():
         result_dir=args.result_dir,
         report_dir=args.report_dir,
         sequence_names=args.sequences,
+        filter_visibility=not args.no_filter_visibility,
+        skip_init_frame=not args.no_skip_init_frame,
+        eval_mode=args.eval_mode,
     )
 
     print(f'[Evaluation] Found {len(experiment.sequence_names)} sequences')

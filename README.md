@@ -73,12 +73,26 @@ Configuration files are located in `experiments/aquasot/`.
 ## Evaluation
 
 ```bash
+# Standard dual-modal evaluation
 python tracking/test.py \
     --tracker aquasot \
     --checkpoint outputs/train/checkpoints/model.pth \
     --dataset aquasot \
     --dataset_path data/
+
+# RGB-only or Sonar-only evaluation
+python tracking/test.py --checkpoint model.pth --eval_mode rgb_only
+python tracking/test.py --checkpoint model.pth --eval_mode sonar_only
+
+# Disable visibility filtering (include absent frames)
+python tracking/test.py --checkpoint model.pth --no_filter_visibility
 ```
+
+**Options:**
+- `--eval_mode {dual,rgb_only,sonar_only}`: Evaluation modality mode
+- `--no_filter_visibility`: Include all frames (ignore GT absence)
+- `--no_skip_init_frame`: Include frame 0 in evaluation
+- `--plot_curves`: Generate success/precision curve plots
 
 **Metrics:** Success (AUC), Precision@20, Center Error (per modality)
 

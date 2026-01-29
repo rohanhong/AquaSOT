@@ -16,20 +16,37 @@ AquaSOT uses **testing-time ablation** with a single checkpoint trained on both 
 
 ```bash
 # Full model (baseline)
-python tracking/test.py aquasot vitb_256_dual \
+python tracking/test.py --tracker aquasot \
+    --config experiments/aquasot/vitb_256_dual.yaml \
     --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth
 
-# RGB-only
-python tracking/test.py aquasot ablation_rgb_only \
+# RGB-only (via modality dropout)
+python tracking/test.py --tracker aquasot \
+    --config experiments/aquasot/ablation_rgb_only.yaml \
     --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth
 
-# Sonar-only
-python tracking/test.py aquasot ablation_sonar_only \
+# Sonar-only (via modality dropout)
+python tracking/test.py --tracker aquasot \
+    --config experiments/aquasot/ablation_sonar_only.yaml \
     --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth
 
 # No fusion
-python tracking/test.py aquasot ablation_no_fusion \
+python tracking/test.py --tracker aquasot \
+    --config experiments/aquasot/ablation_no_fusion.yaml \
     --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth
+```
+
+**Alternative: Evaluation-time modality filtering** (metrics only, does not change tracking):
+```bash
+# Evaluate RGB metrics only (from dual-modal results)
+python tracking/test.py --tracker aquasot \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
+    --eval_mode rgb_only
+
+# Evaluate Sonar metrics only (from dual-modal results)
+python tracking/test.py --tracker aquasot \
+    --checkpoint outputs/train/aquasot/vitb_256_dual/checkpoints/checkpoint_ep0100.pth \
+    --eval_mode sonar_only
 ```
 
 ## Interpreting Results

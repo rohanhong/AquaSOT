@@ -65,6 +65,9 @@ cfg.MODEL.FUSION.EMBED_DIM = 768
 cfg.MODEL.FUSION.NUM_HEADS = 8
 cfg.MODEL.FUSION.NUM_LAYERS = 2
 cfg.MODEL.FUSION.DROPOUT = 0.1
+# Fusion strength weights (0=no cross-modal influence, 1=full fusion)
+cfg.MODEL.FUSION.RGB_FUSION_WEIGHT = 0.3      # RGB receives info from Sonar
+cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT = 0.3    # Sonar receives info from RGB
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()
@@ -267,10 +270,10 @@ cfg.TEST.TARGET_LOSS = edict()
 cfg.TEST.TARGET_LOSS.ENABLED = True
 
 # Score-based detection thresholds
-# Strategy: higher thresholds to detect RGB target leaving FASTER (before box shrinks)
-cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD = 0.30    # Below = definitely lost
-cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD = 0.50    # Below = uncertain
-cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD = 0.70       # Higher: detect issues earlier
+# Extremely low thresholds: nearly always STABLE unless confidence is near zero
+cfg.TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD = 0.01    # Below = definitely lost
+cfg.TEST.TARGET_LOSS.UNCERTAIN_THRESHOLD = 0.05    # Below = uncertain
+cfg.TEST.TARGET_LOSS.STABLE_THRESHOLD = 0.10       # Above = stable
 
 # State transition hysteresis (avoid jitter between states)
 cfg.TEST.TARGET_LOSS.LOST_CONFIRM_FRAMES = 2       # Very quick to enter LOST (before box shrinks)
@@ -284,6 +287,35 @@ cfg.TEST.TARGET_LOSS.USE_SEARCH_REGION = True
 # Primary output selection when both modalities are STABLE
 # Options: "rgb_first", "sonar_first", "higher_score"
 cfg.TEST.TARGET_LOSS.PRIMARY_PRIORITY = "higher_score"
+
+# Dynamic search factor based on tracking state
+# Reference: DiMP uses search_area_scale=4.5-5.0, NA-OSTrack uses fixed K=3
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR = edict()
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.ENABLED = True
+
+# State-based search factors (shared defaults)
+# STABLE: precise localization with standard factor
+# UNCERTAIN: moderate expansion for recovery attempts
+# LOST: maximum expansion to re-acquire target
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.STABLE = 4.0
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.UNCERTAIN = 5.0
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.LOST = 7.0
+
+# RGB-specific search factors
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.RGB_STABLE = 4.0
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.RGB_UNCERTAIN = 5.0
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.RGB_LOST = 7.0
+
+# Sonar-specific search factors
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.SONAR_STABLE = 4.0
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.SONAR_UNCERTAIN = 5.0
+cfg.TEST.TARGET_LOSS.DYNAMIC_SEARCH_FACTOR.SONAR_LOST = 7.0
+
+# Evaluation settings (visibility filtering and multi-modal mode)
+cfg.TEST.EVALUATION = edict()
+cfg.TEST.EVALUATION.FILTER_VISIBILITY = True      # Filter out absent frames (GT=0,0,0,0)
+cfg.TEST.EVALUATION.SKIP_INIT_FRAME = True        # Skip frame 0 (GOT-10k standard)
+cfg.TEST.EVALUATION.EVAL_MODE = 'dual'            # 'dual', 'rgb_only', 'sonar_only'
 
 # Metrics
 cfg.TEST.METRICS = ["success_auc", "precision_20", "avg_center_error"]

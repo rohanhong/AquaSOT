@@ -13,6 +13,7 @@ python tracking/test.py --tracker aquasot \
 |--------|-------------|---------|
 | `--tracker` | Tracker name | `aquasot` |
 | `--checkpoint` | Model checkpoint path | Required |
+| `--config` | Path to config YAML file | None |
 | `--dataset_path` | Dataset root directory | `data/` |
 | `--sequences` | Specific sequences to evaluate | All |
 | `--result_dir` | Tracking results output directory | `outputs/test/results` |
@@ -21,6 +22,9 @@ python tracking/test.py --tracker aquasot \
 | `--plot_curves` | Generate success/precision curves | Off |
 | `--overwrite` | Overwrite existing results | Off |
 | `--report_only` | Generate report from existing results | Off |
+| `--eval_mode` | Evaluation mode: `dual`, `rgb_only`, `sonar_only` | `dual` |
+| `--no_filter_visibility` | Include all frames (ignore GT absence) | Off |
+| `--no_skip_init_frame` | Include frame 0 in evaluation | Off |
 | `--search_size` | Search region size | 256 |
 | `--template_size` | Template size | 128 |
 | `--search_factor` | Search region scale factor | 4.0 |
