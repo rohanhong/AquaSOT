@@ -186,14 +186,16 @@ $$
 | 注意力头数 | 8 | `cfg.MODEL.FUSION.NUM_HEADS` |
 | 嵌入维度 | 768 | `cfg.MODEL.FUSION.EMBED_DIM` |
 | Dropout率 | 0.1 | `cfg.MODEL.FUSION.DROPOUT` |
-| RGB融合权重 | 0.3 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT` |
-| Sonar融合权重 | 0.3 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT` |
+| RGB融合权重(推理) | 0.3 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT` |
+| Sonar融合权重(推理) | 0.3 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT` |
+| RGB融合权重(训练) | 1.0 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT_TRAIN` |
+| Sonar融合权重(训练) | 1.0 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT_TRAIN` |
 
 **代码参考**: `lib/models/aquasot/fusion.py:19-167`
 
-#### 2.3.3 可配置融合权重
+#### 2.3.3 非对称融合权重（训练 vs 推理）
 
-**代码参考**: `lib/models/aquasot/fusion.py:101-125`
+**代码参考**: `lib/models/aquasot/fusion.py:222-250`
 
 交叉注意力残差连接使用可配置权重控制融合强度:
 
@@ -204,13 +206,12 @@ $$
 \end{aligned}
 $$
 
-其中:
-- $\alpha_{rgb} = 0.3$: RGB接收Sonar信息的融合权重
-- $\alpha_{sonar} = 0.3$: Sonar接收RGB信息的融合权重
-- $\alpha = 0$: 无跨模态影响（独立处理）
-- $\alpha = 1$: 完全融合（原始行为）
+**非对称设计**:
+- **训练**: $\alpha_{rgb} = \alpha_{sonar} = 1.0$（完全融合，充分训练DCMA投影）
+- **推理**: $\alpha_{rgb} = \alpha_{sonar} = 0.3$（弱融合，保留模态特定信息）
+- $\alpha = 0$: 无跨模态影响（消融实验，通过 `--eval_mode no_fusion` 启用）
 
-弱融合 ($\alpha = 0.3$) 在实现互补信息交换的同时减少跨模态干扰。
+**设计原理**: 训练时使用完全融合使DCMA投影获得充分的梯度信号。推理时使用弱融合保留模态特定信息以提高鲁棒性。消融实验建议启用BN适应以补偿特征分布差异。
 
 #### 2.3.4 模态有效性检测与自注意力回退
 

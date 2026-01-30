@@ -172,7 +172,8 @@ class TestAquaSOT:
         assert hasattr(model, 'rgb_backbone')
         assert hasattr(model, 'sonar_backbone')
         assert hasattr(model, 'fusion')
-        assert hasattr(model, 'box_head')
+        assert hasattr(model, 'rgb_box_head')
+        assert hasattr(model, 'sonar_box_head')
 
     def test_forward(self, model):
         """Test forward pass."""

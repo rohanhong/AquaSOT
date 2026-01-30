@@ -248,12 +248,12 @@ F_sonar_out = F_sonar' + FFN(LN(F_sonar'))
 - Number of heads: 8
 - Head dimension: 96 (768 / 8)
 - Dropout: 0.1
-- RGB Fusion Weight: 0.3
-- Sonar Fusion Weight: 0.3
+- RGB Fusion Weight: 1.0 (training) / 0.3 (inference)
+- Sonar Fusion Weight: 1.0 (training) / 0.3 (inference)
 
-#### 3.2.3 Configurable Fusion Weights
+#### 3.2.3 Asymmetric Fusion Weights (Training vs Inference)
 
-**Source**: `lib/models/aquasot/fusion.py:101-125`
+**Source**: `lib/models/aquasot/fusion.py:222-250`
 
 Fusion weights control the strength of cross-modal attention:
 
@@ -262,14 +262,18 @@ F_rgb' = F_rgb + alpha_rgb * CrossAttn(LN(F_rgb), F_sonar)
 F_sonar' = F_sonar + alpha_sonar * CrossAttn(LN(F_sonar), F_rgb)
 ```
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `RGB_FUSION_WEIGHT` | 0.3 | RGB cross-modal attention strength |
-| `SONAR_FUSION_WEIGHT` | 0.3 | Sonar cross-modal attention strength |
+| Parameter | Training | Inference | Description |
+|-----------|----------|-----------|-------------|
+| `RGB_FUSION_WEIGHT_TRAIN` | 1.0 | - | Training: full cross-modal learning |
+| `SONAR_FUSION_WEIGHT_TRAIN` | 1.0 | - | Training: full cross-modal learning |
+| `RGB_FUSION_WEIGHT` | - | 0.3 | Inference: weak fusion |
+| `SONAR_FUSION_WEIGHT` | - | 0.3 | Inference: weak fusion |
 
-- Set to 0 for no cross-modal fusion (identity)
-- Set to 1 for full fusion (original behavior)
-- Default 0.3 provides weak fusion, reducing cross-modal interference while enabling complementary information exchange
+**Design Rationale**:
+- **Training (1.0)**: Full fusion enables DCMA projections to be fully trained with strong gradients
+- **Inference (0.3)**: Weak fusion preserves modality-specific information, improving robustness
+- **No-fusion (0.0)**: For ablation studies, set via `--eval_mode no_fusion`
+- **BN Adaptation**: Recommended for ablation studies to compensate for feature distribution shift
 
 #### 3.2.4 Modality Validity Detection
 
@@ -765,8 +769,10 @@ All default parameters are defined in `config.py`. YAML files only override thes
 | `TEST.TEMPLATE_UPDATE.UPDATE_INTERVAL` | 200 | Frames between updates |
 | `TEST.TEMPLATE_UPDATE.HIGH_CONFIDENCE_THRESHOLD` | 0.7 | Min score for template update |
 | **Fusion** | | |
-| `MODEL.FUSION.RGB_FUSION_WEIGHT` | 0.3 | RGB cross-modal attention strength |
-| `MODEL.FUSION.SONAR_FUSION_WEIGHT` | 0.3 | Sonar cross-modal attention strength |
+| `MODEL.FUSION.RGB_FUSION_WEIGHT` | 0.3 | RGB fusion weight (inference) |
+| `MODEL.FUSION.SONAR_FUSION_WEIGHT` | 0.3 | Sonar fusion weight (inference) |
+| `MODEL.FUSION.RGB_FUSION_WEIGHT_TRAIN` | 1.0 | RGB fusion weight (training) |
+| `MODEL.FUSION.SONAR_FUSION_WEIGHT_TRAIN` | 1.0 | Sonar fusion weight (training) |
 | **Target Loss Detection** | | |
 | `TEST.TARGET_LOSS.ENABLED` | True | Enable target loss detection |
 | `TEST.TARGET_LOSS.NOT_FOUND_THRESHOLD` | 0.01 | Score below = target lost |

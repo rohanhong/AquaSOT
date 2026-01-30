@@ -219,14 +219,25 @@ class IdentityFusion(nn.Module):
         return rgb_feat, sonar_feat
 
 
-def build_fusion(cfg):
-    """Build fusion module from config."""
+def build_fusion(cfg, training=True):
+    """Build fusion module from config.
+
+    Args:
+        cfg: Configuration object
+        training: If True, use training fusion weights (1.0 for full cross-modal learning);
+                  If False, use inference fusion weights (default 0.3 for weak fusion)
+    """
     fusion_type = cfg.MODEL.FUSION.TYPE.lower()
 
     if fusion_type == 'dcma':
-        # Get fusion weights from config (default to 0.3 for weak fusion)
-        rgb_fusion_weight = getattr(cfg.MODEL.FUSION, 'RGB_FUSION_WEIGHT', 0.3)
-        sonar_fusion_weight = getattr(cfg.MODEL.FUSION, 'SONAR_FUSION_WEIGHT', 0.3)
+        # Training uses full fusion (1.0) to fully train DCMA projections
+        # Inference uses weaker fusion (0.3) to preserve modality-specific information
+        if training:
+            rgb_fusion_weight = getattr(cfg.MODEL.FUSION, 'RGB_FUSION_WEIGHT_TRAIN', 1.0)
+            sonar_fusion_weight = getattr(cfg.MODEL.FUSION, 'SONAR_FUSION_WEIGHT_TRAIN', 1.0)
+        else:
+            rgb_fusion_weight = getattr(cfg.MODEL.FUSION, 'RGB_FUSION_WEIGHT', 0.3)
+            sonar_fusion_weight = getattr(cfg.MODEL.FUSION, 'SONAR_FUSION_WEIGHT', 0.3)
         return DCMA(
             embed_dim=cfg.MODEL.FUSION.EMBED_DIM,
             num_heads=cfg.MODEL.FUSION.NUM_HEADS,

@@ -260,12 +260,14 @@ where $\text{Linear}_1: D \rightarrow 4D$ and $\text{Linear}_2: 4D \rightarrow D
 | `NUM_HEADS` | 8 | `cfg.MODEL.FUSION.NUM_HEADS` |
 | `EMBED_DIM` | 768 | `cfg.MODEL.FUSION.EMBED_DIM` |
 | `DROPOUT` | 0.1 | `cfg.MODEL.FUSION.DROPOUT` |
-| `RGB_FUSION_WEIGHT` | 0.3 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT` |
-| `SONAR_FUSION_WEIGHT` | 0.3 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT` |
+| `RGB_FUSION_WEIGHT` | 0.3 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT` (inference) |
+| `SONAR_FUSION_WEIGHT` | 0.3 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT` (inference) |
+| `RGB_FUSION_WEIGHT_TRAIN` | 1.0 | `cfg.MODEL.FUSION.RGB_FUSION_WEIGHT_TRAIN` (training) |
+| `SONAR_FUSION_WEIGHT_TRAIN` | 1.0 | `cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT_TRAIN` (training) |
 
-#### 2.3.3 Configurable Fusion Weights
+#### 2.3.3 Asymmetric Fusion Weights (Training vs Inference)
 
-**Source**: `lib/models/aquasot/fusion.py:101-125`
+**Source**: `lib/models/aquasot/fusion.py:222-250`
 
 The cross-attention residual connections use configurable weights to control fusion strength:
 
@@ -276,13 +278,12 @@ $$
 \end{aligned}
 $$
 
-where:
-- $\alpha_{rgb} = 0.3$: Fusion weight for RGB receiving Sonar information
-- $\alpha_{sonar} = 0.3$: Fusion weight for Sonar receiving RGB information
-- $\alpha = 0$: No cross-modal influence (independent processing)
-- $\alpha = 1$: Full fusion (original behavior)
+**Asymmetric Design**:
+- **Training**: $\alpha_{rgb} = \alpha_{sonar} = 1.0$ (full fusion for complete DCMA training)
+- **Inference**: $\alpha_{rgb} = \alpha_{sonar} = 0.3$ (weak fusion preserves modality-specific info)
+- $\alpha = 0$: No cross-modal influence (for ablation via `--eval_mode no_fusion`)
 
-The weak fusion ($\alpha = 0.3$) reduces cross-modal interference while still enabling complementary information exchange.
+**Rationale**: Full fusion during training enables DCMA projections to receive strong gradients. Weak fusion at inference preserves modality-specific information for robustness. BN adaptation recommended for ablation studies to compensate for feature distribution shift.
 
 #### 2.3.4 Modality Validity Detection and Self-Attention Fallback
 

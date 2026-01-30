@@ -65,9 +65,14 @@ cfg.MODEL.FUSION.EMBED_DIM = 768
 cfg.MODEL.FUSION.NUM_HEADS = 8
 cfg.MODEL.FUSION.NUM_LAYERS = 2
 cfg.MODEL.FUSION.DROPOUT = 0.1
-# Fusion strength weights (0=no cross-modal influence, 1=full fusion)
-cfg.MODEL.FUSION.RGB_FUSION_WEIGHT = 0.3      # RGB receives info from Sonar
-cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT = 0.3    # Sonar receives info from RGB
+# Fusion strength weights for INFERENCE (0=no cross-modal influence, 1=full fusion)
+# Training uses 1.0 (full fusion) to fully train DCMA projections
+# Inference uses weaker fusion to preserve modality-specific information
+cfg.MODEL.FUSION.RGB_FUSION_WEIGHT = 0.3      # RGB receives info from Sonar (inference)
+cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT = 0.3    # Sonar receives info from RGB (inference)
+# Training fusion weights (fixed at 1.0 for full cross-modal learning)
+cfg.MODEL.FUSION.RGB_FUSION_WEIGHT_TRAIN = 1.0
+cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT_TRAIN = 1.0
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()

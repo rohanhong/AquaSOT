@@ -62,7 +62,7 @@ Sonar [B, 1, H, W] ---> ViT-Base (Sonar) --+
 
 ### Critical Design Decisions
 1. **Separate prediction heads**: Prevents prediction drift due to asymmetric FOV (FLS 120-160 deg vs RGB 60-70 deg)
-2. **Weak fusion weights (0.3)**: Preserves modality-specific information
+2. **Asymmetric fusion weights**: Training uses 1.0 (full fusion) to fully train DCMA projections; Inference uses 0.3 (weak fusion) to preserve modality-specific information. BN adaptation recommended for ablation studies.
 3. **Template update**: MixFormer three-tier strategy (confidence-aware)
 4. **Target loss detection**: Dual-modal independent state machine (STABLE/UNCERTAIN/LOST)
 

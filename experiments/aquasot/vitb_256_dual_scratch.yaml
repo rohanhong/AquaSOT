@@ -14,6 +14,7 @@ MODEL:
     TYPE: dcma
     NUM_LAYERS: 2
     NUM_HEADS: 8
+    # Inference fusion weights (training uses 1.0 by default for full cross-modal learning)
     RGB_FUSION_WEIGHT: 0.3
     SONAR_FUSION_WEIGHT: 0.3
 

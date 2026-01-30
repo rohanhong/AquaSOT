@@ -164,7 +164,8 @@ def build_aquasot(cfg, training=True):
 
     Args:
         cfg: Configuration object
-        training: Whether to load pretrained weights
+        training: Whether building for training (affects pretrained weights loading
+                  and fusion weights: training=1.0, inference=0.3)
 
     Returns:
         AquaSOT model
@@ -174,8 +175,8 @@ def build_aquasot(cfg, training=True):
     rgb_backbone = build_vit_rgb(cfg, pretrained=pretrained)
     sonar_backbone = build_vit_sonar(cfg, pretrained=pretrained)
 
-    # Build fusion
-    fusion = build_fusion(cfg)
+    # Build fusion (training uses 1.0 weights, inference uses 0.3 weights)
+    fusion = build_fusion(cfg, training=training)
 
     # Build separate heads for RGB and Sonar
     # This is critical because Sonar FOV > RGB FOV, causing different

@@ -18,18 +18,37 @@ python tracking/test.py --tracker aquasot \
     --no_visualize --no_plot_curves
 ```
 
+## Ablation Studies
+
+```bash
+# RGB-only evaluation (requires --bn_adapt for best results)
+python tracking/test.py --checkpoint outputs/train/checkpoints/model.pth \
+    --eval_mode rgb_only --bn_adapt
+
+# Sonar-only evaluation
+python tracking/test.py --checkpoint outputs/train/checkpoints/model.pth \
+    --eval_mode sonar_only --bn_adapt
+
+# No-fusion evaluation (both modalities, fusion weights = 0)
+python tracking/test.py --checkpoint outputs/train/checkpoints/model.pth \
+    --eval_mode no_fusion --bn_adapt
+```
+
+**Note**: BN adaptation (`--bn_adapt`) is recommended for ablation studies because training uses fusion weights of 1.0 while inference uses 0.3. This causes feature distribution shift that BN adaptation helps compensate.
+
 ## Command Line Options
 
-| Option | Default |
-|--------|---------|
-| `--checkpoint` | Required |
-| `--sequences` | Test set (uuv3) |
-| `--result_dir` | `outputs/test/baseline/results` |
-| `--report_dir` | `outputs/test/baseline/reports` |
-| `--visualize` | On |
-| `--plot_curves` | On |
-| `--eval_mode` | `dual` (`rgb_only`, `sonar_only`) |
-| `--overwrite` | Off |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--checkpoint` | Required | Path to model checkpoint |
+| `--sequences` | Test set (uuv3) | Sequences to evaluate |
+| `--result_dir` | `outputs/test/baseline/results` | Results output directory |
+| `--report_dir` | `outputs/test/baseline/reports` | Reports output directory |
+| `--visualize` | On | Generate visualization |
+| `--plot_curves` | On | Plot performance curves |
+| `--eval_mode` | `dual` | Evaluation mode: `dual`, `rgb_only`, `sonar_only`, `no_fusion` |
+| `--bn_adapt` | Off | Enable BN adaptation for ablation studies |
+| `--overwrite` | Off | Overwrite existing results |
 
 ## Visualization
 
