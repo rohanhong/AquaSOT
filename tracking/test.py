@@ -57,8 +57,8 @@ def parse_args():
 
     # Evaluation mode and visibility filtering
     parser.add_argument('--eval_mode', type=str, default='dual',
-                        choices=['dual', 'rgb_only', 'sonar_only'],
-                        help='Evaluation mode: dual (both), rgb_only, sonar_only')
+                        choices=['dual', 'rgb_only', 'sonar_only', 'no_fusion'],
+                        help='Evaluation mode: dual (both), rgb_only, sonar_only, no_fusion')
     parser.add_argument('--no_filter_visibility', action='store_true',
                         help='Include all frames (legacy behavior, ignores GT absence)')
     parser.add_argument('--no_skip_init_frame', action='store_true',
@@ -73,6 +73,11 @@ def parse_args():
                         help='Search area factor')
     parser.add_argument('--template_factor', type=float, default=2.0,
                         help='Template area factor')
+
+    # BatchNorm adaptation for ablation experiments
+    parser.add_argument('--bn_adapt', action='store_true',
+                        help='Enable BatchNorm adaptation. Required for all ablation experiments '
+                             '(--eval_mode rgb_only/sonar_only/no_fusion).')
 
     return parser.parse_args()
 
@@ -121,10 +126,31 @@ def main():
     print(f'[Evaluation] Dataset path: {dataset_path}')
 
     # Use default test sequences from config if not specified
+    from lib.config.aquasot.config import cfg
     if args.sequences is None:
-        from lib.config.aquasot.config import cfg
         args.sequences = cfg.DATA.TEST.SEQUENCES
         print(f'[Evaluation] Using default test sequences: {args.sequences}')
+
+    # Configure modality dropout / fusion based on eval_mode
+    if args.eval_mode == 'rgb_only':
+        cfg.DATA.MODALITY_DROPOUT.ENABLED = True
+        cfg.DATA.MODALITY_DROPOUT.P_DROP_SONAR = 1.0
+        cfg.DATA.MODALITY_DROPOUT.P_DROP_RGB = 0.0
+        print('[Evaluation] RGB-only mode: Sonar input will be zeroed')
+    elif args.eval_mode == 'sonar_only':
+        cfg.DATA.MODALITY_DROPOUT.ENABLED = True
+        cfg.DATA.MODALITY_DROPOUT.P_DROP_RGB = 1.0
+        cfg.DATA.MODALITY_DROPOUT.P_DROP_SONAR = 0.0
+        print('[Evaluation] Sonar-only mode: RGB input will be zeroed')
+    elif args.eval_mode == 'no_fusion':
+        cfg.MODEL.FUSION.RGB_FUSION_WEIGHT = 0.0
+        cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT = 0.0
+        print('[Evaluation] No-fusion mode: Fusion weights set to 0')
+
+    # Configure BN adaptation
+    if args.bn_adapt:
+        cfg.TEST.BN_ADAPTATION.ENABLED = True
+        print('[Evaluation] BatchNorm adaptation enabled')
 
     # Handle --no_visualize and --no_plot_curves flags
     if args.no_visualize:

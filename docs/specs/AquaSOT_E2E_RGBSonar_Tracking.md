@@ -778,75 +778,50 @@ All default parameters are defined in `config.py`. YAML files only override thes
 | `vitb_256_dual.yaml` | Main training configuration |
 | `vitb_256_dual_scratch.yaml` | Training from scratch (no pretrain) |
 | `vitb_256_dual_auto.yaml` | Auto-augmentation variant |
-| `ablation_rgb_only.yaml` | RGB modality only |
-| `ablation_sonar_only.yaml` | Sonar modality only |
-| `ablation_no_fusion.yaml` | No cross-modal fusion |
 
 ---
 
 ## 8. Ablation Experiments
 
-### 8.1 Available Ablation Configurations
+AquaSOT supports inference-time ablation experiments using command-line flags. All ablations
+use BatchNorm adaptation (`--bn_adapt`) to recalculate BN statistics for fair comparison.
 
-| Configuration | Modification | TARGET_LOSS Behavior |
-|--------------|--------------|---------------------|
-| `ablation_rgb_only.yaml` | Sonar 100% dropout | Detects Sonar as LOST, uses RGB exclusively |
-| `ablation_sonar_only.yaml` | RGB 100% dropout | Detects RGB as LOST, uses Sonar exclusively |
-| `ablation_no_fusion.yaml` | Identity fusion | Both modalities track independently |
-
-All ablation configs have `TEST.TARGET_LOSS.ENABLED = True` to automatically detect dropped modalities and route output to the available modality.
-
-### 8.2 Running Ablations
+### 8.1 Running Ablations
 
 ```bash
 # RGB-only ablation
-python tracking/train.py --script aquasot --config ablation_rgb_only
+python tracking/test.py --checkpoint model.pth --eval_mode rgb_only --bn_adapt
 
 # Sonar-only ablation
-python tracking/train.py --script aquasot --config ablation_sonar_only
+python tracking/test.py --checkpoint model.pth --eval_mode sonar_only --bn_adapt
 
 # No fusion ablation
-python tracking/train.py --script aquasot --config ablation_no_fusion
+python tracking/test.py --checkpoint model.pth --eval_mode no_fusion --bn_adapt
 ```
 
-### 8.3 Expected Comparisons
+### 8.2 Ablation Modes
 
-| Experiment | Purpose |
-|------------|---------|
-| Full vs RGB-only | Quantify sonar contribution |
-| Full vs Sonar-only | Quantify RGB contribution |
-| Full vs No-fusion | Quantify cross-modal fusion benefit |
+| Mode | Flag | Description |
+|------|------|-------------|
+| RGB-only | `--eval_mode rgb_only` | Zeros Sonar input, evaluates RGB tracking |
+| Sonar-only | `--eval_mode sonar_only` | Zeros RGB input, evaluates Sonar tracking |
+| No-fusion | `--eval_mode no_fusion` | Sets fusion weights to 0, disables cross-modal attention |
 
-### 8.4 Testing-Time Modality Dropout
+### 8.3 BatchNorm Adaptation
 
-**Source**: `lib/utils/modality_dropout.py:28-77`
+**Source**: `lib/utils/bn_adaptation.py`
 
-For ablation studies on fully-trained dual-modal models, testing-time modality dropout enables single-modal evaluation without retraining:
+During dual-modal training, BatchNorm layers learn statistics from fused features. At
+ablation inference, the feature distribution changes. The `--bn_adapt` flag recalculates
+BN running_mean/running_var before evaluation.
 
-```yaml
-DATA:
-  MODALITY_DROPOUT:
-    ENABLED: true
-    P_DROP_RGB: 1.0    # RGB-only evaluation
-    P_DROP_SONAR: 0.0
+### 8.4 Expected Results
 
-# Or for Sonar-only:
-DATA:
-  MODALITY_DROPOUT:
-    ENABLED: true
-    P_DROP_RGB: 0.0
-    P_DROP_SONAR: 1.0  # Sonar-only evaluation
-```
-
-**Mechanism**:
-- Dropped modality input is replaced with zeros
-- Model forward pass uses remaining modality
-- Target loss detection routes output to available modality
-
-**Use Cases**:
-- Evaluate single-modal performance of dual-trained model
-- Analyze cross-modal dependency
-- Compare with dedicated single-modal ablation configs
+| Experiment | Purpose | Expected Recovery |
+|------------|---------|-------------------|
+| Full vs RGB-only | Quantify sonar contribution | ~97% of dual RGB |
+| Full vs Sonar-only | Quantify RGB contribution | ~77% of dual Sonar |
+| Full vs No-fusion | Quantify cross-modal fusion benefit | ~79% of dual |
 
 ---
 

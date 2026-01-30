@@ -21,10 +21,6 @@ python tracking/train.py --script aquasot --config vitb_256_dual_auto
 
 # With W&B logging
 python tracking/train.py --script aquasot --config vitb_256_dual_auto --wandb
-
-# Ablation studies
-python tracking/train.py --script aquasot --config ablation_rgb_only
-python tracking/train.py --script aquasot --config ablation_sonar_only
 ```
 
 ### Evaluation
@@ -32,9 +28,10 @@ python tracking/train.py --script aquasot --config ablation_sonar_only
 # Dual-modal evaluation
 python tracking/test.py --tracker aquasot --checkpoint outputs/train/checkpoints/model.pth
 
-# Single-modal evaluation (testing-time modality dropout)
-python tracking/test.py --checkpoint model.pth --eval_mode rgb_only
-python tracking/test.py --checkpoint model.pth --eval_mode sonar_only
+# Ablation studies (inference-time, requires --bn_adapt)
+python tracking/test.py --checkpoint outputs/train/checkpoints/model.pth --eval_mode rgb_only --bn_adapt
+python tracking/test.py --checkpoint outputs/train/checkpoints/model.pth --eval_mode sonar_only --bn_adapt
+python tracking/test.py --checkpoint outputs/train/checkpoints/model.pth --eval_mode no_fusion --bn_adapt
 ```
 
 ### Testing

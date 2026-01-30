@@ -63,19 +63,24 @@ class AquaSOTTracker(Tracker):
         self.state = None
         self.frame_id = 0
 
-        # Preprocessing params
+        # Preprocessing params (must be set before BN adaptation)
         self.template_factor = cfg.DATA.TEMPLATE.FACTOR
         self.search_factor = cfg.DATA.SEARCH.FACTOR
         self.template_size = cfg.DATA.TEMPLATE.SIZE
         self.search_size = cfg.DATA.SEARCH.SIZE
 
-        # Mean/std for RGB normalization
+        # Mean/std for RGB normalization (must be set before BN adaptation)
         self.mean_rgb = np.array([0.485, 0.456, 0.406]).reshape((1, 1, 3))
         self.std_rgb = np.array([0.229, 0.224, 0.225]).reshape((1, 1, 3))
 
         # Mean/std for Sonar normalization
         self.mean_sonar = 0.5
         self.std_sonar = 0.5
+
+        # BN adaptation for single-modality evaluation
+        # When MODALITY_DROPOUT is enabled for single-modal ablation, adapt BN statistics
+        # NOTE: Must be called after preprocessing params are set
+        self._setup_bn_adaptation(cfg)
 
         # Hann window for motion constraint (reduces tracking drift)
         stride = cfg.MODEL.BACKBONE.RGB.STRIDE
@@ -167,6 +172,204 @@ class AquaSOTTracker(Tracker):
             print(f'[AquaSOTTracker] Missing keys: {missing}')
         if unexpected:
             print(f'[AquaSOTTracker] Unexpected keys: {unexpected}')
+
+    def _setup_bn_adaptation(self, cfg):
+        """Setup BatchNorm adaptation for single-modality or no-fusion evaluation.
+
+        When evaluating with single modality (e.g., Sonar-only) or with fusion disabled,
+        the BN statistics learned during dual-modal training may not match the new feature
+        distribution. This method adapts BN running_mean/running_var.
+        """
+        # Check if BN adaptation is enabled
+        if not cfg.TEST.BN_ADAPTATION.ENABLED:
+            return
+
+        # Check for no-fusion mode (fusion weights set to 0)
+        no_fusion_mode = (
+            getattr(cfg.MODEL.FUSION, 'RGB_FUSION_WEIGHT', 0.3) == 0.0 and
+            getattr(cfg.MODEL.FUSION, 'SONAR_FUSION_WEIGHT', 0.3) == 0.0
+        )
+
+        # Check for single-modality mode
+        dropout_cfg = cfg.DATA.MODALITY_DROPOUT
+        single_modal_mode = dropout_cfg.ENABLED and (
+            dropout_cfg.P_DROP_RGB >= 1.0 or dropout_cfg.P_DROP_SONAR >= 1.0
+        )
+
+        if not (no_fusion_mode or single_modal_mode):
+            return
+
+        # Determine adaptation mode
+        if single_modal_mode:
+            if dropout_cfg.P_DROP_RGB >= 1.0:
+                modality = 'sonar'
+            else:
+                modality = 'rgb'
+            print(f'[BN Adaptation] Detected {modality}-only evaluation mode')
+        else:
+            modality = 'dual'  # No-fusion mode with both modalities
+            print('[BN Adaptation] Detected no-fusion evaluation mode')
+
+        # Create adaptation dataloader
+        adapt_loader = self._create_adaptation_loader(cfg)
+        if adapt_loader is None:
+            print('[BN Adaptation] Warning: Could not create adaptation loader, skipping')
+            return
+
+        # Perform adaptation
+        from lib.utils.bn_adaptation import adapt_batchnorm_for_modality
+        adapt_batchnorm_for_modality(
+            self.network,
+            adapt_loader,
+            modality=modality,
+            num_batches=cfg.TEST.BN_ADAPTATION.NUM_BATCHES,
+            device=str(self.device)
+        )
+
+    def _create_adaptation_loader(self, cfg):
+        """Create a simple dataloader for BN adaptation.
+
+        Returns an iterator that yields (rgb_template, rgb_search, sonar_template, sonar_search).
+        Uses data from the test sequence specified in config.
+        """
+        try:
+            import glob
+            from PIL import Image
+
+            # Get sequences to use for adaptation
+            data_source = cfg.TEST.BN_ADAPTATION.DATA_SOURCE
+            if data_source == 'test':
+                sequences = cfg.DATA.TEST.SEQUENCES
+            else:
+                sequences = cfg.DATA.VAL.SEQUENCES
+
+            root_dir = cfg.DATA.ROOT
+
+            # Collect image paths from all sequences
+            rgb_paths = []
+            sonar_paths = []
+
+            for seq in sequences:
+                # RGB images in light/img/
+                rgb_pattern = os.path.join(root_dir, seq, 'light', 'img', '*.jpg')
+                rgb_files = sorted(glob.glob(rgb_pattern))
+                rgb_paths.extend(rgb_files)
+
+                # Sonar images in sonar/img/
+                sonar_pattern = os.path.join(root_dir, seq, 'sonar', 'img', '*.jpg')
+                sonar_files = sorted(glob.glob(sonar_pattern))
+                sonar_paths.extend(sonar_files)
+
+            if len(rgb_paths) == 0 or len(sonar_paths) == 0:
+                print(f'[BN Adaptation] No images found in sequences: {sequences}')
+                return None
+
+            # Use minimum of both modalities
+            num_frames = min(len(rgb_paths), len(sonar_paths))
+            print(f'[BN Adaptation] Found {num_frames} frame pairs for adaptation')
+
+            # Create simple batch generator
+            def batch_generator():
+                batch_size = 4
+                indices = list(range(num_frames))
+                np.random.shuffle(indices)
+
+                for batch_start in range(0, len(indices) - batch_size + 1, batch_size):
+                    batch_indices = indices[batch_start:batch_start + batch_size]
+
+                    rgb_templates = []
+                    rgb_searches = []
+                    sonar_templates = []
+                    sonar_searches = []
+
+                    for idx in batch_indices:
+                        # Load images
+                        rgb_img = np.array(Image.open(rgb_paths[idx]).convert('RGB'))
+                        sonar_img = np.array(Image.open(sonar_paths[idx]).convert('L'))
+
+                        # Calculate center for each image separately (different dimensions)
+                        rgb_h, rgb_w = rgb_img.shape[:2]
+                        rgb_cx, rgb_cy = rgb_w // 2, rgb_h // 2
+
+                        sonar_h, sonar_w = sonar_img.shape[:2]
+                        sonar_cx, sonar_cy = sonar_w // 2, sonar_h // 2
+
+                        # Template crop
+                        t_half = self.template_size // 2
+                        rgb_t = self._safe_crop(rgb_img, rgb_cx, rgb_cy, t_half)
+                        sonar_t = self._safe_crop(sonar_img, sonar_cx, sonar_cy, t_half)
+
+                        # Search crop
+                        s_half = self.search_size // 2
+                        rgb_s = self._safe_crop(rgb_img, rgb_cx, rgb_cy, s_half)
+                        sonar_s = self._safe_crop(sonar_img, sonar_cx, sonar_cy, s_half)
+
+                        # Preprocess
+                        rgb_t_tensor = self._preprocess_rgb(rgb_t)
+                        rgb_s_tensor = self._preprocess_rgb(rgb_s)
+                        sonar_t_tensor = self._preprocess_sonar(sonar_t)
+                        sonar_s_tensor = self._preprocess_sonar(sonar_s)
+
+                        rgb_templates.append(rgb_t_tensor)
+                        rgb_searches.append(rgb_s_tensor)
+                        sonar_templates.append(sonar_t_tensor)
+                        sonar_searches.append(sonar_s_tensor)
+
+                    # Stack into batches
+                    yield (
+                        torch.cat(rgb_templates, dim=0),
+                        torch.cat(rgb_searches, dim=0),
+                        torch.cat(sonar_templates, dim=0),
+                        torch.cat(sonar_searches, dim=0),
+                    )
+
+            return batch_generator()
+
+        except Exception as e:
+            print(f'[BN Adaptation] Error creating adaptation loader: {e}')
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _safe_crop(self, img, cx, cy, half_size):
+        """Safely crop image with padding if needed.
+
+        Args:
+            img: Input image (H, W) or (H, W, C)
+            cx, cy: Center coordinates for cropping
+            half_size: Half of the target crop size
+
+        Returns:
+            Cropped and resized image of size (half_size*2, half_size*2)
+        """
+        h, w = img.shape[:2]
+        target_size = half_size * 2
+
+        # Handle case where image is smaller than target crop
+        if w < target_size or h < target_size:
+            # Resize entire image to target size
+            return cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        # Clamp center to ensure valid crop region
+        cx = max(half_size, min(w - half_size, cx))
+        cy = max(half_size, min(h - half_size, cy))
+
+        x1 = cx - half_size
+        y1 = cy - half_size
+        x2 = cx + half_size
+        y2 = cy + half_size
+
+        crop = img[y1:y2, x1:x2]
+
+        # Safety check: ensure crop is not empty
+        if crop.size == 0:
+            return cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        # Resize if crop size doesn't match target (shouldn't happen with clamped center)
+        if crop.shape[0] != target_size or crop.shape[1] != target_size:
+            crop = cv2.resize(crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        return crop
 
     def init(self, image, box):
         """Initialize tracker with first frame.

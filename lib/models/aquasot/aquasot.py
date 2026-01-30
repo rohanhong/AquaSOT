@@ -67,12 +67,19 @@ class AquaSOT(nn.Module):
                 - sonar_score_map: [B, 1, H, W]
                 - (other auxiliary outputs)
         """
+        # Detect modality dropout (input is all zeros) to bypass invalid cross-attention
+        # This enables single-modal inference without retraining
+        # Threshold 1e-4 is conservative to avoid float precision edge cases
+        rgb_valid = rgb_search.abs().sum() > 1e-4
+        sonar_valid = sonar_search.abs().sum() > 1e-4
+
         # Extract backbone features (with optional online templates)
         rgb_feat, rgb_aux = self.rgb_backbone(rgb_template, rgb_search, rgb_online_template)
         sonar_feat, sonar_aux = self.sonar_backbone(sonar_template, sonar_search, sonar_online_template)
 
-        # Cross-modal fusion
-        fused_rgb, fused_sonar = self.fusion(rgb_feat, sonar_feat)
+        # Cross-modal fusion (skip cross-attention for dropped modality)
+        fused_rgb, fused_sonar = self.fusion(rgb_feat, sonar_feat,
+                                              rgb_valid=rgb_valid, sonar_valid=sonar_valid)
 
         # Get search region features and predict boxes (separate heads)
         rgb_out = self.forward_head(fused_rgb, self.rgb_box_head, gt_score_map_rgb)

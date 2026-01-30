@@ -98,27 +98,57 @@ class DCMALayer(nn.Module):
         self.norm_sonar1 = nn.LayerNorm(embed_dim)
         self.norm_sonar2 = nn.LayerNorm(embed_dim)
 
-    def forward(self, rgb_feat, sonar_feat, rgb_fusion_weight=0.3, sonar_fusion_weight=0.3):
+    def forward(self, rgb_feat, sonar_feat, rgb_fusion_weight=0.3, sonar_fusion_weight=0.3,
+                rgb_valid=True, sonar_valid=True):
         """
         Args:
             rgb_feat: [B, L, C] - RGB features
             sonar_feat: [B, L, C] - Sonar features
             rgb_fusion_weight: Weight for RGB cross-modal attention (0=no fusion, 1=full)
             sonar_fusion_weight: Weight for Sonar cross-modal attention (0=no fusion, 1=full)
+            rgb_valid: Whether RGB input was valid (not dropped by modality dropout)
+            sonar_valid: Whether Sonar input was valid (not dropped by modality dropout)
 
         Returns:
             rgb_out: [B, L, C] - Fused RGB features
             sonar_out: [B, L, C] - Fused Sonar features
         """
         # Cross-attention with configurable fusion strength
-        rgb_attn = self.rgb_to_sonar(self.norm_rgb1(rgb_feat), sonar_feat)
-        sonar_attn = self.sonar_to_rgb(self.norm_sonar1(sonar_feat), rgb_feat)
+        # IMPORTANT: Compute both attentions using ORIGINAL features first,
+        # then apply updates. This preserves exact behavior when both modalities valid.
+        #
+        # When one modality is dropped (invalid), we use SELF-ATTENTION as a substitute
+        # for cross-attention. This preserves the feature distribution that the head
+        # learned during training, avoiding the distribution shift that would occur
+        # if we simply skipped the attention operation.
 
-        # Apply fusion weights to control cross-modal influence
+        # RGB attention: RGB query attends to Sonar (or self if Sonar invalid)
+        # Note: Self-attention for RGB works because RGB features are robust (ImageNet pretrained)
+        if sonar_valid:
+            rgb_attn = self.rgb_to_sonar(self.norm_rgb1(rgb_feat), sonar_feat)
+        else:
+            # Sonar dropped: self-attention still works for RGB due to robust features
+            rgb_attn = self.rgb_to_sonar(self.norm_rgb1(rgb_feat), rgb_feat)
+
+        # Sonar attention: Sonar query attends to RGB (or cross-module self-attention if RGB invalid)
+        # Note: Self-attention using sonar_to_rgb FAILS because its K/V projections are
+        # trained for RGB features, producing garbage when applied to Sonar features.
+        # SOLUTION: Use rgb_to_sonar's K/V projections (trained for Sonar features).
+        if rgb_valid:
+            sonar_attn = self.sonar_to_rgb(self.norm_sonar1(sonar_feat), rgb_feat)
+        else:
+            # RGB dropped: use rgb_to_sonar module for Sonar self-attention
+            # Rationale: rgb_to_sonar has K/V projections trained for SONAR features,
+            # so applying them to Sonar features produces meaningful output.
+            # The Q projection mismatch (trained for RGB) is tolerable - it only
+            # affects attention pattern, while V projection ensures correct output distribution.
+            sonar_attn = self.rgb_to_sonar(self.norm_sonar1(sonar_feat), sonar_feat)
+
+        # Apply fusion updates
         rgb_feat = rgb_feat + rgb_fusion_weight * rgb_attn
         sonar_feat = sonar_feat + sonar_fusion_weight * sonar_attn
 
-        # FFN
+        # FFN (always applied to refine features)
         rgb_out = rgb_feat + self.ffn_rgb(self.norm_rgb2(rgb_feat))
         sonar_out = sonar_feat + self.ffn_sonar(self.norm_sonar2(sonar_feat))
 
@@ -147,11 +177,13 @@ class DCMA(nn.Module):
         self.rgb_fusion_weight = rgb_fusion_weight
         self.sonar_fusion_weight = sonar_fusion_weight
 
-    def forward(self, rgb_feat, sonar_feat):
+    def forward(self, rgb_feat, sonar_feat, rgb_valid=True, sonar_valid=True):
         """
         Args:
             rgb_feat: [B, L, C] - RGB features from backbone
             sonar_feat: [B, L, C] - Sonar features from backbone
+            rgb_valid: Whether RGB input was valid (not dropped by modality dropout)
+            sonar_valid: Whether Sonar input was valid (not dropped by modality dropout)
 
         Returns:
             rgb_out: [B, L, C] - Fused RGB features
@@ -161,7 +193,9 @@ class DCMA(nn.Module):
             rgb_feat, sonar_feat = layer(
                 rgb_feat, sonar_feat,
                 rgb_fusion_weight=self.rgb_fusion_weight,
-                sonar_fusion_weight=self.sonar_fusion_weight
+                sonar_fusion_weight=self.sonar_fusion_weight,
+                rgb_valid=rgb_valid,
+                sonar_valid=sonar_valid
             )
 
         return rgb_feat, sonar_feat
@@ -170,14 +204,18 @@ class DCMA(nn.Module):
 class IdentityFusion(nn.Module):
     """Identity fusion (no cross-modal interaction).
 
-    Used for ablation studies.
+    Note: Currently unused. The no_fusion ablation mode is implemented via
+    DCMA with fusion weights set to 0.0 (--eval_mode no_fusion), which
+    preserves the FFN layers for feature refinement. This class is retained
+    as an extension point for future experiments.
     """
 
     def __init__(self, embed_dim=768, **kwargs):
         super().__init__()
         self.embed_dim = embed_dim
 
-    def forward(self, rgb_feat, sonar_feat):
+    def forward(self, rgb_feat, sonar_feat, rgb_valid=True, sonar_valid=True):
+        # rgb_valid/sonar_valid ignored - no cross-modal interaction anyway
         return rgb_feat, sonar_feat
 
 

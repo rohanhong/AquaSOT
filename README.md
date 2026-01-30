@@ -63,9 +63,6 @@ python tracking/train.py --script aquasot --config vitb_256_dual
 # With W&B logging
 python tracking/train.py --script aquasot --config vitb_256_dual --wandb
 
-# Ablation configurations
-python tracking/train.py --script aquasot --config ablation_rgb_only
-python tracking/train.py --script aquasot --config ablation_sonar_only
 ```
 
 Configuration files are located in `experiments/aquasot/`.
@@ -80,16 +77,18 @@ python tracking/test.py \
     --dataset aquasot \
     --dataset_path data/
 
-# RGB-only or Sonar-only evaluation
-python tracking/test.py --checkpoint model.pth --eval_mode rgb_only
-python tracking/test.py --checkpoint model.pth --eval_mode sonar_only
+# Ablation studies (inference-time, requires --bn_adapt)
+python tracking/test.py --checkpoint model.pth --eval_mode rgb_only --bn_adapt
+python tracking/test.py --checkpoint model.pth --eval_mode sonar_only --bn_adapt
+python tracking/test.py --checkpoint model.pth --eval_mode no_fusion --bn_adapt
 
 # Disable visibility filtering (include absent frames)
 python tracking/test.py --checkpoint model.pth --no_filter_visibility
 ```
 
 **Options:**
-- `--eval_mode {dual,rgb_only,sonar_only}`: Evaluation modality mode
+- `--eval_mode {dual,rgb_only,sonar_only,no_fusion}`: Evaluation modality mode
+- `--bn_adapt`: Enable BatchNorm adaptation (required for ablation studies)
 - `--no_filter_visibility`: Include all frames (ignore GT absence)
 - `--no_skip_init_frame`: Include frame 0 in evaluation
 - `--plot_curves`: Generate success/precision curve plots

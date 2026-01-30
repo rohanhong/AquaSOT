@@ -217,16 +217,6 @@ class TestActualConfigFiles:
         else:
             pytest.skip(f"Config file not found: {config_path}")
 
-    def test_load_ablation_rgb_only(self, experiments_dir):
-        """Test loading RGB-only ablation config."""
-        config_path = experiments_dir / 'ablation_rgb_only.yaml'
-        if config_path.exists():
-            update_config_from_file(str(config_path))
-            assert cfg.DATA.MODALITY_DROPOUT.ENABLED == True
-            assert cfg.DATA.MODALITY_DROPOUT.P_DROP_SONAR == 1.0
-        else:
-            pytest.skip(f"Config file not found: {config_path}")
-
 
 class TestConfigIntegrity:
     """Test configuration integrity and consistency."""

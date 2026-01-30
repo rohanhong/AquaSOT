@@ -321,6 +321,15 @@ cfg.TEST.EVALUATION.FILTER_VISIBILITY = True      # Filter out absent frames (GT
 cfg.TEST.EVALUATION.SKIP_INIT_FRAME = True        # Skip frame 0 (GOT-10k standard)
 cfg.TEST.EVALUATION.EVAL_MODE = 'dual'            # 'dual', 'rgb_only', 'sonar_only'
 
+# BatchNorm adaptation for single-modality inference
+# When a model trained with dual-modal data is used for single-modal evaluation,
+# BN running statistics from training may not match the single-modal distribution.
+# This adaptation recalculates BN statistics using single-modal data before evaluation.
+cfg.TEST.BN_ADAPTATION = edict()
+cfg.TEST.BN_ADAPTATION.ENABLED = False            # Default: disabled
+cfg.TEST.BN_ADAPTATION.NUM_BATCHES = 30           # Number of batches for adaptation (30-50 recommended)
+cfg.TEST.BN_ADAPTATION.DATA_SOURCE = 'test'       # 'test' or 'val' sequence for adaptation
+
 # Metrics
 cfg.TEST.METRICS = ["success_auc", "precision_20", "avg_center_error"]
 
