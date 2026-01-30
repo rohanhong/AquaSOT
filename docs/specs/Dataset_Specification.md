@@ -234,6 +234,18 @@ dataset:
     - "uuv3"
 ```
 
+### Default Test Sequences
+
+The default test sequences for evaluation and ablation experiments are configured via `cfg.DATA.TEST.SEQUENCES`:
+
+```yaml
+DATA:
+  TEST:
+    SEQUENCES: ["uuv3"]  # Default test set
+```
+
+**Source**: `lib/config/aquasot/config.py`
+
 ### General Usage Notes
 
 - Frame indexing starts at 1 (not 0)
@@ -267,6 +279,7 @@ This validates:
 
 ## Update History
 
+- **2026-01-31**: Added `DATA.TEST.SEQUENCES` configuration reference for default test set
 - **2026-01-30**: Added documentation for GOT-10k style visibility filtering; absent frames (GT=0,0,0,0) are excluded from evaluation metrics
 - **2026-01-28**: Modified train/val split: validation set changed from uuv3/4/5 to uuv3 only (training: 10,940 frames, validation: 751 frames)
 - **2026-01-27**: Modified train/val split: validation set changed from uuv3/6/10 to uuv3/4/5 (training: 9,368 frames, validation: 2,323 frames)

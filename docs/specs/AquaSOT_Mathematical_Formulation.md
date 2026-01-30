@@ -2,8 +2,8 @@
 
 **End-to-End Dual-Modal RGB-Sonar Single Object Tracking**
 
-**Version**: 2.1 (Synchronized with current implementation)
-**Last Updated**: 2026-01-30
+**Version**: 2.2 (Synchronized with current implementation)
+**Last Updated**: 2026-01-31
 **Based on**: `lib/models/aquasot/`, `lib/train/`, `lib/utils/`, `lib/test/evaluation/`
 
 ---
@@ -283,6 +283,34 @@ where:
 - $\alpha = 1$: Full fusion (original behavior)
 
 The weak fusion ($\alpha = 0.3$) reduces cross-modal interference while still enabling complementary information exchange.
+
+#### 2.3.4 Modality Validity Detection and Self-Attention Fallback
+
+**Source**: `lib/models/aquasot/aquasot.py:73-74`, `lib/models/aquasot/fusion.py:125-145`
+
+When a modality is dropped via modality dropout, cross-attention becomes invalid. The model detects this and uses self-attention as fallback.
+
+**Validity Detection**:
+
+$$
+\text{valid}_{m} = \mathbb{1}\left[\sum_{i,j,k}|\mathbf{I}_{m}[i,j,k]| > 10^{-4}\right]
+$$
+
+**Self-Attention Fallback**:
+
+When Sonar is dropped ($\text{valid}_{sonar} = \text{False}$):
+
+$$
+\mathbf{F}_{rgb}' = \mathbf{F}_{rgb} + \alpha_{rgb} \cdot \text{SelfAttn}_{rgb \to sonar}(\text{LN}(\mathbf{F}_{rgb}), \mathbf{F}_{rgb})
+$$
+
+When RGB is dropped ($\text{valid}_{rgb} = \text{False}$):
+
+$$
+\mathbf{F}_{sonar}' = \mathbf{F}_{sonar} + \alpha_{sonar} \cdot \text{CrossAttn}_{rgb \to sonar}(\text{LN}(\mathbf{F}_{sonar}), \mathbf{F}_{sonar})
+$$
+
+**Note**: For Sonar self-attention, the `rgb_to_sonar` module is used because its K/V projections are trained for Sonar features. Using `sonar_to_rgb` would apply K/V projections trained for RGB features to Sonar features, producing incorrect output distributions.
 
 ### 2.4 CenterPredictor Head
 
@@ -573,6 +601,54 @@ When a modality is dropped:
 
 **Note**: Training always uses both modalities to learn robust dual-modal representations. Dropout is testing-time only for ablation studies.
 
+### 4.7 Inference-Time BatchNorm Adaptation
+
+**Source**: `lib/utils/bn_adaptation.py:21-131`
+
+During dual-modal training, BatchNorm layers learn running statistics from fused feature distributions. At single-modality inference, the feature distribution shifts because cross-attention output changes (self-attention or zeros). This distribution mismatch degrades prediction quality.
+
+#### 4.7.1 Adaptation Algorithm
+
+The adaptation process recalculates BN running statistics:
+
+1. **Reset Statistics**:
+
+$$
+\mu_{running} \leftarrow 0, \quad \sigma^2_{running} \leftarrow 1
+$$
+
+2. **Forward Pass Adaptation** (for $n = 1, ..., N_{adapt}$ batches):
+
+$$
+\mu_{running} \leftarrow (1 - \gamma) \cdot \mu_{running} + \gamma \cdot \mu_{batch}
+$$
+
+$$
+\sigma^2_{running} \leftarrow (1 - \gamma) \cdot \sigma^2_{running} + \gamma \cdot \sigma^2_{batch}
+$$
+
+where:
+- $\gamma = 0.2$: Adaptation momentum (higher than training default 0.1)
+- $N_{adapt} = 30$: Number of adaptation batches (configurable)
+
+#### 4.7.2 Modality-Specific Input Generation
+
+| Mode | RGB Input | Sonar Input | Use Case |
+|------|-----------|-------------|----------|
+| `rgb` | Normal | $\mathbf{0}$ | RGB-only ablation |
+| `sonar` | $\mathbf{0}$ | Normal | Sonar-only ablation |
+| `dual` | Normal | Normal | No-fusion ablation |
+
+#### 4.7.3 Configuration
+
+| Parameter | Default | Source |
+|-----------|---------|--------|
+| `ENABLED` | False | `cfg.TEST.BN_ADAPTATION.ENABLED` |
+| `NUM_BATCHES` | 30 | `cfg.TEST.BN_ADAPTATION.NUM_BATCHES` |
+| `DATA_SOURCE` | 'test' | `cfg.TEST.BN_ADAPTATION.DATA_SOURCE` |
+
+**Related Work**: Wang et al., "Tent: Fully Test-Time Adaptation by Entropy Minimization", ICLR 2021 [arXiv:2006.10726]
+
 ---
 
 ## 5. Template Update Strategy
@@ -840,6 +916,14 @@ AquaSOT follows GOT-10k style evaluation with visibility filtering and multi-mod
 | `SKIP_INIT_FRAME` | True | Skip frame 0 (initialization frame) |
 | `EVAL_MODE` | 'dual' | Evaluation mode: 'dual', 'rgb_only', 'sonar_only' |
 
+**BatchNorm Adaptation** (for ablation experiments):
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `TEST.BN_ADAPTATION.ENABLED` | False | Enable via `--bn_adapt` flag |
+| `TEST.BN_ADAPTATION.NUM_BATCHES` | 30 | Batches for BN statistics recalculation |
+| `TEST.BN_ADAPTATION.DATA_SOURCE` | 'test' | Data source for adaptation |
+
 #### 7.0.2 Visibility Filtering
 
 Following GOT-10k evaluation pattern, frames where the ground truth box is $(0, 0, 0, 0)$ (target absent/occluded) are excluded from metric computation:
@@ -943,6 +1027,12 @@ $$
    - Li, Y., et al. (2024). *RGB-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer Tracker*.
    - [arXiv:2406.07189](https://arxiv.org/abs/2406.07189) | [Code](https://github.com/LiYunfengLYF/RGBS50)
 
+### Test-Time Adaptation
+
+9. **Tent** (Test-Time Adaptation)
+   - Wang, D., Shelhamer, E., Liu, S., Olshausen, B., & Darrell, T. (2021). *Tent: Fully Test-Time Adaptation by Entropy Minimization*. ICLR 2021.
+   - [arXiv:2006.10726](https://arxiv.org/abs/2006.10726)
+
 ---
 
 ## Appendix: Code Reference Index
@@ -965,6 +1055,7 @@ $$
 | Template Update | `lib/test/tracker/aquasot_tracker.py` | 296-370 |
 | Target Loss Handler | `lib/test/tracker/target_loss_handler.py` | 1-403 |
 | Modality Dropout | `lib/utils/modality_dropout.py` | 28-77 |
+| BN Adaptation | `lib/utils/bn_adaptation.py` | 21-131 |
 | Evaluation Experiment | `lib/test/evaluation/experiment.py` | 1-766 |
 | Visibility Filtering | `lib/test/evaluation/experiment.py` | 249-273 |
 | Checkpoint Migration | `lib/train/trainers/base_trainer.py` | 125-148 |

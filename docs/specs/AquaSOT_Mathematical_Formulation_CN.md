@@ -1,7 +1,7 @@
 # AquaSOT: RGB-Sonar 双模态跟踪数学公式与算法框架
 
-**版本**: 2.1 (与当前实现完全同步)
-**最后更新**: 2026-01-30
+**版本**: 2.2 (与当前实现完全同步)
+**最后更新**: 2026-01-31
 **基于代码**: `lib/models/aquasot/`, `lib/train/`, `lib/utils/`, `lib/test/evaluation/`
 
 ---
@@ -211,6 +211,34 @@ $$
 - $\alpha = 1$: 完全融合（原始行为）
 
 弱融合 ($\alpha = 0.3$) 在实现互补信息交换的同时减少跨模态干扰。
+
+#### 2.3.4 模态有效性检测与自注意力回退
+
+**代码参考**: `lib/models/aquasot/aquasot.py:73-74`, `lib/models/aquasot/fusion.py:125-145`
+
+当通过模态丢弃将某个模态置零时，交叉注意力变得无效。模型检测此情况并使用自注意力作为回退。
+
+**有效性检测**:
+
+$$
+\text{valid}_{m} = \mathbb{1}\left[\sum_{i,j,k}|\mathbf{I}_{m}[i,j,k]| > 10^{-4}\right]
+$$
+
+**自注意力回退**:
+
+当Sonar被丢弃 ($\text{valid}_{sonar} = \text{False}$) 时:
+
+$$
+\mathbf{F}_{rgb}' = \mathbf{F}_{rgb} + \alpha_{rgb} \cdot \text{SelfAttn}_{rgb \to sonar}(\text{LN}(\mathbf{F}_{rgb}), \mathbf{F}_{rgb})
+$$
+
+当RGB被丢弃 ($\text{valid}_{rgb} = \text{False}$) 时:
+
+$$
+\mathbf{F}_{sonar}' = \mathbf{F}_{sonar} + \alpha_{sonar} \cdot \text{CrossAttn}_{rgb \to sonar}(\text{LN}(\mathbf{F}_{sonar}), \mathbf{F}_{sonar})
+$$
+
+**注意**: Sonar自注意力时使用`rgb_to_sonar`模块，因为其K/V投影是为Sonar特征训练的。使用`sonar_to_rgb`会将为RGB特征训练的K/V投影应用于Sonar特征，产生错误的输出分布。
 
 ### 2.4 CenterPredictor 预测头
 
@@ -453,6 +481,54 @@ $$
 | `P_DROP_SONAR` | 0.0 | 丢弃Sonar的概率 (1.0 = 仅RGB) |
 
 **注意**: 训练始终使用双模态以学习鲁棒的双模态表示。丢弃仅在测试时用于消融研究。
+
+### 4.7 推理时 BatchNorm 自适应
+
+**代码参考**: `lib/utils/bn_adaptation.py:21-131`
+
+双模态训练期间，BatchNorm层学习融合特征分布的运行统计量。单模态推理时，特征分布发生偏移（交叉注意力输出变为自注意力或零张量），导致分布不匹配，降低预测质量。
+
+#### 4.7.1 自适应算法
+
+自适应过程重新计算BN运行统计量：
+
+1. **统计量重置**:
+
+$$
+\mu_{running} \leftarrow 0, \quad \sigma^2_{running} \leftarrow 1
+$$
+
+2. **前向传播自适应** (对于 $n = 1, ..., N_{adapt}$ 批次):
+
+$$
+\mu_{running} \leftarrow (1 - \gamma) \cdot \mu_{running} + \gamma \cdot \mu_{batch}
+$$
+
+$$
+\sigma^2_{running} \leftarrow (1 - \gamma) \cdot \sigma^2_{running} + \gamma \cdot \sigma^2_{batch}
+$$
+
+其中:
+- $\gamma = 0.2$: 自适应动量（高于训练默认值0.1）
+- $N_{adapt} = 30$: 自适应批次数（可配置）
+
+#### 4.7.2 模态特定输入生成
+
+| 模式 | RGB输入 | Sonar输入 | 用途 |
+|------|---------|-----------|------|
+| `rgb` | 正常 | $\mathbf{0}$ | 仅RGB消融 |
+| `sonar` | $\mathbf{0}$ | 正常 | 仅Sonar消融 |
+| `dual` | 正常 | 正常 | 无融合消融 |
+
+#### 4.7.3 配置参数
+
+| 参数 | 默认值 | 代码来源 |
+|------|--------|---------|
+| `ENABLED` | False | `cfg.TEST.BN_ADAPTATION.ENABLED` |
+| `NUM_BATCHES` | 30 | `cfg.TEST.BN_ADAPTATION.NUM_BATCHES` |
+| `DATA_SOURCE` | 'test' | `cfg.TEST.BN_ADAPTATION.DATA_SOURCE` |
+
+**相关工作**: Wang et al., "Tent: Fully Test-Time Adaptation by Entropy Minimization", ICLR 2021 [arXiv:2006.10726]
 
 ---
 
@@ -717,6 +793,14 @@ AquaSOT采用GOT-10k风格评估，支持可见性过滤和多模态评估。
 | `SKIP_INIT_FRAME` | True | 跳过第0帧（初始化帧） |
 | `EVAL_MODE` | 'dual' | 评估模式: 'dual', 'rgb_only', 'sonar_only' |
 
+**BatchNorm自适应**（用于消融实验）:
+
+| 参数 | 值 | 描述 |
+|------|-----|------|
+| `TEST.BN_ADAPTATION.ENABLED` | False | 通过`--bn_adapt`标志启用 |
+| `TEST.BN_ADAPTATION.NUM_BATCHES` | 30 | BN统计量重新计算的批次数 |
+| `TEST.BN_ADAPTATION.DATA_SOURCE` | 'test' | 自适应数据来源 |
+
 #### 7.0.2 可见性过滤
 
 遵循GOT-10k评估模式，真值框为 $(0, 0, 0, 0)$（目标缺失/遮挡）的帧被排除在指标计算之外:
@@ -803,6 +887,11 @@ $$
    - Li, Y., et al. (2024). *RGB-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer Tracker*
    - 论文: https://arxiv.org/abs/2406.07189 | GitHub: https://github.com/LiYunfengLYF/RGBS50
 
+### 测试时自适应
+9. **Tent** (测试时自适应)
+   - Wang, D., Shelhamer, E., Liu, S., Olshausen, B., & Darrell, T. (2021). *Tent: Fully Test-Time Adaptation by Entropy Minimization*. ICLR 2021.
+   - 论文: https://arxiv.org/abs/2006.10726
+
 ---
 
 ## 附录: 代码参考索引
@@ -825,6 +914,7 @@ $$
 | 模板更新 | `lib/test/tracker/aquasot_tracker.py` | 296-370 |
 | 目标丢失处理器 | `lib/test/tracker/target_loss_handler.py` | 1-403 |
 | 模态丢弃 | `lib/utils/modality_dropout.py` | 28-77 |
+| BN自适应 | `lib/utils/bn_adaptation.py` | 21-131 |
 | 评估实验 | `lib/test/evaluation/experiment.py` | 1-766 |
 | 可见性过滤 | `lib/test/evaluation/experiment.py` | 249-273 |
 | 检查点迁移 | `lib/train/trainers/base_trainer.py` | 125-148 |

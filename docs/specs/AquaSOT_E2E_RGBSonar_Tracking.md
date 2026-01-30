@@ -271,6 +271,25 @@ F_sonar' = F_sonar + alpha_sonar * CrossAttn(LN(F_sonar), F_rgb)
 - Set to 1 for full fusion (original behavior)
 - Default 0.3 provides weak fusion, reducing cross-modal interference while enabling complementary information exchange
 
+#### 3.2.4 Modality Validity Detection
+
+**Source**: `lib/models/aquasot/aquasot.py:73-74`, `lib/models/aquasot/fusion.py:125-145`
+
+When a modality is dropped (input is all zeros), cross-attention becomes invalid. The model detects modality validity and uses self-attention as fallback:
+
+```python
+rgb_valid = rgb_search.abs().sum() > 1e-4
+sonar_valid = sonar_search.abs().sum() > 1e-4
+```
+
+**Fallback Behavior**:
+- Sonar dropped: RGB queries attend to RGB (self-attention via `rgb_to_sonar` module)
+- RGB dropped: Sonar queries use `rgb_to_sonar` module (K/V projections trained for Sonar)
+
+**Note**: For Sonar self-attention when RGB is dropped, the `rgb_to_sonar` module is used because its K/V projections are trained for Sonar features. Using `sonar_to_rgb` would apply K/V projections trained for RGB features to Sonar features, producing incorrect output distributions.
+
+This ensures consistent feature distributions for the downstream prediction heads during single-modality inference.
+
 ### 3.3 CenterPredictor Head
 
 **Source**: `lib/models/layers/head.py:31-165`
@@ -770,6 +789,12 @@ All default parameters are defined in `config.py`. YAML files only override thes
 | `DATA.MODALITY_DROPOUT.ENABLED` | False | Enable testing-time dropout |
 | `DATA.MODALITY_DROPOUT.P_DROP_RGB` | 0.0 | Probability of dropping RGB |
 | `DATA.MODALITY_DROPOUT.P_DROP_SONAR` | 0.0 | Probability of dropping Sonar |
+| **BatchNorm Adaptation** | | |
+| `TEST.BN_ADAPTATION.ENABLED` | False | Enable BN adaptation for ablation |
+| `TEST.BN_ADAPTATION.NUM_BATCHES` | 30 | Batches for BN statistics recalculation |
+| `TEST.BN_ADAPTATION.DATA_SOURCE` | 'test' | Data source for adaptation |
+| **Default Test Sequences** | | |
+| `DATA.TEST.SEQUENCES` | ["uuv3"] | Default sequences for test/ablation |
 
 ### 7.3 Configuration Files
 
@@ -783,45 +808,86 @@ All default parameters are defined in `config.py`. YAML files only override thes
 
 ## 8. Ablation Experiments
 
-AquaSOT supports inference-time ablation experiments using command-line flags. All ablations
-use BatchNorm adaptation (`--bn_adapt`) to recalculate BN statistics for fair comparison.
+AquaSOT supports inference-time ablation experiments using runtime CLI flags. All ablations use BatchNorm adaptation (`--bn_adapt`) to recalculate BN statistics for fair comparison.
 
-### 8.1 Running Ablations
-
-```bash
-# RGB-only ablation
-python tracking/test.py --checkpoint model.pth --eval_mode rgb_only --bn_adapt
-
-# Sonar-only ablation
-python tracking/test.py --checkpoint model.pth --eval_mode sonar_only --bn_adapt
-
-# No fusion ablation
-python tracking/test.py --checkpoint model.pth --eval_mode no_fusion --bn_adapt
-```
-
-### 8.2 Ablation Modes
+### 8.1 Evaluation Modes
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| RGB-only | `--eval_mode rgb_only` | Zeros Sonar input, evaluates RGB tracking |
-| Sonar-only | `--eval_mode sonar_only` | Zeros RGB input, evaluates Sonar tracking |
-| No-fusion | `--eval_mode no_fusion` | Sets fusion weights to 0, disables cross-modal attention |
+| Dual (default) | `--eval_mode dual` | Full dual-modal tracking |
+| RGB-only | `--eval_mode rgb_only` | Zeros Sonar input |
+| Sonar-only | `--eval_mode sonar_only` | Zeros RGB input |
+| No-fusion | `--eval_mode no_fusion` | Both modalities, fusion weights = 0 |
 
-### 8.3 BatchNorm Adaptation
+### 8.2 BatchNorm Adaptation
 
 **Source**: `lib/utils/bn_adaptation.py`
 
-During dual-modal training, BatchNorm layers learn statistics from fused features. At
-ablation inference, the feature distribution changes. The `--bn_adapt` flag recalculates
-BN running_mean/running_var before evaluation.
+**Why it's needed**: During dual-modal training, BatchNorm layers learn statistics from fused features. At single-modal inference, the feature distribution changes because cross-attention output differs. Without BN adaptation, this distribution mismatch degrades performance.
 
-### 8.4 Expected Results
+**How it works**:
+1. Reset BN running_mean and running_var
+2. Run forward passes with target modality configuration (30 batches, momentum=0.2)
+3. BN statistics converge to the new distribution
+4. Restore eval mode with adapted statistics
 
-| Experiment | Purpose | Expected Recovery |
-|------------|---------|-------------------|
-| Full vs RGB-only | Quantify sonar contribution | ~97% of dual RGB |
-| Full vs Sonar-only | Quantify RGB contribution | ~77% of dual Sonar |
-| Full vs No-fusion | Quantify cross-modal fusion benefit | ~79% of dual |
+**When to use**: Always use `--bn_adapt` for ablation experiments.
+
+**Related Work**: Wang et al., "Tent: Fully Test-Time Adaptation by Entropy Minimization", ICLR 2021.
+
+### 8.3 Running Ablation Experiments
+
+```bash
+# Dual-modal baseline (no BN adaptation needed)
+python tracking/test.py --checkpoint model.pth --eval_mode dual
+
+# RGB-only ablation (requires BN adaptation)
+python tracking/test.py --checkpoint model.pth --eval_mode rgb_only --bn_adapt
+
+# Sonar-only ablation (requires BN adaptation)
+python tracking/test.py --checkpoint model.pth --eval_mode sonar_only --bn_adapt
+
+# No-fusion ablation (requires BN adaptation)
+python tracking/test.py --checkpoint model.pth --eval_mode no_fusion --bn_adapt
+```
+
+### 8.4 Technical Details
+
+#### 8.4.1 Modality Validity Detection
+
+**Source**: `lib/models/aquasot/aquasot.py:73-74`
+
+```python
+rgb_valid = rgb_search.abs().sum() > 1e-4
+sonar_valid = sonar_search.abs().sum() > 1e-4
+```
+
+#### 8.4.2 Self-Attention Fallback
+
+**Source**: `lib/models/aquasot/fusion.py:125-145`
+
+When one modality is dropped:
+- **Sonar dropped**: RGB uses self-attention via `rgb_to_sonar` module
+- **RGB dropped**: Sonar uses `rgb_to_sonar` module (K/V projections trained for Sonar)
+
+#### 8.4.3 BN Adaptation Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `TEST.BN_ADAPTATION.ENABLED` | False | Enable via `--bn_adapt` |
+| `TEST.BN_ADAPTATION.NUM_BATCHES` | 30 | Batches for adaptation |
+| `TEST.BN_ADAPTATION.DATA_SOURCE` | 'test' | Data source for adaptation |
+
+### 8.5 Expected Results
+
+| Experiment | Description | Expected Behavior |
+|------------|-------------|-------------------|
+| Full Dual | Baseline dual-modal | Best overall performance |
+| RGB-only | Sonar zeroed | Performance degradation in low-visibility conditions |
+| Sonar-only | RGB zeroed | Lower precision due to coarser resolution |
+| No-fusion | Fusion weights = 0 | No cross-modal information exchange |
+
+**Note**: Without `--bn_adapt`, single-modal ablations show significantly degraded performance due to BN statistics mismatch.
 
 ---
 
@@ -878,6 +944,10 @@ BN running_mean/running_var before evaluation.
 - Loshchilov, I., & Hutter, F. (2019). *Decoupled Weight Decay Regularization*. ICLR 2019.
 - [arXiv:1711.05101](https://arxiv.org/abs/1711.05101)
 
+[10] **Tent** (Test-Time Adaptation)
+- Wang, D., Shelhamer, E., Liu, S., Olshausen, B., & Darrell, T. (2021). *Tent: Fully Test-Time Adaptation by Entropy Minimization*. ICLR 2021.
+- [arXiv:2006.10726](https://arxiv.org/abs/2006.10726)
+
 ---
 
 ## 10. Appendix: Code Reference Index
@@ -924,6 +994,7 @@ BN running_mean/running_var before evaluation.
 | Preprocessing | `lib/test/tracker/aquasot_tracker.py` | 459-500 | RGB/Sonar preprocessing |
 | Evaluation | `lib/test/evaluation/experiment.py` | 23-766 | Evaluation experiment runner |
 | Modality Dropout | `lib/utils/modality_dropout.py` | 28-77 | Testing-time ablation |
+| BN Adaptation | `lib/utils/bn_adaptation.py` | 21-131 | BatchNorm adaptation for ablation |
 
 ### 10.5 Training Utilities
 
@@ -945,8 +1016,8 @@ BN running_mean/running_var before evaluation.
 
 ## Document Information
 
-- **Version**: 2.1
-- **Last Updated**: 2026-01-30
+- **Version**: 2.2
+- **Last Updated**: 2026-01-31
 - **Based on**: Current codebase implementation
 - **Related Documents**:
   - `docs/specs/AquaSOT_Mathematical_Formulation.md` (detailed mathematical derivations)
