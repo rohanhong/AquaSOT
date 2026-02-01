@@ -79,6 +79,11 @@ def parse_args():
                         help='Enable BatchNorm adaptation. Required for all ablation experiments '
                              '(--eval_mode rgb_only/sonar_only/no_fusion).')
 
+    # Fusion weight override for ablation experiments
+    parser.add_argument('--fusion_weight', type=float, default=None,
+                        help='Override inference fusion weight for ablation experiments. '
+                             'Default from config is 0.3. Use 0.0 for no fusion, 1.0 for full fusion.')
+
     return parser.parse_args()
 
 
@@ -146,6 +151,12 @@ def main():
         cfg.MODEL.FUSION.RGB_FUSION_WEIGHT = 0.0
         cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT = 0.0
         print('[Evaluation] No-fusion mode: Fusion weights set to 0')
+
+    # Apply fusion weight override if specified
+    if args.fusion_weight is not None:
+        cfg.MODEL.FUSION.RGB_FUSION_WEIGHT = args.fusion_weight
+        cfg.MODEL.FUSION.SONAR_FUSION_WEIGHT = args.fusion_weight
+        print(f'[Evaluation] Fusion weight override: {args.fusion_weight}')
 
     # Configure BN adaptation
     if args.bn_adapt:
