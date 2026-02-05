@@ -75,7 +75,7 @@ Sonar [B, 1, H, W] ---> ViT-Base (Sonar) --+
 ## Dataset Structure
 
 12 RGB-Sonar sequences (UUV1-12):
-- Training: UUV1,2,4,5,6,7,8,9,10,11,12 (9,588 frames)
+- Training: UUV1,2,4,5,6,7,8,9,10,11,12 (10,940 frames)
 - Test/Validation: UUV3 (751 frames)
 
 Default test set is configured in `cfg.DATA.TEST.SEQUENCES`.
