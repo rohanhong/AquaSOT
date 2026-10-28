@@ -33,7 +33,7 @@ Usage:
         --output_dir checkpoints/aquasot/inference \
         --latest_only
 
-Author: AquaSOT Team
+Author: Luhang Hong
 """
 
 import argparse

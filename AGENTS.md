@@ -25,7 +25,7 @@ Key components:
 - **Backbones**: `lib/models/aquasot/vit.py` - Dual ViT-Base encoders (RGB: 3-ch, Sonar: 1-ch)
 - **Fusion**: `lib/models/aquasot/fusion.py` - DCMA cross-modal attention (2-layer bidirectional)
 - **Heads**: `lib/models/layers/head.py` - Separate CenterPredictor heads per modality
-- **Model**: `lib/models/aquasot/aquasot.py` - Main dual-stream model (~190 lines)
+- **Model**: `lib/models/aquasot/aquasot.py` - Main dual-stream model (~200 lines)
 
 Critical design decisions:
 

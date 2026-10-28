@@ -12,7 +12,7 @@ Architecture Strategy:
 - Preserves original data (outputs to *_rect suffixes)
 - Lightweight implementation (~300 LOC)
 
-Author: AquaSOT Team
+Author: Luhang Hong
 Date: 2025-11-19
 """
 
