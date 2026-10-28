@@ -3,7 +3,12 @@
 ## Prerequisites
 
 ```bash
-# Sonar preprocessing (required once)
+# Fetch the dataset (data/) and training outputs (outputs/) from Hugging Face
+# Hub; the repos are private, so run `hf auth login` first or export HF_TOKEN
+python scripts/fetch_artifacts.py
+
+# Sonar preprocessing (required once for raw data; fetched data already
+# includes img_rect/ and groundtruth_rect.txt)
 python scripts/preprocess_sonar.py --all --data-root data
 
 # Download MAE pretrained weights

@@ -3,6 +3,9 @@
 ## Evaluation
 
 ```bash
+# Fetch the paper checkpoint and training logs (outputs/train/) from Hugging Face Hub
+python scripts/fetch_artifacts.py outputs --include "train/*"
+
 # Basic evaluation (test set UUV3, with visualization and curves)
 python tracking/test.py --tracker aquasot \
     --checkpoint outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth

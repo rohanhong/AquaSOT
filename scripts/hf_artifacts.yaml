@@ -1,0 +1,39 @@
+# Hugging Face Hub artifacts for this repository, pinned to exact commits.
+#
+# Fetch and verify: python scripts/fetch_artifacts.py
+# Updating: upload to the Hub, set hf_revision to the new full 40-character
+# commit SHA (never a branch name) and update any changed sha256, then run
+# python scripts/fetch_artifacts.py --verify_only
+#
+# local_dir is relative to the repository root; both targets are git-ignored.
+
+artifacts:
+  data:
+    hf_repo: aquasot/aquasot-data
+    hf_repo_type: dataset
+    hf_revision: e163f7c204ee03d5eaebfa49e33fe3185e76448c
+    local_dir: data
+    # One uncompressed tar per sequence; uuv<N>.tar extracts to data/uuv<N>/
+    archives:
+      uuv1.tar: ff306a1df910b6f3e89cd251e803fa70f1f59b74b54928559b7fd108fec170c8
+      uuv2.tar: 896fca3e53f9684068069ddaf6401f2575b5b3696fc14da9c50a90c0bfee0abf
+      uuv3.tar: ecdbca15dc1ac5018768f56f5e1e7ff1f5ed00e41bc438fa85a65f84fc34eadf
+      uuv4.tar: ea129225c237ab4584e2d89ef177e7b834f2da19fbd1c200c61e24ee5d1bafbf
+      uuv5.tar: c8a5cd047a5b4f9cd72268717015d4a62af676fcf43e916163863c843ba2c0c5
+      uuv6.tar: 880a7033956b19ce87073fc0f3209d171919db5a3e5e4f0290b60b5d79633582
+      uuv7.tar: 7c335cf291f695c828348d3b7ff70bcc247c32f4755490687579e19a0112deed
+      uuv8.tar: adf738833b7f4e213c02bf7d90c06544d3f66401a65cf60840836b161e8a3e00
+      uuv9.tar: f061ed19be779d0e08827990f63f058baa18596ab5a91a4af4868cc7df9d5e7c
+      uuv10.tar: ae1ee629a61a4b7d2acbd6750cccbbc5da9caa5ef733757169a3dd37ef8e7b96
+      uuv11.tar: e88b2bc1206b5a51134e76fb5391becec159f4d68327158171f8c256329e63b5
+      uuv12.tar: 61513b540854b80b6b3d859c0d59a522e81a1cdb244caba24bac25c421513b86
+
+  outputs:
+    hf_repo: aquasot/aquasot-models
+    hf_repo_type: model
+    hf_revision: e116380ec23f23c7387833b510dd58e724a8cd73
+    local_dir: outputs
+    ignore_patterns: [.gitattributes, README.md]
+    # Paper model (exp001, W&B run fjzrlal7); checked in addition to Hub hashes
+    pinned_sha256:
+      train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth: 31f53af4afa79b04e29a91086c1ee93e8a83ad80d826dc1401dad692845f9d3b

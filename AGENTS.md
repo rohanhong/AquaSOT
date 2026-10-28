@@ -62,6 +62,7 @@ Bounding box formats:
 | Evaluation | `tracking/test.py` |
 | Model export | `scripts/export_checkpoint.py` |
 | Sonar preprocessing | `scripts/preprocess_sonar.py` |
+| Fetch data and outputs | `scripts/fetch_artifacts.py` |
 
 ### Code conventions
 
@@ -116,6 +117,13 @@ Data preprocessing:
 
 ```bash
 python scripts/preprocess_sonar.py --all  # Convert sonar polar to Cartesian
+```
+
+Hugging Face artifacts (pinned in `scripts/hf_artifacts.yaml`):
+
+```bash
+python scripts/fetch_artifacts.py                # Fetch and verify data/ and outputs/
+python scripts/fetch_artifacts.py --verify_only  # Verify local copies only
 ```
 
 ## Conventions
