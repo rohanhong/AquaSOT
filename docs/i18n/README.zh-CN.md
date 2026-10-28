@@ -48,7 +48,7 @@ Sonar Input --> ViT Backbone --+
 ## 🚀 快速开始
 
 > [!NOTE]
-> 需要 conda（例如 [Miniforge](https://conda-forge.org/download/)）和支持 CUDA 11.8 的 GPU。`environment.yml` 会创建 `aquasot_env_py38` 环境（Python 3.8）并安装 `requirements.txt` 中的依赖；不用 conda 时，可在任意 Python 3.8+ 环境中运行 `pip install -r requirements.txt`。数据集不包含在本仓库中，请按 [数据集](#-数据集) 一节的结构放在 `data/` 下。
+> 需要 conda（例如 [Miniforge](https://conda-forge.org/download/)）和支持 CUDA 11.8 的 GPU。`environment.yml` 会创建 `aquasot_env_py38` 环境（Python 3.8）并安装 `requirements.txt` 中的依赖；不用 conda 时，可在任意 Python 3.8+ 环境中运行 `pip install -r requirements.txt`。数据集和训练产物不包含在本仓库中：第 3 步会从私有的 Hugging Face 仓库下载（需要访问权限），也可以自行准备数据集，按 [数据集](#-数据集) 一节的结构放在 `data/` 下。
 
 1. 克隆仓库并安装：
 
@@ -67,13 +67,20 @@ Sonar Input --> ViT Backbone --+
        https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
    ```
 
-3. 将声呐图像从极坐标转换为笛卡尔坐标（只需一次）：
+3. 从 Hugging Face 下载数据集和训练产物（首次使用需先登录）：
+
+   ```bash
+   hf auth login
+   python scripts/fetch_artifacts.py
+   ```
+
+4. 仅针对原始数据：将声呐图像从极坐标转换为笛卡尔坐标（只需一次；下载的数据已包含 `img_rect/`）：
 
    ```bash
    python scripts/preprocess_sonar.py --all
    ```
 
-4. 训练，然后评估：
+5. 训练，然后评估：
 
    ```bash
    python tracking/train.py --script aquasot --config vitb_256_dual
@@ -93,6 +100,8 @@ data/
 ```
 
 **划分：** 训练集（uuv1,2,4,5,6,7,8,9,10,11,12）| 验证集（uuv3）
+
+`scripts/fetch_artifacts.py` 按 `scripts/hf_artifacts.yaml` 中固定的版本下载：数据集来自私有数据集仓库 `aquasot/aquasot-data`（每个序列一个 tar，校验 sha256 后解压到 `data/`）；训练产物来自私有模型仓库 `aquasot/aquasot-models`，下载到 `outputs/`，其中包括论文使用的 checkpoint `outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth`。运行 `python scripts/fetch_artifacts.py --verify_only` 可在不下载的情况下校验本地文件；如果传输卡住，请加上 `HF_HUB_DISABLE_XET=1` 重新运行。
 
 ## 🏋️ 训练
 

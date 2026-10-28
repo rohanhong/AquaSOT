@@ -48,7 +48,7 @@ Sonar Input --> ViT Backbone --+
 ## 🚀 Quick Start
 
 > [!NOTE]
-> Requires conda (for example [Miniforge](https://conda-forge.org/download/)) and a CUDA 11.8 capable GPU. `environment.yml` creates the `aquasot_env_py38` env (Python 3.8) and installs `requirements.txt` into it; without conda, `pip install -r requirements.txt` works in any Python 3.8+ env. The dataset is not part of this repository; place it under `data/` as shown in [Dataset](#-dataset).
+> Requires conda (for example [Miniforge](https://conda-forge.org/download/)) and a CUDA 11.8 capable GPU. `environment.yml` creates the `aquasot_env_py38` env (Python 3.8) and installs `requirements.txt` into it; without conda, `pip install -r requirements.txt` works in any Python 3.8+ env. The dataset and training outputs are not part of this repository: step 3 fetches them from private Hugging Face repos (access required), or place your own copy of the dataset under `data/` as shown in [Dataset](#-dataset).
 
 1. Clone the repository and install:
 
@@ -67,13 +67,20 @@ Sonar Input --> ViT Backbone --+
        https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
    ```
 
-3. Convert sonar frames from polar to Cartesian coordinates (once):
+3. Fetch the dataset and training outputs from Hugging Face (log in once first):
+
+   ```bash
+   hf auth login
+   python scripts/fetch_artifacts.py
+   ```
+
+4. Only for raw data: convert sonar frames from polar to Cartesian coordinates (once; fetched data already includes `img_rect/`):
 
    ```bash
    python scripts/preprocess_sonar.py --all
    ```
 
-4. Train, then evaluate:
+5. Train, then evaluate:
 
    ```bash
    python tracking/train.py --script aquasot --config vitb_256_dual
@@ -93,6 +100,8 @@ data/
 ```
 
 **Split:** Training (uuv1,2,4,5,6,7,8,9,10,11,12) | Validation (uuv3)
+
+`scripts/fetch_artifacts.py` downloads the copies pinned in `scripts/hf_artifacts.yaml`: the dataset from the private dataset repo `aquasot/aquasot-data` (one tar per sequence, checked against its sha256 and extracted into `data/`), and the training outputs, including the paper checkpoint `outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth`, from the private model repo `aquasot/aquasot-models` into `outputs/`. `python scripts/fetch_artifacts.py --verify_only` checks local copies without downloading; if a transfer stalls, rerun with `HF_HUB_DISABLE_XET=1`.
 
 ## 🏋️ Training
 
