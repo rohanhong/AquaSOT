@@ -9,13 +9,13 @@ Actual data structure:
             light/
                 groundtruth.txt
                 img/
-                    1000.jpg, 1001.jpg, ...
+                    1.jpg, 2.jpg, ...
             sonar/
                 groundtruth.txt       # original polar coordinates
                 groundtruth_rect.txt  # rect-converted coordinates (used)
                 img/                  # original polar images
                 img_rect/             # rect-converted images (used)
-                    1000.jpg, 1001.jpg, ...
+                    1.jpg, 2.jpg, ...
 """
 
 import os
