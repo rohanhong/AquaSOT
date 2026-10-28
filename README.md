@@ -48,14 +48,15 @@ Sonar Input --> ViT Backbone --+
 ## 🚀 Quick Start
 
 > [!NOTE]
-> Requires Python 3.8+ and a CUDA 11.8 capable GPU. The dataset is not part of this repository; place it under `data/` as shown in [Dataset](#-dataset).
+> Requires conda (for example [Miniforge](https://conda-forge.org/download/)) and a CUDA 11.8 capable GPU. `environment.yml` creates the `aquasot_env_py38` env (Python 3.8) and installs `requirements.txt` into it; without conda, `pip install -r requirements.txt` works in any Python 3.8+ env. The dataset is not part of this repository; place it under `data/` as shown in [Dataset](#-dataset).
 
 1. Clone the repository and install:
 
    ```bash
    git clone https://github.com/rohanhong/AquaSOT.git
    cd AquaSOT
-   pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+   conda env create -f environment.yml
+   conda activate aquasot_env_py38
    pip install -e .
    ```
 

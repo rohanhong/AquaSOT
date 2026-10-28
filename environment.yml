@@ -1,0 +1,9 @@
+name: aquasot_env_py38
+channels:
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip
+  # conda-only packages go here; everything else lives in requirements.txt
+  - pip:
+      - -r requirements.txt

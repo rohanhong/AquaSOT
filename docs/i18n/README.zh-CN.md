@@ -48,14 +48,15 @@ Sonar Input --> ViT Backbone --+
 ## 🚀 快速开始
 
 > [!NOTE]
-> 需要 Python 3.8+ 和支持 CUDA 11.8 的 GPU。数据集不包含在本仓库中，请按 [数据集](#-数据集) 一节的结构放在 `data/` 下。
+> 需要 conda（例如 [Miniforge](https://conda-forge.org/download/)）和支持 CUDA 11.8 的 GPU。`environment.yml` 会创建 `aquasot_env_py38` 环境（Python 3.8）并安装 `requirements.txt` 中的依赖；不用 conda 时，可在任意 Python 3.8+ 环境中运行 `pip install -r requirements.txt`。数据集不包含在本仓库中，请按 [数据集](#-数据集) 一节的结构放在 `data/` 下。
 
 1. 克隆仓库并安装：
 
    ```bash
    git clone https://github.com/rohanhong/AquaSOT.git
    cd AquaSOT
-   pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+   conda env create -f environment.yml
+   conda activate aquasot_env_py38
    pip install -e .
    ```
 

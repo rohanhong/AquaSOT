@@ -9,10 +9,11 @@ import os
 
 
 def read_requirements(filename):
-    """Read requirements from file."""
+    """Read requirements from file, skipping comments and pip options."""
     filepath = os.path.join(os.path.dirname(__file__), filename)
     with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        lines = [line.strip() for line in f]
+    return [line for line in lines if line and not line.startswith(('#', '-'))]
 
 
 # Read long description from README

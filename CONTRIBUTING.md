@@ -12,10 +12,11 @@ Thank you for helping improve AquaSOT. Please follow the [Code of Conduct](CODE_
 
 ## Development Setup
 
-Requires Python 3.8+ and a CUDA 11.8 capable GPU for training.
+Requires conda and a CUDA 11.8 capable GPU for training. `environment.yml` creates the `aquasot_env_py38` env (Python 3.8) and installs `requirements.txt` into it.
 
 ```bash
-pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+conda env create -f environment.yml
+conda activate aquasot_env_py38
 pip install -e .
 python scripts/preprocess_sonar.py --all   # once, after placing the dataset under data/
 pytest tests/ -v

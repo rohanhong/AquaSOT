@@ -73,10 +73,13 @@ Bounding box formats:
 
 ## Commands
 
-Installation:
+Installation (`environment.yml` creates the `aquasot_env_py38` conda env and
+installs `requirements.txt`, which pulls the `+cu118` PyTorch builds from the
+PyTorch index):
 
 ```bash
-pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+conda env create -f environment.yml
+conda activate aquasot_env_py38
 pip install -e .
 ```
 

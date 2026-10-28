@@ -12,10 +12,11 @@
 
 ## 开发环境
 
-训练需要 Python 3.8+ 和支持 CUDA 11.8 的 GPU。
+训练需要 conda 和支持 CUDA 11.8 的 GPU。`environment.yml` 会创建 `aquasot_env_py38` 环境（Python 3.8）并安装 `requirements.txt` 中的依赖。
 
 ```bash
-pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+conda env create -f environment.yml
+conda activate aquasot_env_py38
 pip install -e .
 python scripts/preprocess_sonar.py --all   # once, after placing the dataset under data/
 pytest tests/ -v
