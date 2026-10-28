@@ -28,11 +28,9 @@ setup(
     description='End-to-End RGB+Sonar Single-Object Tracking',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    author='AquaSOT Team',
-    author_email='aquasot@example.com',
-    url='https://github.com/yourusername/AquaSOT',
-    packages=find_packages(where='src'),
-    package_dir={'': 'src'},
+    author='Luhang Hong',
+    url='https://github.com/rohanhong/AquaSOT',
+    packages=find_packages(include=['lib', 'lib.*']),
     install_requires=read_requirements('requirements.txt'),
     extras_require={
         'dev': [
@@ -58,17 +56,10 @@ setup(
         'Programming Language :: Python :: 3.11',
         'Operating System :: OS Independent',
     ],
-    entry_points={
-        'console_scripts': [
-            'aquasot-train=scripts.train:main',
-            'aquasot-eval=scripts.eval:main',
-            'aquasot-demo=scripts.demo:main',
-        ],
-    },
     keywords='underwater tracking sonar rgb multi-modal object-tracking deep-learning',
     project_urls={
-        'Documentation': 'https://github.com/yourusername/AquaSOT/docs',
-        'Source': 'https://github.com/yourusername/AquaSOT',
-        'Tracker': 'https://github.com/yourusername/AquaSOT/issues',
+        'Documentation': 'https://github.com/rohanhong/AquaSOT/tree/main/docs',
+        'Source': 'https://github.com/rohanhong/AquaSOT',
+        'Tracker': 'https://github.com/rohanhong/AquaSOT/issues',
     },
 )

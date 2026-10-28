@@ -1,60 +1,99 @@
-# AquaSOT
+<div align="center">
 
-**End-to-End RGB-Sonar Single Object Tracking for Underwater Environments**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset=".github/assets/banner-light.svg">
+  <img alt="AquaSOT" src=".github/assets/banner-light.svg" width="480">
+</picture>
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<h1>🌊 AquaSOT</h1>
+
+<p><b>End-to-end RGB-Sonar single object tracking for underwater environments</b></p>
+
+<p>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://pytorch.org/"><img alt="PyTorch" src="https://img.shields.io/badge/pytorch-2.3-EE4C2C?logo=pytorch&logoColor=white"></a>
+  <a href="https://agents.md"><img alt="AGENTS.md" src="https://img.shields.io/badge/AGENTS.md-ready-24292f"></a>
+  <a href="https://agentskills.io"><img alt="Agent Skills" src="https://img.shields.io/badge/Agent%20Skills-open%20format-8250df"></a>
+  <!-- Reserved badges: uncomment when the service exists.
+  <a href="https://github.com/rohanhong/AquaSOT/actions/workflows/<workflow>"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rohanhong/AquaSOT/<workflow>?branch=main"></a>
+  <a href="https://github.com/rohanhong/AquaSOT/releases"><img alt="Release" src="https://img.shields.io/github/v/release/rohanhong/AquaSOT"></a>
+  <a href="https://github.com/rohanhong/AquaSOT/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/rohanhong/AquaSOT"></a>
+  <a href="https://github.com/rohanhong/AquaSOT/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/rohanhong/AquaSOT?style=flat"></a>
+  -->
+</p>
+
+<p>🌐 <b>English</b> | <a href="docs/i18n/README.zh-CN.md">简体中文</a></p>
+
+</div>
 
 AquaSOT is an end-to-end multi-modal single object tracking framework that fuses RGB camera and Forward-Looking Sonar (FLS) data without requiring extrinsic calibration. The system employs a dual-stream Vision Transformer architecture with Deformable Cross-Modal Attention (DCMA) for calibration-free correspondence learning.
 
-## Architecture
+## ✨ Highlights
+
+- 🧠 **Dual-stream ViT**: separate ViT-Base backbones for RGB (3-ch) and Sonar (1-ch) feature extraction.
+- 🔗 **Calibration-free fusion**: Deformable Cross-Modal Attention aligns the two modalities spatially without extrinsic calibration.
+- 🎯 **Modality-specific heads**: separate prediction heads for RGB and Sonar, so the asymmetric fields of view do not cause prediction drift.
+- 🔬 **Built-in ablations**: inference-time `rgb_only`, `sonar_only`, and `no_fusion` modes with BatchNorm adaptation.
+
+## 🏗️ Architecture
 
 ```
-RGB Input ──> ViT Backbone ──┐
-                             ├──> DCMA Fusion ──> Prediction Heads ──> BBox (RGB, Sonar)
-Sonar Input ──> ViT Backbone ─┘
+RGB Input   --> ViT Backbone --+
+                               +--> DCMA Fusion --> Prediction Heads --> BBox (RGB, Sonar)
+Sonar Input --> ViT Backbone --+
 ```
 
-**Key Components:**
-- Dual ViT-Base backbones for RGB (3-ch) and Sonar (1-ch) feature extraction
-- Deformable Cross-Modal Attention for spatial alignment without calibration
-- Separate prediction heads for RGB and Sonar modalities
+## 🚀 Quick Start
 
-## Installation
+> [!NOTE]
+> Requires Python 3.8+ and a CUDA 11.8 capable GPU. The dataset is not part of this repository; place it under `data/` as shown in [Dataset](#-dataset).
 
-```bash
-# Clone repository
-git clone https://github.com/yourusername/AquaSOT.git
-cd AquaSOT
+1. Clone the repository and install:
 
-# Install PyTorch with CUDA
-pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+   ```bash
+   git clone https://github.com/rohanhong/AquaSOT.git
+   cd AquaSOT
+   pip3 install torch==2.3.0+cu118 torchvision==0.18.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+   pip install -e .
+   ```
 
-# Install package
-pip install -e .
-```
+2. Download the MAE pretrained weights:
 
-## Dataset
+   ```bash
+   wget -O models/pretrained/mae_pretrain_vit_base.pth \
+       https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
+   ```
+
+3. Convert sonar frames from polar to Cartesian coordinates (once):
+
+   ```bash
+   python scripts/preprocess_sonar.py --all
+   ```
+
+4. Train, then evaluate:
+
+   ```bash
+   python tracking/train.py --script aquasot --config vitb_256_dual
+   python tracking/test.py --tracker aquasot --checkpoint outputs/train/checkpoints/model.pth
+   ```
+
+## 📦 Dataset
 
 The AquaSOT dataset contains 12 sequences with paired RGB-Sonar frames:
 
 ```
 data/
-├── uuv1/                    # Training
-│   ├── light/               # RGB: img/, groundtruth.txt
-│   └── sonar/               # Sonar: img_rect/, groundtruth_rect.txt
-├── uuv2/ ... uuv12/
+  uuv1/                    # Training
+    light/                 # RGB: img/, groundtruth.txt
+    sonar/                 # Sonar: img_rect/, groundtruth_rect.txt
+  uuv2/ ... uuv12/
 ```
 
 **Split:** Training (uuv1,2,4,5,6,7,8,9,10,11,12) | Validation (uuv3)
 
-**Preprocessing:** Convert sonar from polar to Cartesian coordinates:
-```bash
-python scripts/preprocess_sonar.py --all
-```
-
-## Training
+## 🏋️ Training
 
 ```bash
 # Standard training
@@ -62,12 +101,11 @@ python tracking/train.py --script aquasot --config vitb_256_dual
 
 # With W&B logging
 python tracking/train.py --script aquasot --config vitb_256_dual --wandb
-
 ```
 
-Configuration files are located in `experiments/aquasot/`.
+Configuration files are located in `experiments/aquasot/`. `scripts/auto_config.py` derives a hardware-tuned `vitb_256_dual_auto.yaml`; see [docs/TRAINING.md](docs/TRAINING.md).
 
-## Evaluation
+## 📊 Evaluation
 
 ```bash
 # Standard dual-modal evaluation
@@ -86,49 +124,65 @@ python tracking/test.py --checkpoint model.pth --eval_mode no_fusion --bn_adapt
 python tracking/test.py --checkpoint model.pth --no_filter_visibility
 ```
 
-**Options:**
+<details>
+<summary>Evaluation options</summary>
+
 - `--eval_mode {dual,rgb_only,sonar_only,no_fusion}`: Evaluation modality mode
 - `--bn_adapt`: Enable BatchNorm adaptation (required for ablation studies)
 - `--no_filter_visibility`: Include all frames (ignore GT absence)
 - `--no_skip_init_frame`: Include frame 0 in evaluation
 - `--plot_curves`: Generate success/precision curve plots
 
+</details>
+
 **Metrics:** Success (AUC), Precision@20, Center Error (per modality)
 
-## Project Structure
+## 🗂️ Project Structure
 
-```
-AquaSOT/
-├── lib/
-│   ├── models/aquasot/    # Model: backbone, fusion, head
-│   ├── train/               # Training: dataset, actor, trainer
-│   ├── test/                # Evaluation: tracker, metrics
-│   └── config/              # Default configuration
-├── tracking/
-│   ├── train.py             # Training entry point
-│   └── test.py              # Evaluation entry point
-├── experiments/aquasot/   # YAML configurations
-├── scripts/                 # Utility scripts
-└── data/                    # Dataset directory
+| Path | Contents |
+|---|---|
+| `lib/models/aquasot/` | Model: backbone, fusion, head |
+| `lib/train/` | Training: dataset, actor, trainer |
+| `lib/test/` | Evaluation: tracker, metrics |
+| `lib/config/` | Default configuration |
+| `tracking/` | Entry points: `train.py`, `test.py` |
+| `experiments/aquasot/` | YAML configurations |
+| `scripts/` | Utility scripts |
+| `data/` | Dataset directory |
+
+## 📝 Citation
+
+```bibtex
+@software{aquasot2025,
+  title={AquaSOT: End-to-End RGB-Sonar Single Object Tracking},
+  author={Luhang Hong},
+  year={2025},
+  url={https://github.com/rohanhong/AquaSOT}
+}
 ```
 
-## References
+## 📚 Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/TRAINING.md](docs/TRAINING.md) | Prerequisites, auto-configuration, training, monitoring |
+| [docs/TESTING.md](docs/TESTING.md) | Evaluation commands and outputs |
+| [docs/ABLATION.md](docs/ABLATION.md) | Ablation experiments |
+| [docs/specs/](docs/specs/) | Method, mathematical formulation, dataset specification |
+| [AGENTS.md](AGENTS.md) | Instructions for AI coding agents |
+
+## 🤝 Contributing
+
+Contributions are welcome. Read the [contributing guide](CONTRIBUTING.md) before opening an issue or pull request.
+
+## 🔗 Resources
 
 - **OSTrack** (ECCV 2022): [Joint Feature Learning and Relation Modeling for Tracking](https://arxiv.org/abs/2203.11991)
 - **RGBS50** (2024): [RGB-Sonar Tracking Benchmark](https://arxiv.org/abs/2406.07189)
 - **Deformable DETR** (ICLR 2021): [Deformable Transformers for Object Detection](https://arxiv.org/abs/2010.04159)
 
-## Citation
+## ⚖️ Legal
 
-```bibtex
-@software{aquasot2025,
-  title={AquaSOT: End-to-End RGB-Sonar Single Object Tracking},
-  author={AquaSOT Team},
-  year={2025},
-  url={https://github.com/yourusername/AquaSOT}
-}
-```
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
+- License: [MIT](LICENSE)
+- Code of Conduct: [Contributor Covenant 3.0](CODE_OF_CONDUCT.md)
+- Security: [Security Policy](SECURITY.md)
