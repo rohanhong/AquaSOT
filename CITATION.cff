@@ -9,9 +9,10 @@ type: software
 authors:
   - family-names: Hong
     given-names: Luhang
+    affiliation: Nanyang Technological University
 repository-code: "https://github.com/rohanhong/AquaSOT"
 license: MIT
-version: 1.0.0
+version: 1.0.1
 date-released: "2026-10-29"
 keywords:
   - object-tracking
@@ -29,6 +30,7 @@ preferred-citation:
   authors:
     - family-names: Hong
       given-names: Luhang
+      affiliation: Nanyang Technological University
   thesis-type: "Master's dissertation"
   institution:
     name: Nanyang Technological University
