@@ -16,8 +16,8 @@
   <a href="https://agentskills.io"><img alt="Agent Skills" src="https://img.shields.io/badge/Agent%20Skills-open%20format-8250df"></a>
   <!-- Reserved badges: uncomment when the service exists.
   <a href="https://github.com/rohanhong/AquaSOT/actions/workflows/<workflow>"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rohanhong/AquaSOT/<workflow>?branch=main"></a>
-  <a href="https://github.com/rohanhong/AquaSOT/releases"><img alt="Release" src="https://img.shields.io/github/v/release/rohanhong/AquaSOT"></a>
   -->
+  <a href="https://github.com/rohanhong/AquaSOT/releases"><img alt="Release" src="https://img.shields.io/github/v/release/rohanhong/AquaSOT"></a>
   <a href="https://github.com/rohanhong/AquaSOT/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/rohanhong/AquaSOT"></a>
   <a href="https://github.com/rohanhong/AquaSOT/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/rohanhong/AquaSOT?style=flat"></a>
 </p>
