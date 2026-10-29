@@ -161,11 +161,14 @@ python tracking/test.py --checkpoint model.pth --no_filter_visibility
 ## 📝 Citation
 
 ```bibtex
-@software{aquasot2025,
-  title={AquaSOT: End-to-End RGB-Sonar Single Object Tracking},
-  author={Luhang Hong},
-  year={2025},
-  url={https://github.com/rohanhong/AquaSOT}
+@mastersthesis{hong2026aquasot,
+  title={{AquaSOT}: End-to-End Dual-Modal Single Object Tracking in Underwater Environments},
+  author={Hong, Luhang},
+  school={Nanyang Technological University},
+  address={Singapore},
+  type={Master's dissertation},
+  year={2026},
+  url={https://hdl.handle.net/10356/213865}
 }
 ```
 
