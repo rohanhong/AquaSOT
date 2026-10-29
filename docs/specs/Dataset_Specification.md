@@ -2,7 +2,9 @@
 
 ## Overview
 
-The AquaSOT dataset is a multi-modal underwater object tracking benchmark featuring synchronized RGB camera and forward-looking sonar (FLS) imagery. The dataset captures underwater unmanned vehicles (UUVs) in challenging aquatic environments for single object tracking research.
+AquaSOT uses 12 UUV sequences (`uuv1` to `uuv12`) from the RGBS50 RGB-Sonar tracking benchmark: Y. Li, B. Wang, J. Sun, X. Wu, and Y. Li, "RGB-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer Tracker", arXiv:2406.07189, 2024. Each sequence pairs RGB camera frames with forward-looking sonar (FLS) frames of an underwater unmanned vehicle (UUV) target.
+
+**Source and terms:** RGBS50 is published by its authors at <https://github.com/LiYunfengLYF/RGBS50>, whose README links the download (Baiduyun, password `orrx`). That repository states no separate terms for the data. This repository does not redistribute the data; cite RGBS50 when you use it. This document describes the layout and split AquaSOT expects.
 
 **Dataset Split:**
 - **Training set**: `uuv1`, `uuv2`, `uuv4`, `uuv5`, `uuv6`, `uuv7`, `uuv8`, `uuv9`, `uuv10`, `uuv11`, `uuv12` (11 sequences, 10,940 frames)

@@ -1,0 +1,60 @@
+cff-version: 1.2.0
+message: >-
+  If you use AquaSOT, please cite the dissertation below. If you use the
+  RGBS50 data, please also cite the RGBS50 paper listed under references.
+title: AquaSOT
+abstract: >-
+  End-to-end RGB-Sonar single object tracking for underwater environments.
+type: software
+authors:
+  - family-names: Hong
+    given-names: Luhang
+repository-code: "https://github.com/rohanhong/AquaSOT"
+license: MIT
+keywords:
+  - object-tracking
+  - single-object-tracking
+  - multimodal
+  - sonar
+  - forward-looking-sonar
+  - underwater
+  - vision-transformer
+preferred-citation:
+  type: thesis
+  title: >-
+    AquaSOT: End-to-End Dual-Modal Single Object Tracking in Underwater
+    Environments
+  authors:
+    - family-names: Hong
+      given-names: Luhang
+  thesis-type: "Master's dissertation"
+  institution:
+    name: Nanyang Technological University
+    city: Singapore
+    country: SG
+  year: 2026
+  url: "https://hdl.handle.net/10356/213865"
+references:
+  - type: article
+    title: >-
+      RGB-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer
+      Tracker
+    authors:
+      - family-names: Li
+        given-names: Yunfeng
+      - family-names: Wang
+        given-names: Bo
+      - family-names: Sun
+        given-names: Jiuran
+      - family-names: Wu
+        given-names: Xueyi
+      - family-names: Li
+        given-names: Ye
+    year: 2024
+    identifiers:
+      - type: other
+        value: "arXiv:2406.07189"
+        description: arXiv preprint
+    doi: 10.48550/arXiv.2406.07189
+    url: "https://arxiv.org/abs/2406.07189"
+    repository: "https://github.com/LiYunfengLYF/RGBS50"

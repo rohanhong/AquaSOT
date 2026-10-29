@@ -700,7 +700,7 @@ See `docs/specs/Dataset_Specification.md` for detailed dataset documentation.
 
 ### 6.1 Overview
 
-The AquaSOT dataset contains 12 sequences of synchronized RGB-Sonar underwater imagery:
+AquaSOT uses 12 sequences of synchronized RGB-Sonar underwater imagery from the RGBS50 benchmark (Li et al., arXiv:2406.07189; see [Dataset_Specification.md](Dataset_Specification.md)):
 
 - **Training**: uuv1, uuv2, uuv4, uuv5, uuv6, uuv7, uuv8, uuv9, uuv10, uuv11, uuv12 (11 sequences, 10,940 frames)
 - **Validation**: uuv3 (1 sequence, 751 frames)

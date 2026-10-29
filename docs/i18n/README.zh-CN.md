@@ -17,9 +17,9 @@
   <!-- Reserved badges: uncomment when the service exists.
   <a href="https://github.com/rohanhong/AquaSOT/actions/workflows/<workflow>"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rohanhong/AquaSOT/<workflow>?branch=main"></a>
   <a href="https://github.com/rohanhong/AquaSOT/releases"><img alt="Release" src="https://img.shields.io/github/v/release/rohanhong/AquaSOT"></a>
+  -->
   <a href="https://github.com/rohanhong/AquaSOT/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/rohanhong/AquaSOT"></a>
   <a href="https://github.com/rohanhong/AquaSOT/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/rohanhong/AquaSOT?style=flat"></a>
-  -->
 </p>
 
 <p>🌐 <a href="../../README.md">English</a> | <b>简体中文</b></p>
@@ -46,7 +46,7 @@ Sonar Input --> ViT Backbone --+
 ## 🚀 快速开始
 
 > [!NOTE]
-> 需要 conda（例如 [Miniforge](https://conda-forge.org/download/)）和支持 CUDA 11.8 的 GPU。`environment.yml` 会创建 `aquasot_env_py38` 环境（Python 3.8）并安装 `requirements.txt` 中的依赖；不用 conda 时，可在任意 Python 3.8+ 环境中运行 `pip install -r requirements.txt`。数据集和训练产物不包含在本仓库中：第 3 步会从私有的 Hugging Face 仓库下载（需要访问权限），也可以自行准备数据集，按 [数据集](#-数据集) 一节的结构放在 `data/` 下。
+> 需要 conda（例如 [Miniforge](https://conda-forge.org/download/)）和支持 CUDA 11.8 的 GPU。`environment.yml` 会创建 `aquasot_env_py38` 环境（Python 3.8）并安装 `requirements.txt` 中的依赖；不用 conda 时，可在任意 Python 3.8+ 环境中运行 `pip install -r requirements.txt`。数据集和训练产物不包含在本仓库中：请从 RGBS50 官方发布处下载这些序列，按 [数据集](#-数据集) 一节的结构放在 `data/` 下。第 3 步仅供维护者使用：它从私有的 Hugging Face 仓库下载固定版本的副本（需要访问权限）。
 
 1. 克隆仓库并安装：
 
@@ -65,7 +65,7 @@ Sonar Input --> ViT Backbone --+
        https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
    ```
 
-3. 从 Hugging Face 下载数据集和训练产物（首次使用需先登录）：
+3. 仅限维护者：从 Hugging Face 下载固定版本的数据集和训练产物（首次使用需先登录）：
 
    ```bash
    hf auth login
@@ -87,7 +87,7 @@ Sonar Input --> ViT Backbone --+
 
 ## 📦 数据集
 
-AquaSOT 数据集包含 12 个序列，每帧为成对的 RGB 与声呐图像：
+AquaSOT 使用 12 个 UUV 序列（`uuv1` 至 `uuv12`）进行训练和评估，每帧为成对的 RGB 与声呐图像。这些序列来自 Li 等人发布的 **RGBS50** RGB-声呐跟踪基准（[arXiv:2406.07189](https://arxiv.org/abs/2406.07189)）。RGBS50 由原作者发布在 [LiYunfengLYF/RGBS50](https://github.com/LiYunfengLYF/RGBS50)，其 README 给出了下载地址（[百度网盘](https://pan.baidu.com/s/1mC192X-NnH4ByMxvVtYtvg?pwd=orrx)，提取码 `orrx`）。本仓库不再分发这些数据；使用时请引用 RGBS50（见 [引用](#-引用)）。目录结构如下：
 
 ```
 data/
@@ -99,7 +99,7 @@ data/
 
 **划分：** 训练集（uuv1,2,4,5,6,7,8,9,10,11,12）| 验证集（uuv3）
 
-`scripts/fetch_artifacts.py` 按 `scripts/hf_artifacts.yaml` 中固定的版本下载：数据集来自私有数据集仓库 `aquasot/aquasot-data`（每个序列一个 tar，校验 sha256 后解压到 `data/`）；训练产物来自私有模型仓库 `aquasot/aquasot-models`，下载到 `outputs/`，其中包括论文使用的 checkpoint `outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth`。运行 `python scripts/fetch_artifacts.py --verify_only` 可在不下载的情况下校验本地文件；如果传输卡住，请加上 `HF_HUB_DISABLE_XET=1` 重新运行。
+供维护者使用：`scripts/fetch_artifacts.py` 按 `scripts/hf_artifacts.yaml` 中固定的版本下载：数据集来自私有数据集仓库 `aquasot/aquasot-data`（每个序列一个 tar，校验 sha256 后解压到 `data/`）；训练产物来自私有模型仓库 `aquasot/aquasot-models`，下载到 `outputs/`，其中包括论文使用的 checkpoint `outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth`。运行 `python scripts/fetch_artifacts.py --verify_only` 可在不下载的情况下校验本地文件；如果传输卡住，请加上 `HF_HUB_DISABLE_XET=1` 重新运行。
 
 ## 🏋️ 训练
 
@@ -172,6 +172,17 @@ python tracking/test.py --checkpoint model.pth --no_filter_visibility
 }
 ```
 
+如果使用了数据集，请同时引用 RGBS50：
+
+```bibtex
+@article{li2024rgbs50,
+  title={{RGB}-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer Tracker},
+  author={Li, Yunfeng and Wang, Bo and Sun, Jiuran and Wu, Xueyi and Li, Ye},
+  journal={arXiv preprint arXiv:2406.07189},
+  year={2024}
+}
+```
+
 ## 📚 文档
 
 | 文档 | 内容 |
@@ -195,5 +206,6 @@ python tracking/test.py --checkpoint model.pth --no_filter_visibility
 ## ⚖️ 法律信息
 
 - 许可证：[MIT](../../LICENSE)
+- 第三方声明：[THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)
 - 行为准则：[Contributor Covenant 3.0](../../CODE_OF_CONDUCT.md)
 - 安全：[安全策略](../../SECURITY.md)

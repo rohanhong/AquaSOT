@@ -17,9 +17,9 @@
   <!-- Reserved badges: uncomment when the service exists.
   <a href="https://github.com/rohanhong/AquaSOT/actions/workflows/<workflow>"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rohanhong/AquaSOT/<workflow>?branch=main"></a>
   <a href="https://github.com/rohanhong/AquaSOT/releases"><img alt="Release" src="https://img.shields.io/github/v/release/rohanhong/AquaSOT"></a>
+  -->
   <a href="https://github.com/rohanhong/AquaSOT/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/rohanhong/AquaSOT"></a>
   <a href="https://github.com/rohanhong/AquaSOT/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/rohanhong/AquaSOT?style=flat"></a>
-  -->
 </p>
 
 <p>🌐 <b>English</b> | <a href="docs/i18n/README.zh-CN.md">简体中文</a></p>
@@ -46,7 +46,7 @@ Sonar Input --> ViT Backbone --+
 ## 🚀 Quick Start
 
 > [!NOTE]
-> Requires conda (for example [Miniforge](https://conda-forge.org/download/)) and a CUDA 11.8 capable GPU. `environment.yml` creates the `aquasot_env_py38` env (Python 3.8) and installs `requirements.txt` into it; without conda, `pip install -r requirements.txt` works in any Python 3.8+ env. The dataset and training outputs are not part of this repository: step 3 fetches them from private Hugging Face repos (access required), or place your own copy of the dataset under `data/` as shown in [Dataset](#-dataset).
+> Requires conda (for example [Miniforge](https://conda-forge.org/download/)) and a CUDA 11.8 capable GPU. `environment.yml` creates the `aquasot_env_py38` env (Python 3.8) and installs `requirements.txt` into it; without conda, `pip install -r requirements.txt` works in any Python 3.8+ env. The dataset and training outputs are not part of this repository: download the RGBS50 sequences from their official release and place them under `data/` as shown in [Dataset](#-dataset). Step 3 is for maintainers only: it fetches pinned copies from private Hugging Face repos (access required).
 
 1. Clone the repository and install:
 
@@ -65,7 +65,7 @@ Sonar Input --> ViT Backbone --+
        https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
    ```
 
-3. Fetch the dataset and training outputs from Hugging Face (log in once first):
+3. Maintainers only: fetch the pinned dataset and training outputs from Hugging Face (log in once first):
 
    ```bash
    hf auth login
@@ -87,7 +87,7 @@ Sonar Input --> ViT Backbone --+
 
 ## 📦 Dataset
 
-The AquaSOT dataset contains 12 sequences with paired RGB-Sonar frames:
+AquaSOT trains and evaluates on 12 UUV sequences (`uuv1` to `uuv12`) with paired RGB-Sonar frames, taken from the **RGBS50** RGB-Sonar tracking benchmark by Li et al. ([arXiv:2406.07189](https://arxiv.org/abs/2406.07189)). RGBS50 is published by its authors at [LiYunfengLYF/RGBS50](https://github.com/LiYunfengLYF/RGBS50), whose README links the download ([Baiduyun](https://pan.baidu.com/s/1mC192X-NnH4ByMxvVtYtvg?pwd=orrx), password `orrx`). This repository does not redistribute the data; if you use it, cite RGBS50 (see [Citation](#-citation)). Expected layout:
 
 ```
 data/
@@ -99,7 +99,7 @@ data/
 
 **Split:** Training (uuv1,2,4,5,6,7,8,9,10,11,12) | Validation (uuv3)
 
-`scripts/fetch_artifacts.py` downloads the copies pinned in `scripts/hf_artifacts.yaml`: the dataset from the private dataset repo `aquasot/aquasot-data` (one tar per sequence, checked against its sha256 and extracted into `data/`), and the training outputs, including the paper checkpoint `outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth`, from the private model repo `aquasot/aquasot-models` into `outputs/`. `python scripts/fetch_artifacts.py --verify_only` checks local copies without downloading; if a transfer stalls, rerun with `HF_HUB_DISABLE_XET=1`.
+For maintainers, `scripts/fetch_artifacts.py` downloads the copies pinned in `scripts/hf_artifacts.yaml`: the dataset from the private dataset repo `aquasot/aquasot-data` (one tar per sequence, checked against its sha256 and extracted into `data/`), and the training outputs, including the paper checkpoint `outputs/train/aquasot/vitb_256_dual_auto/checkpoints/checkpoint_ep0100.pth`, from the private model repo `aquasot/aquasot-models` into `outputs/`. `python scripts/fetch_artifacts.py --verify_only` checks local copies without downloading; if a transfer stalls, rerun with `HF_HUB_DISABLE_XET=1`.
 
 ## 🏋️ Training
 
@@ -172,6 +172,17 @@ python tracking/test.py --checkpoint model.pth --no_filter_visibility
 }
 ```
 
+If you use the dataset, also cite RGBS50:
+
+```bibtex
+@article{li2024rgbs50,
+  title={{RGB}-Sonar Tracking Benchmark and Spatial Cross-Attention Transformer Tracker},
+  author={Li, Yunfeng and Wang, Bo and Sun, Jiuran and Wu, Xueyi and Li, Ye},
+  journal={arXiv preprint arXiv:2406.07189},
+  year={2024}
+}
+```
+
 ## 📚 Documentation
 
 | Document | Contents |
@@ -195,5 +206,6 @@ Contributions are welcome. Read the [contributing guide](CONTRIBUTING.md) before
 ## ⚖️ Legal
 
 - License: [MIT](LICENSE)
+- Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - Code of Conduct: [Contributor Covenant 3.0](CODE_OF_CONDUCT.md)
 - Security: [Security Policy](SECURITY.md)
