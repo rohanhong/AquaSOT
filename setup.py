@@ -25,7 +25,7 @@ if os.path.exists(readme_path):
 
 setup(
     name='aquasot',
-    version='0.1.0',
+    version='1.0.0',
     description='End-to-End RGB+Sonar Single-Object Tracking',
     long_description=long_description,
     long_description_content_type='text/markdown',

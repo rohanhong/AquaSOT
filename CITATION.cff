@@ -11,6 +11,8 @@ authors:
     given-names: Luhang
 repository-code: "https://github.com/rohanhong/AquaSOT"
 license: MIT
+version: 1.0.0
+date-released: "2026-10-29"
 keywords:
   - object-tracking
   - single-object-tracking
