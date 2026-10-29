@@ -6,8 +6,6 @@
   <img alt="AquaSOT" src=".github/assets/banner-light.svg" width="480">
 </picture>
 
-<h1>🌊 AquaSOT</h1>
-
 <p><b>End-to-end RGB-Sonar single object tracking for underwater environments</b></p>
 
 <p>

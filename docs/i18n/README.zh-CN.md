@@ -6,8 +6,6 @@
   <img alt="AquaSOT" src="../../.github/assets/banner-light.svg" width="480">
 </picture>
 
-<h1>🌊 AquaSOT</h1>
-
 <p><b>面向水下环境的端到端 RGB-声呐单目标跟踪</b></p>
 
 <p>
