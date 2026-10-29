@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="AquaSOT mark">
+<title>AquaSOT mark</title>
+<defs><mask id="cut-light" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><path d="M26.5 25V21.5H30M34 21.5H37.5V25M37.5 29V32.5H34M30 32.5H26.5V29" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="square"/></mask></defs>
+<path d="M32 49L1.19 34.63A34 34 0 0 1 62.81 34.63Z" fill="#C77700" fill-opacity=".2"/><path d="M11.45 39.42A22.67 22.67 0 0 1 52.55 39.42M21.73 44.21A11.33 11.33 0 0 1 42.27 44.21" fill="none" stroke="#C77700" stroke-width="1.4" stroke-opacity=".75"/><path d="M1.19 34.63A34 34 0 0 1 62.81 34.63" fill="none" stroke="#C77700" stroke-width="2.2" stroke-linecap="round"/><path d="M32 49L13.73 20.33A34 34 0 0 1 50.27 20.33Z" fill="#0A7C86" mask="url(#cut-light)"/>
+</svg>
